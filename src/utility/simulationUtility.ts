@@ -252,12 +252,15 @@ export class SimulationUtility {
                         && candle.priceZone){
 
                         var closeAbsDistanceToMid = Math.abs(((candle.close - candle.priceZone.mid) / candle.priceZone.mid) * 100)
+                        var priceZoneInhabitantCount = movingCandles.slice(-24).filter(c => c.priceZone && c.priceZone == candle.priceZone).length
+
                         //LONG POSITION
                         var longEntry1 = candle.overboughSoldAnalysis.extremeLevel == 'overbought'
                         && candle.high < candle.priceZone.mid
-                        && candle.open < candle.priceZone.mid
+                        && candle.open < candle.priceZone.lower
                         && closeAbsDistanceToMid >= 1
-                        && movingCandles.slice(-10).filter(c => c.priceZone && c.openTime < candle.openTime && c.close < c.priceZone.mid && c.open < c.priceZone.mid).length <= 6
+                        && priceZoneInhabitantCount < 5
+                        && movingCandles.slice(-10).filter(c => c.priceZone && c.openTime < candle.openTime && c.close < c.priceZone.mid && c.open < c.priceZone.mid).length >= 6
                         && movingCandles.slice(-7).filter(c => c.openTime < candle.openTime 
                             && c.candleData
                             && c.overboughSoldAnalysis
@@ -267,7 +270,6 @@ export class SimulationUtility {
                                 (c.candleData.volumeSpike && c.candleData.priceMove == 'dragged_down' && c.volumeAnalysis.zScore >= 3)
                                 || (c.candleData.volumeSpike && c.candleData.priceMove == 'dragged_down')
                                 || (c.candleData.volumeSpike && c.volumeAnalysis.zScore >= 3)
-                                || (c.candleData.priceMove == 'dragged_down' && c.volumeAnalysis.zScore >= 3)
                             )
                         ).length >= 1
 
@@ -292,13 +294,14 @@ export class SimulationUtility {
                         && prevCandle.open < prevCandle.priceZone.upper
                         && prevCandle.open > prevCandle.priceZone.lower
                         && movingCandles.slice(-5).filter(c => c.openTime < candle.openTime && c.candleData && c.candleData.isNewZone).length == 0
+                        && movingCandles.slice(-10).filter(c => c.priceZone && c.close > c.priceZone.mid).length >= 6
 
                         var shortEntry2 = candle.overboughSoldAnalysis.extremeLevel == 'overbought'
                         && candle.close < candle.priceZone.mid
                         && candle.high > candle.priceZone.mid
                         && candle.open < candle.priceZone.mid
-                        && movingCandles.slice(-10).filter(c => c.priceZone && c.openTime < candle.openTime && c.close < c.priceZone.mid && c.open < c.priceZone.mid).length <= 6
-                        && movingCandles.slice(-7).filter(c => c.openTime < candle.openTime 
+                        && movingCandles.slice(-10).filter(c => c.priceZone && c.openTime < candle.openTime && c.close < c.priceZone.mid && c.open < c.priceZone.mid).length >= 6
+                        && movingCandles.slice(-8).filter(c => c.openTime < candle.openTime 
                             && c.candleData
                             && c.overboughSoldAnalysis
                             && c.volumeAnalysis
@@ -312,6 +315,7 @@ export class SimulationUtility {
                         ).length >= 1
 
                         var pastBreakThroughResistance = movingCandles.slice(-5).filter(c => c.openTime < candle.openTime && c.candleData && c.breakthrough_resistance); 
+                        var closeDistanceToMid = Math.abs(((candle.close - candle.priceZone.mid) / candle.priceZone.mid) * 100)
                         
                         var shortEntry3 = false
                         if(pastBreakThroughResistance.length >= 1){
@@ -324,7 +328,10 @@ export class SimulationUtility {
                             && candle.open > candle.priceZone.mid
                             && candle.close > candle.priceZone.mid
                             && movingCandles.slice(-5).filter(c => c.overboughSoldAnalysis && c.overboughSoldAnalysis.extremeLevel == 'overbought').length >= 1
+                            && movingCandles.slice(-10).filter(c => c.priceZone && c.close > c.priceZone.mid && c.open > c.priceZone.mid).length >= 5
                             && candle.candleData.zoneSizePercentage >= 2
+                            && closeDistanceToMid < 5
+                            && priceZoneInhabitantCount >= 10
                         }
 
                         if(shortEntry1){
@@ -353,14 +360,18 @@ export class SimulationUtility {
                             candle.side = "SHORT"
                             candle.slPrice = candle.high + (atr * 1.5)
 
+                            if(candle.close < candle.priceZone.upper){
+                                candle.slPrice = candle.priceZone.upper + (atr * 1.5)
+                            }
+
                             if(candle.candleData.zoneSizePercentage < 5){
-                                candle.tpPrice = candle.priceZone.lower - (atr * 1.5)
+                                candle.tpPrice = candle.priceZone.lower - (atr * 1.10)
                             }else{
-                                var closeDistanceToMid = Math.abs(((candle.close - candle.priceZone.mid) / candle.priceZone.mid) * 100)
-                                if(closeDistanceToMid >= 0.8 || closeDistanceToMid <= 2.5){
+                                
+                                if(closeDistanceToMid >= 1.5 && closeDistanceToMid <= 2.5){
                                     candle.tpPrice = candle.priceZone.mid
                                 }else{
-                                    candle.tpPrice = candle.priceZone.lower + (atr)
+                                    candle.tpPrice = candle.priceZone.lower + (atr * 0.5)
                                 }
                             }
                         }
