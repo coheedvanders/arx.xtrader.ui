@@ -1,0 +1,116 @@
+/* ===== flex.css ===== */
+
+/* Flex container */
+.flex {
+  display: flex;
+}
+
+.inline-flex {
+  display: inline-flex;
+}
+
+/* Direction */
+.flex-row {
+  flex-direction: row;
+}
+
+.flex-col {
+  flex-direction: column;
+}
+
+/* Wrapping */
+.flex-wrap {
+  flex-wrap: wrap;
+}
+
+.flex-nowrap {
+  flex-wrap: nowrap;
+}
+
+/* Justify Content (main axis alignment) */
+.justify-start {
+  justify-content: flex-start;
+}
+
+.justify-center {
+  justify-content: center;
+}
+
+.justify-end {
+  justify-content: flex-end;
+}
+
+.justify-between {
+  justify-content: space-between;
+}
+
+.justify-around {
+  justify-content: space-around;
+}
+
+.justify-evenly {
+  justify-content: space-evenly;
+}
+
+/* Align Items (cross axis alignment) */
+.items-start {
+  align-items: flex-start;
+}
+
+.items-center {
+  align-items: center;
+}
+
+.items-end {
+  align-items: flex-end;
+}
+
+.items-stretch {
+  align-items: stretch;
+}
+
+/* Align Self (per item alignment) */
+.self-auto {
+  align-self: auto;
+}
+
+.self-start {
+  align-self: flex-start;
+}
+
+.self-center {
+  align-self: center;
+}
+
+.self-end {
+  align-self: flex-end;
+}
+
+.self-stretch {
+  align-self: stretch;
+}
+
+/* Gap utilities */
+.gap-1 {
+  gap: 0.25rem; /* 4px */
+}
+
+.gap-2 {
+  gap: 0.5rem; /* 8px */
+}
+
+.gap-3 {
+  gap: 0.75rem; /* 12px */
+}
+
+.gap-4 {
+  gap: 1rem; /* 16px */
+}
+
+.gap-6 {
+  gap: 1.5rem; /* 24px */
+}
+
+.gap-8 {
+  gap: 2rem; /* 32px */
+}

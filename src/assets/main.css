@@ -1,0 +1,9 @@
+@import './base.css';
+@import './spacing.css';
+@import './fonts/geist//all-fonts.css';
+@import './typhography.css';
+@import './color.css';
+@import './flex.css';
+@import './flex-grid.css';
+@import './display.css';
+@import './shadow.css';

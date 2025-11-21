@@ -1,0 +1,415 @@
+/* Padding classes */
+.p-xs {
+    padding: 0.25rem;
+}
+
+.p-sm {
+    padding: 0.5rem;
+}
+
+.p-md {
+    padding: 1rem;
+}
+
+.p-lg {
+    padding: 1.5rem;
+}
+
+.p-xl {
+    padding: 2rem;
+}
+
+.p-xxl {
+    padding: 3rem;
+}
+
+.pt-xs {
+    padding-top: 0.25rem;
+}
+
+.pt-sm {
+    padding-top: 0.5rem;
+}
+
+.pt-md {
+    padding-top: 1rem;
+}
+
+.pt-lg {
+    padding-top: 1.5rem;
+}
+
+.pt-xl {
+    padding-top: 2rem;
+}
+
+.pt-xxl {
+    padding-top: 3rem;
+}
+
+.pb-xs {
+    padding-bottom: 0.25rem;
+}
+
+.pb-sm {
+    padding-bottom: 0.5rem;
+}
+
+.pb-md {
+    padding-bottom: 1rem;
+}
+
+.pb-lg {
+    padding-bottom: 1.5rem;
+}
+
+.pb-xl {
+    padding-bottom: 2rem;
+}
+
+.pb-xxl {
+    padding-bottom: 3rem;
+}
+
+.pl-xs {
+    padding-left: 0.25rem;
+}
+
+.pl-sm {
+    padding-left: 0.5rem;
+}
+
+.pl-md {
+    padding-left: 1rem;
+}
+
+.pl-lg {
+    padding-left: 1.5rem;
+}
+
+.pl-xl {
+    padding-left: 2rem;
+}
+
+.pl-xxl {
+    padding-left: 3rem;
+}
+
+.pr-xs {
+    padding-right: 0.25rem;
+}
+
+.pr-sm {
+    padding-right: 0.5rem;
+}
+
+.pr-md {
+    padding-right: 1rem;
+}
+
+.pr-lg {
+    padding-right: 1.5rem;
+}
+
+.pr-xl {
+    padding-right: 2rem;
+}
+
+.pr-xxl {
+    padding-right: 3rem;
+}
+
+/* Margin classes */
+.m-xs {
+    margin: 0.25rem;
+}
+
+.m-sm {
+    margin: 0.5rem;
+}
+
+.m-md {
+    margin: 1rem;
+}
+
+.m-lg {
+    margin: 1.5rem;
+}
+
+.m-xl {
+    margin: 2rem;
+}
+
+.m-xxl {
+    margin: 3rem;
+}
+
+.mt-xs {
+    margin-top: 0.25rem;
+}
+
+.mt-sm {
+    margin-top: 0.5rem;
+}
+
+.mt-md {
+    margin-top: 1rem;
+}
+
+.mt-lg {
+    margin-top: 1.5rem;
+}
+
+.mt-xl {
+    margin-top: 2rem;
+}
+
+.mt-xxl {
+    margin-top: 3rem;
+}
+
+.mb-xs {
+    margin-bottom: 0.25rem;
+}
+
+.mb-sm {
+    margin-bottom: 0.5rem;
+}
+
+.mb-md {
+    margin-bottom: 1rem;
+}
+
+.mb-lg {
+    margin-bottom: 1.5rem;
+}
+
+.mb-xl {
+    margin-bottom: 2rem;
+}
+
+.mb-xxl {
+    margin-bottom: 3rem;
+}
+
+.ml-xs {
+    margin-left: 0.25rem;
+}
+
+.ml-sm {
+    margin-left: 0.5rem;
+}
+
+.ml-md {
+    margin-left: 1rem;
+}
+
+.ml-lg {
+    margin-left: 1.5rem;
+}
+
+.ml-xl {
+    margin-left: 2rem;
+}
+
+.ml-xxl {
+    margin-left: 3rem;
+}
+
+.mr-xs {
+    margin-right: 0.25rem;
+}
+
+.mr-sm {
+    margin-right: 0.5rem;
+}
+
+.mr-md {
+    margin-right: 1rem;
+}
+
+.mr-lg {
+    margin-right: 1.5rem;
+}
+
+.mr-xl {
+    margin-right: 2rem;
+}
+
+.mr-xxl {
+    margin-right: 3rem;
+}
+
+/* === Padding Shorthand === */
+.pa-xs {
+    padding: 0.25rem;
+}
+
+.pa-sm {
+    padding: 0.5rem;
+}
+
+.pa-md {
+    padding: 1rem;
+}
+
+.pa-lg {
+    padding: 1.5rem;
+}
+
+.pa-xl {
+    padding: 2rem;
+}
+
+.pa-xxl {
+    padding: 3rem;
+}
+
+.px-xs {
+    padding-left: 0.25rem;
+    padding-right: 0.25rem;
+}
+
+.px-sm {
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+}
+
+.px-md {
+    padding-left: 1rem;
+    padding-right: 1rem;
+}
+
+.px-lg {
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+}
+
+.px-xl {
+    padding-left: 2rem;
+    padding-right: 2rem;
+}
+
+.px-xxl {
+    padding-left: 3rem;
+    padding-right: 3rem;
+}
+
+.py-xs {
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+}
+
+.py-sm {
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+}
+
+.py-md {
+    padding-top: 1rem;
+    padding-bottom: 1rem;
+}
+
+.py-lg {
+    padding-top: 1.5rem;
+    padding-bottom: 1.5rem;
+}
+
+.py-xl {
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+}
+
+.py-xxl {
+    padding-top: 3rem;
+    padding-bottom: 3rem;
+}
+
+/* === Margin Shorthand === */
+.ma-xs {
+    margin: 0.25rem;
+}
+
+.ma-sm {
+    margin: 0.5rem;
+}
+
+.ma-md {
+    margin: 1rem;
+}
+
+.ma-lg {
+    margin: 1.5rem;
+}
+
+.ma-xl {
+    margin: 2rem;
+}
+
+.ma-xxl {
+    margin: 3rem;
+}
+
+.mx-xs {
+    margin-left: 0.25rem;
+    margin-right: 0.25rem;
+}
+
+.mx-sm {
+    margin-left: 0.5rem;
+    margin-right: 0.5rem;
+}
+
+.mx-md {
+    margin-left: 1rem;
+    margin-right: 1rem;
+}
+
+.mx-lg {
+    margin-left: 1.5rem;
+    margin-right: 1.5rem;
+}
+
+.mx-xl {
+    margin-left: 2rem;
+    margin-right: 2rem;
+}
+
+.mx-xxl {
+    margin-left: 3rem;
+    margin-right: 3rem;
+}
+
+.my-xs {
+    margin-top: 0.25rem;
+    margin-bottom: 0.25rem;
+}
+
+.my-sm {
+    margin-top: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.my-md {
+    margin-top: 1rem;
+    margin-bottom: 1rem;
+}
+
+.my-lg {
+    margin-top: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.my-xl {
+    margin-top: 2rem;
+    margin-bottom: 2rem;
+}
+
+.my-xxl {
+    margin-top: 3rem;
+    margin-bottom: 3rem;
+}
+
+.divider {
+    border-top: 1px solid #ddd;
+}

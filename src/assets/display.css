@@ -1,0 +1,123 @@
+/* Display Utility Classes */
+.d-block {
+    display: block;
+}
+
+.d-inline {
+    display: inline;
+}
+
+.d-inline-block {
+    display: inline-block;
+}
+
+.d-flex {
+    display: flex;
+}
+
+.d-inline-flex {
+    display: inline-flex;
+}
+
+.d-grid {
+    display: grid;
+}
+
+.d-inline-grid {
+    display: inline-grid;
+}
+
+.d-table {
+    display: table;
+}
+
+.d-table-cell {
+    display: table-cell;
+}
+
+.d-none {
+    display: none;
+}
+
+
+/*widths*/
+
+/* Width Utilities */
+
+/* Percentage widths */
+.w-full {
+    width: 100%;
+}
+
+.w-1\/2 {
+    width: 50%;
+}
+
+.w-1\/3 {
+    width: 33.3333%;
+}
+
+.w-2\/3 {
+    width: 66.6667%;
+}
+
+.w-1\/4 {
+    width: 25%;
+}
+
+.w-3\/4 {
+    width: 75%;
+}
+
+.w-1\/5 {
+    width: 20%;
+}
+
+.w-4\/5 {
+    width: 80%;
+}
+
+.w-auto {
+    width: auto;
+}
+
+.w-fit {
+    width: fit-content;
+}
+
+.w-max {
+    width: max-content;
+}
+
+.w-min {
+    width: min-content;
+}
+
+/* Fixed pixel widths */
+.w-100 {
+    width: 100px;
+}
+
+.w-200 {
+    width: 200px;
+}
+
+.w-300 {
+    width: 300px;
+}
+
+.w-400 {
+    width: 400px;
+}
+
+.w-500 {
+    width: 500px;
+}
+
+.float-left{
+    float:left;
+}
+
+.float-right{
+    float:right;
+}
