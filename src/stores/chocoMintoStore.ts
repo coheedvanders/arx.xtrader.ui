@@ -8,6 +8,7 @@ export const useChocoMintoStore = defineStore('choco-minto-store', () => {
     const futureSymbols = ref<FuturesSymbol[]>([])
     const isManualSimulation = ref(false);
     const startingTimeStamp = ref(0);
+    const endingTimeStamp = ref(0)
     const marginBalance = ref(0)
 
     // --- Actions ----
@@ -34,6 +35,7 @@ export const useChocoMintoStore = defineStore('choco-minto-store', () => {
         futureSymbols,
         isManualSimulation,
         startingTimeStamp,
+        endingTimeStamp,
         marginBalance,
 
         splitFutureSymbols

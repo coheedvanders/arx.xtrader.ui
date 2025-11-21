@@ -215,5 +215,5 @@ class TradeSignalLoggerMem {
   }
 }
 
-export const tradeLogger = new TradeSignalLoggerMem();
-tradeLogger.init().catch((err) => console.error("Failed to init trade logger:", err));
+export const tradeLoggerMem = new TradeSignalLoggerMem();
+tradeLoggerMem.init().catch((err) => console.error("Failed to init trade logger:", err));

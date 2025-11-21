@@ -351,7 +351,7 @@ export class SimulationUtility {
                             candle.candleData.conditionMet = "SHORT_3"
 
                             candle.side = "SHORT"
-                            candle.slPrice = candle.high + (atr)
+                            candle.slPrice = candle.high + (atr * 1.5)
 
                             if(candle.candleData.zoneSizePercentage < 5){
                                 candle.tpPrice = candle.priceZone.lower - (atr * 1.5)
@@ -360,7 +360,7 @@ export class SimulationUtility {
                                 if(closeDistanceToMid >= 0.8 || closeDistanceToMid <= 2.5){
                                     candle.tpPrice = candle.priceZone.mid
                                 }else{
-                                    candle.tpPrice = candle.priceZone.lower + (atr * 0.5)
+                                    candle.tpPrice = candle.priceZone.lower + (atr)
                                 }
                             }
                         }

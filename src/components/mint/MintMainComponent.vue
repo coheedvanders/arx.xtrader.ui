@@ -19,6 +19,7 @@
         <ButtonComponent v-if="!isBotEnabled" @click="startChoco" color="primary" rounded class="mr-sm">start choco</ButtonComponent>
         <ButtonComponent v-else @click="isBotEnabled = false" color="danger" rounded class="mr-sm">stop choco</ButtonComponent>
 
+        <ButtonComponent v-if="!isBotEnabled" @click="clearSessionRange" rounded class="mr-sm">clear session range</ButtonComponent>
         <ButtonComponent v-if="!isBotEnabled" @click="runManualSimulation" rounded class="mr-sm">run all simulation</ButtonComponent>
         <ButtonComponent v-if="!isBotEnabled" @click="tradeLogger.downloadBackTestLogs()" rounded class="mr-sm">download simulation</ButtonComponent>
         <ButtonComponent v-if="!isBotEnabled" @click="klineDbUtility.downloadAll()" rounded class="mr-sm">download candles</ButtonComponent>
@@ -26,8 +27,10 @@
         <ButtonComponent v-if="!isBotEnabled" @click="runStats" rounded class="ml-sm">run stats</ButtonComponent>
 
         
-        <InputComponent v-model="chocoMintoStore.startingTimeStamp" />
-        <label>{{ startingTimeStampLocal }}</label>
+        <InputComponent type="numeric" v-model="chocoMintoStore.startingTimeStamp" />
+        <div>{{ (new Date(botStartOn)).toLocaleString() }}</div>
+        <div>{{ (new Date(chocoMintoStore.startingTimeStamp)).toLocaleString() }}</div>
+        <div>{{ (new Date(chocoMintoStore.endingTimeStamp)).toLocaleString() }}</div>
 
         <CardComponent v-if="chocoMintoStore.isManualSimulation">
             <CardHeaderComponent>
@@ -126,8 +129,11 @@ import InputComponent from '../shared/form/InputComponent.vue';
 import { KlineUtility } from '@/utility/klineUtility';
 import { BinanceMarginUtility } from '@/utility/binanceMarginUtility';
 import CandleEntryHistoryComponent from './CandleEntryHistoryComponent.vue';
+import ReplayCandleEntryComponent from './ReplayCandleEntryComponent.vue';
+import { useNotificationStore } from '@/stores/notificationStore';
 
 const chocoMintoStore = useChocoMintoStore();
+const notificationStore = useNotificationStore();
 
 const isBotEnabled = ref(false)
 
@@ -139,7 +145,7 @@ const SUPPORT_AND_RESISTANCE_PERIOD_LENGTH = 10;
 const MARGIN = 1;
 const TP_ROI = 3;
 const SL_ROI = 2.5;
-const STARTING_BALANCE = 100;
+const STARTING_BALANCE = 200;
 const MAX_OPEN_POSITIONS = 20;
 const TARGET_GAIN = 10;
 const POSITION_DURATION_MEDIAN = 10;
@@ -162,6 +168,8 @@ const basketKey = ref(CommonHelperUtility.generateGuid());
 const showEntryHistory = ref(false);
 const selectedSymbolCandleEntries = ref<CandleEntry[]>([])
 const selectedSymbol = ref("")
+
+const botStartOn = ref(0)
 
 const manualSimulationStats = computed(() => {
     var stats: SimulationStats = {
@@ -191,45 +199,32 @@ const estimatedMarginUsed = computed(() => {
     return manualSimulationStats.value.open * MARGIN;
 })
 
-const startingTimeStampLocal = computed(() => {
-  const ts = chocoMintoStore.startingTimeStamp;
-  if (!ts) return '';
-
-  const date = new Date(ts);
-  const pad = (n: number) => n.toString().padStart(2, '0');
-
-  const day = pad(date.getDate());
-  const month = pad(date.getMonth() + 1); // months are 0-indexed
-  const year = date.getFullYear();
-
-  let hours = date.getHours();
-  const minutes = pad(date.getMinutes());
-  const seconds = pad(date.getSeconds());
-  const ampm = hours >= 12 ? 'PM' : 'AM';
-  hours = hours % 12 || 12; // convert 0 to 12
-  const hourStr = pad(hours);
-
-  return `${day}/${month}/${year} ${hourStr}:${minutes}:${seconds} ${ampm}`;
-});
-
 onMounted(async () => {
     await BinanceMarginUtility.fetchAllFuturesBrackets();
     await initializeFutureSymbols();
 })
 
 function startChoco(){
+    botStartOn.value = (new Date()).getTime();
+
+    var sessionRange = getSessionRange(new Date());
+    console.log(sessionRange);
 
     if(chocoMintoStore.startingTimeStamp == 0){
         var storageStartingTimeStamp = localStorage.getItem('start-time');
-        if(storageStartingTimeStamp){
+        var storageEndingTimeStamp = localStorage.getItem('end-time');
+        if(storageStartingTimeStamp && storageEndingTimeStamp){
             chocoMintoStore.startingTimeStamp = parseInt(storageStartingTimeStamp)
+            chocoMintoStore.endingTimeStamp = parseInt(storageEndingTimeStamp)
         }else{
             var klineInt = parseInt(KLINE_INTERVAL.replace('m',''))
-            chocoMintoStore.startingTimeStamp = Date.now() - (klineInt * 2) * 60 * 1000;
+            chocoMintoStore.startingTimeStamp = sessionRange.start.getTime();
+            chocoMintoStore.endingTimeStamp = sessionRange.end.getTime();
         }
     }
 
     localStorage.setItem('start-time',chocoMintoStore.startingTimeStamp.toString())
+    localStorage.setItem('end-time',chocoMintoStore.endingTimeStamp.toString())
 
     isBotEnabled.value = true;
 }
@@ -291,6 +286,12 @@ function runManualSimulation(){
     basketKey.value = CommonHelperUtility.generateGuid();
 }
 
+function clearSessionRange(){
+    localStorage.removeItem("start-time");
+    localStorage.removeItem("end-time");
+    notificationStore.showNotification("info","top-right","clear","Session range has been cleared");
+}
+
 async function runStats(){
     symbolsOfInterest.value = [];
     for (let i = 0; i <= chocoMintoStore.futureSymbols.length - 1; i++) {
@@ -342,4 +343,64 @@ async function showEntryHistoryModal(symbol: string){
     selectedSymbol.value = symbol;
     selectedSymbolCandleEntries.value = await klineDbUtility.getKlines(symbol);
 }
+
+function getSessionRange(ts: Date) {
+    const d = new Date(ts);
+    const m = d.getHours() * 60 + d.getMinutes();
+
+    // Session boundaries (where a timestamp belongs)
+    const bounds = [
+        { label: "00", min: 0 },       // 12am–6am
+        { label: "06", min: 360 },     // 6am–12pm
+        { label: "12", min: 720 },     // 12pm–6pm
+        { label: "18", min: 1080 }     // 6pm–12am
+    ];
+
+    // Start times by index (0→12am session, 1→6am session, etc.)
+    const startTimes = [
+        { hh: 21, mm: 30, prev: true },  // for 12am session → 9:15pm previous day
+        { hh: 3,  mm: 30, prev: false }, // for 6am session
+        { hh: 9,  mm: 30, prev: false }, // for 12pm session
+        { hh: 15, mm: 30, prev: false }  // for 6pm session
+    ];
+
+    // End times by index (all next day)
+    const endTimes = [
+        { hh: 0,  mm: 0 },  // next day 12am
+        { hh: 6,  mm: 0 },  // next day 6am
+        { hh: 12, mm: 0 },  // next day 12pm
+        { hh: 18, mm: 0 }   // next day 6pm
+    ];
+
+    function mk(base: Date, hh: number, mm: number) {
+        return new Date(base.getFullYear(), base.getMonth(), base.getDate(), hh, mm, 0, 0);
+    }
+
+    // Determine which session the timestamp falls into
+    let idx = 0;
+    for (let i = 0; i < bounds.length; i++) {
+        const cur = bounds[i];
+        const next = bounds[(i + 1) % bounds.length];
+        const upper = next.min === 0 ? 1440 : next.min;
+        if (m >= cur.min && m < upper) {
+            idx = i;
+            break;
+        }
+    }
+
+    // Compute start
+    const s = startTimes[idx];
+    const startBase = s.prev
+        ? new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1)
+        : d;
+    const start = mk(startBase, s.hh, s.mm);
+
+    // Compute end (always next day relative to timestamp)
+    const e = endTimes[idx];
+    const endBase = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+    const end = mk(endBase, e.hh, e.mm);
+
+    return { start, end };
+}
+
 </script>
