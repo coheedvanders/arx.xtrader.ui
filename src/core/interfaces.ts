@@ -205,6 +205,10 @@ export interface CandleData {
   zoneSizePercentage: number;
   extraInfo: string
   isIndecisive:boolean
+  isLongPotential:boolean;
+  isShortPotential:boolean;
+  conditionMet: string;
+  priceMove:string;
 }
 
 
@@ -253,7 +257,7 @@ export interface VolumeAnalysis {
 }
 
 export interface OverboughtOversoldAnalysis {
-    extremeLevel: 'extreme_overbought' | 'overbought' | 'neutral' | 'oversold' | 'extreme_oversold';
+    extremeLevel: string
     score: number; // -100 to +100 (negative = oversold, positive = overbought)
     signals: string[];
     confidence: number; // 0-1
