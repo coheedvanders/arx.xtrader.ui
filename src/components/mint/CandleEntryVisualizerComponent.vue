@@ -202,6 +202,8 @@
               class="body"
             />
 
+            <!-- candle.candleData?.volumeSpike -->
+
             <g v-if="candle.candleData?.volumeSpike" class="volume-spike-indicator">
               <circle
                 :cx="candleX(i)"
