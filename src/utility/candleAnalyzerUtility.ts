@@ -86,7 +86,8 @@ class CandlestickAnalyzer {
       isLongPotential:false,
         isShortPotential:false,
         conditionMet: "",
-        priceMove:""
+        priceMove:"",
+        pastZoneOverStatePriceReaction: ""
     };
   }
 
@@ -138,6 +139,45 @@ static detectPriceMove(
     return "normal";
 }
 
+static getPreviousSessionOverStatePriceReaction(movingCandles: CandleEntry[], overState: string): "up" | "down" | "neutral" {
+    
+    // Get all price zones
+    const priceZones = movingCandles.filter(c => c.candleData && c.candleData.isNewZone);
+    
+    if (priceZones.length < 2) return "neutral"; // Need at least 2 zones
+    
+    // Current zone is last, previous zone is second to last
+    const previousZone = priceZones[priceZones.length - 2];
+    const currentZone = priceZones[priceZones.length - 1];
+    
+    // Find the index of previous zone in movingCandles
+    const previousZoneIndex = movingCandles.indexOf(previousZone);
+    const currentZoneIndex = movingCandles.indexOf(currentZone);
+    
+    // Get all candles in previous zone session
+    const previousSessionCandles = movingCandles.slice(previousZoneIndex, currentZoneIndex);
+    
+    // Find candles with the specified overState in previous session
+    const overStateCandles = previousSessionCandles.filter(c => 
+        c.overboughSoldAnalysis?.extremeLevel === overState
+    );
+    
+    if (overStateCandles.length === 0) return "neutral";
+    
+    // Get price at first overState occurrence
+    const firstOverStatePrice = overStateCandles[0].close;
+    
+    // Get price at end of previous session (last candle before current zone)
+    const endSessionPrice = previousSessionCandles[previousSessionCandles.length - 1].close;
+    
+    // Calculate reaction
+    const priceChange = endSessionPrice - firstOverStatePrice;
+    const changePercent = (priceChange / firstOverStatePrice) * 100;
+    
+    if (changePercent > 0.5) return "up";
+    if (changePercent < -0.5) return "down";
+    return "neutral";
+}
 
 static detectOverState(movingCandles: any[], windowSize = 30, threshold = 2) {
     if (movingCandles.length < windowSize + 1) return "";

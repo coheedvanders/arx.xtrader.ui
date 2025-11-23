@@ -209,6 +209,7 @@ export interface CandleData {
   isShortPotential:boolean;
   conditionMet: string;
   priceMove:string;
+  pastZoneOverStatePriceReaction: string;
 }
 
 
