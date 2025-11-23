@@ -1,12 +1,27 @@
 #!/bin/bash
-# Stop and remove any existing container
-docker rm -f arx-z-bionix-ui 2>/dev/null
 
-# Remove the existing image
-docker rmi arx-z-bionix-ui 2>/dev/null
+# Define variables
+HOST="192.168.1.9"
+USER="montecris_admin"
+PASSWORD="admin123"
+IMAGE_NAME="choco-bot"
+TAR_FILE="~/docker-images/choco-bot.tar"
+CONTAINER_NAME="choco-bot"
 
-# Build a new image
-docker build -t arx-z-bionix-ui .
+# Stop and remove the old container
+echo "Removing existing container. . ."
+sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no $USER@$HOST "echo $PASSWORD | sudo -S docker rm -f $CONTAINER_NAME"
+
+# Remove the old image
+echo "Removing existing image. . ."
+sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no $USER@$HOST "echo $PASSWORD | sudo -S docker rmi $CONTAINER_NAME"
+
+# Load the new tar file into a Docker image
+echo "Loading image from tar file. . ."
+sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no $USER@$HOST "echo $PASSWORD | sudo -S docker load -i $TAR_FILE"
 
 # Run a new container
-docker run -d -p 8188:80 --name arx-z-bionix-ui arx-z-bionix-ui
+echo "Running container. . ."
+sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no $USER@$HOST "echo $PASSWORD | sudo -S docker run -d --name $CONTAINER_NAME --network migs_network -p 8008:80 $IMAGE_NAME:latest"
+
+echo "Deployment completed successfully."
