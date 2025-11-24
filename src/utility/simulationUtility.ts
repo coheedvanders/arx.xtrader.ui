@@ -283,14 +283,28 @@ export class SimulationUtility {
                         //&& movingCandles.slice(-6).filter(c => c.breakthrough_support).length == 0
                         // && movingCandles.filter(c => c.priceZone == candle.priceZone && c.overboughSoldAnalysis && c.overboughSoldAnalysis.extremeLevel == "overbought").length == 1
                         && candle.candleData.change_percentage_v > 1
+                        //&& candle.candleData.strength_v > 70
 
                         if(longEntry1){
-                            candle.candleData.isLongPotential = true
-                            candle.candleData.conditionMet = "LONG_1"
+                            if(priceZones.length >= 2){
+                                var prevPriceZone = priceZones[priceZones.length - 2];
+                                if(prevPriceZone.priceZone!.mid > activePriceZone!.mid){
+                                    candle.candleData.isLongPotential = true
+                                    candle.candleData.conditionMet = "LONG_1"
 
-                            candle.side = "LONG"
-                            candle.slPrice = candle.support.lower - (atr)
-                            candle.tpPrice = candle.priceZone.mid
+                                    candle.side = "LONG"
+                                    candle.slPrice = candle.support.lower - (atr)
+                                    candle.tpPrice = candle.priceZone.mid
+                                }
+                            }
+                            // else{
+                            //     candle.candleData.isLongPotential = true
+                            //     candle.candleData.conditionMet = "LONG_1"
+
+                            //     candle.side = "LONG"
+                            //     candle.slPrice = candle.support.lower - (atr)
+                            //     candle.tpPrice = candle.priceZone.mid
+                            // }
                         }
 
 
