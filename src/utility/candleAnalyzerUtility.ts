@@ -88,7 +88,8 @@ class CandlestickAnalyzer {
         conditionMet: "",
         priceMove:"",
         pastZoneOverStatePriceReaction: "",
-        spaceTakenInZoneLevel: 0
+        spaceTakenInZoneLevel: 0,
+        pastCandleAverageChange: 0
     };
   }
 
