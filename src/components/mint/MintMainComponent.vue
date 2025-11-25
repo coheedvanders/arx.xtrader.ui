@@ -358,10 +358,10 @@ function getSessionRange(ts: Date) {
 
     // Start times by index (0→12am session, 1→6am session, etc.)
     const startTimes = [
-        { hh: 21, mm: 30, prev: true },  // for 12am session → 9:15pm previous day
-        { hh: 3,  mm: 30, prev: false }, // for 6am session
-        { hh: 9,  mm: 30, prev: false }, // for 12pm session
-        { hh: 15, mm: 30, prev: false }  // for 6pm session
+        { hh: 9, mm: 15, prev: true },  // for 12am session → 9:15pm previous day
+        { hh: 12,  mm: 15, prev: false }, // for 6am session
+        { hh: 9,  mm: 15, prev: false }, // for 12pm session
+        { hh: 12, mm: 15, prev: false }  // for 6pm session
     ];
 
     // End times by index (all next day)
