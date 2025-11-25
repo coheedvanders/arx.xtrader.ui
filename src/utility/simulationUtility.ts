@@ -145,6 +145,7 @@ export class SimulationUtility {
                     .reduce((sum, s) => sum + s.candleData!.zoneSizePercentage, 0) / 3
 
                     candle.candleData.extraInfo = pastZoneChangeAverage.toFixed(2).toString();
+                    candle.candleData.spaceTakenInZoneLevel = candleAnalyzer.calculateCandleSpaceTakenInZoneLevel(candle,activePriceZone);
                 }
 
                 //===============
@@ -278,12 +279,21 @@ export class SimulationUtility {
                         && closeAbsDistanceToMid > 1
                         && candle.close < lowerZoneEqualizerPrice
                         && candle.candleData.zoneSizePercentage > 3
+                        && candle.high < candle.resistance.upper
                         //&& candle.candleData.zoneSizePercentage < 10
                         //&& movingCandles.slice(-8).filter(c => c.close < lowerZoneEqualizerPrice).length >= 6
                         //&& movingCandles.slice(-6).filter(c => c.breakthrough_support).length == 0
                         // && movingCandles.filter(c => c.priceZone == candle.priceZone && c.overboughSoldAnalysis && c.overboughSoldAnalysis.extremeLevel == "overbought").length == 1
                         && candle.candleData.change_percentage_v > 1
                         //&& candle.candleData.strength_v > 70
+
+
+                        //USE WHEN BALANCE IS > 500
+                        var longEntry2 = candle.close < candle.priceZone.mid
+                        && candle.high < candle.priceZone.mid
+                        && candle.candleData.spaceTakenInZoneLevel > 50
+                        && candle.overboughSoldAnalysis.extremeLevel == "overbought"
+                        && priceZoneInhabitantCount > 10
 
                         if(longEntry1){
                             if(priceZones.length >= 2){
@@ -297,16 +307,24 @@ export class SimulationUtility {
                                     candle.tpPrice = candle.priceZone.mid
                                 }
                             }
-                            // else{
-                            //     candle.candleData.isLongPotential = true
-                            //     candle.candleData.conditionMet = "LONG_1"
+                            else{
+                                if(candle.candleData.change_percentage_v > 90){
+                                    candle.candleData.isLongPotential = true
+                                    candle.candleData.conditionMet = "LONG_1"
 
-                            //     candle.side = "LONG"
-                            //     candle.slPrice = candle.support.lower - (atr)
-                            //     candle.tpPrice = candle.priceZone.mid
-                            // }
+                                    candle.side = "LONG"
+                                    candle.slPrice = candle.support.lower - (atr)
+                                    candle.tpPrice = candle.priceZone.mid
+                                }
+                            }
+                        } else if(longEntry2){
+                            candle.candleData.isLongPotential = true
+                            candle.candleData.conditionMet = "LONG_1"
+
+                            candle.side = "LONG"
+                            candle.slPrice = candle.support.lower - (atr)
+                            candle.tpPrice = candle.priceZone.upper
                         }
-
 
 
                         //SHORT POSITION

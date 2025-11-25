@@ -210,6 +210,7 @@ export interface CandleData {
   conditionMet: string;
   priceMove:string;
   pastZoneOverStatePriceReaction: string;
+  spaceTakenInZoneLevel:number;
 }
 
 

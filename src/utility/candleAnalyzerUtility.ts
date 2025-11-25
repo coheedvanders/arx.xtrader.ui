@@ -87,7 +87,8 @@ class CandlestickAnalyzer {
         isShortPotential:false,
         conditionMet: "",
         priceMove:"",
-        pastZoneOverStatePriceReaction: ""
+        pastZoneOverStatePriceReaction: "",
+        spaceTakenInZoneLevel: 0
     };
   }
 
@@ -213,6 +214,36 @@ static detectOverState(movingCandles: any[], windowSize = 30, threshold = 2) {
     if (z > threshold) return "overbought";
     if (z < -threshold) return "oversold";
     return "";
+}
+
+static calculateCandleSpaceTakenInZoneLevel(
+  candle: CandleEntry,
+  zone: PriceZone
+) {
+  const close = candle.close
+
+  let a = 0
+  let b = 0
+
+  if (close < zone.mid) {
+    a = zone.lower
+    b = zone.mid
+  } else {
+    a = zone.mid
+    b = zone.upper
+  }
+
+  const span = b - a
+  if (span <= 0) return 0
+
+  const cHigh = Math.max(candle.open, candle.close, candle.high)
+  const cLow  = Math.min(candle.open, candle.close, candle.low)
+
+  const overlapHigh = Math.min(cHigh, b)
+  const overlapLow  = Math.max(cLow,  a)
+  const overlap = Math.max(0, overlapHigh - overlapLow)
+
+  return (overlap / span) * 100
 }
 
    static hasVolumeSpike(
