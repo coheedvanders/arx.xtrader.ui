@@ -7,18 +7,8 @@ class KlineDbUtility {
   private db: IDBDatabase | null = null;
   private dbVersion = 2;
 
-  private queue: (() => Promise<void>)[] = [];
-  private isProcessing = false;
-
-  private async processQueue() {
-    if (this.isProcessing) return;
-    this.isProcessing = true;
-    while (this.queue.length > 0) {
-      const job = this.queue.shift();
-      if (job) await job();
-    }
-    this.isProcessing = false;
-  }
+  // Deduplicate concurrent requests for the same symbol
+  private pendingRequests = new Map<string, Promise<CandleEntry[]>>();
 
   async init() {
     if (this.db) return;
@@ -54,7 +44,6 @@ class KlineDbUtility {
     const zip = new JSZip();
     const symbolMap = new Map<string, CandleEntry[]>();
 
-    // Collect all data by symbol
     await new Promise<void>((resolve, reject) => {
       const tx = this.db!.transaction([this.klineStoreName], "readonly");
       const store = tx.objectStore(this.klineStoreName);
@@ -75,7 +64,6 @@ class KlineDbUtility {
       req.onerror = () => reject(req.error);
     });
 
-    // Add each symbol as a separate JSON file to zip
     for (const [symbol, candles] of symbolMap) {
       const fileName = `${symbol}.json`;
       const fileContent = JSON.stringify(candles, null, 2);
@@ -83,7 +71,6 @@ class KlineDbUtility {
       console.log(`Added ${fileName} (${candles.length} candles)`);
     }
 
-    // Generate zip and download
     try {
       const zipBlob = await zip.generateAsync({ type: "blob" });
       const url = URL.createObjectURL(zipBlob);
@@ -102,106 +89,107 @@ class KlineDbUtility {
     await this.init();
     const safeData = JSON.parse(JSON.stringify({ symbol, candles }));
 
-    const execute = async () => {
-      await new Promise<void>((resolve, reject) => {
-        const tx = this.db!.transaction([this.klineStoreName], "readwrite");
-        const store = tx.objectStore(this.klineStoreName);
-        const req = store.put(safeData);
-        req.onsuccess = () => resolve();
-        req.onerror = () => reject(req.error);
-      });
-    };
-
-    this.queue.push(execute);
-    await this.processQueue();
+    return new Promise<void>((resolve, reject) => {
+      const tx = this.db!.transaction([this.klineStoreName], "readwrite");
+      const store = tx.objectStore(this.klineStoreName);
+      const req = store.put(safeData);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
   }
 
   async insertNewKline(symbol: string, candle: CandleEntry) {
     await this.init();
 
-    const execute = async () => {
-      const candles = await this.getKlines(symbol);
-      const updated = [...candles];
+    const candles = await this.getKlines(symbol);
+    const updated = [...candles];
 
-      if (updated.length >= 400) updated.shift(); // remove oldest
-      updated.push(candle); // append newest
+    if (updated.length >= 400) updated.shift();
+    updated.push(candle);
 
-      const data = { symbol, candles: updated };
-      await new Promise<void>((resolve, reject) => {
-        const tx = this.db!.transaction([this.klineStoreName], "readwrite");
-        const store = tx.objectStore(this.klineStoreName);
-        const req = store.put(data);
-        req.onsuccess = () => resolve();
-        req.onerror = () => reject(req.error);
-      });
-    };
-
-    this.queue.push(execute);
-    await this.processQueue();
+    const data = { symbol, candles: updated };
+    return new Promise<void>((resolve, reject) => {
+      const tx = this.db!.transaction([this.klineStoreName], "readwrite");
+      const store = tx.objectStore(this.klineStoreName);
+      const req = store.put(data);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
   }
 
   async getKlines(symbol: string): Promise<CandleEntry[]> {
     await this.init();
 
-    return new Promise((resolve, reject) => {
-        const tx = this.db!.transaction([this.klineStoreName], "readonly");
-        const store = tx.objectStore(this.klineStoreName);
-        const req = store.get(symbol);
+    // Return cached promise if request is already in-flight
+    if (this.pendingRequests.has(symbol)) {
+      return this.pendingRequests.get(symbol)!;
+    }
 
-        req.onsuccess = () => {
+    const promise = new Promise<CandleEntry[]>((resolve, reject) => {
+      const tx = this.db!.transaction([this.klineStoreName], "readonly");
+      const store = tx.objectStore(this.klineStoreName);
+      const req = store.get(symbol);
+
+      req.onsuccess = () => {
         resolve(req.result?.candles ?? []);
-        };
-        req.onerror = () => reject(req.error);
+      };
+      req.onerror = () => reject(req.error);
     });
+
+    this.pendingRequests.set(symbol, promise);
+
+    // Clean up after request completes
+    promise.finally(() => {
+      this.pendingRequests.delete(symbol);
+    });
+
+    return promise;
   }
 
   async getFirstTimestamps(): Promise<number[]> {
     await this.init();
 
     return new Promise((resolve, reject) => {
-        const tx = this.db!.transaction([this.klineStoreName], "readonly");
-        const store = tx.objectStore(this.klineStoreName);
+      const tx = this.db!.transaction([this.klineStoreName], "readonly");
+      const store = tx.objectStore(this.klineStoreName);
+      const req = store.openCursor();
 
-        const req = store.openCursor();
+      req.onsuccess = (event: any) => {
+        const cursor = event.target.result;
+        if (cursor) {
+          const candles: CandleEntry[] = cursor.value.candles ?? [];
+          resolve(candles.map(c => c.openTime));
+        } else {
+          resolve([]);
+        }
+      };
 
-        req.onsuccess = (event: any) => {
-            const cursor = event.target.result;
-            if (cursor) {
-                const candles: CandleEntry[] = cursor.value.candles ?? [];
-                // map all candles to openTime
-                resolve(candles.map(c => c.openTime));
-            } else {
-                resolve([]); // store is empty
-            }
-        };
-
-        req.onerror = () => reject(req.error);
+      req.onerror = () => reject(req.error);
     });
   }
 
   async getPositions(): Promise<CandleEntry[]> {
     await this.init();
 
-    // Cache this or materialize once at startup
     return new Promise<CandleEntry[]>((resolve, reject) => {
-        const tx = this.db!.transaction([this.klineStoreName], "readonly");
-        const store = tx.objectStore(this.klineStoreName);
-        const result: CandleEntry[] = [];
+      const tx = this.db!.transaction([this.klineStoreName], "readonly");
+      const store = tx.objectStore(this.klineStoreName);
+      const result: CandleEntry[] = [];
 
-        const req = store.openCursor();
-        req.onsuccess = (event: any) => {
-            const cursor = event.target.result;
-            if (cursor) {
-                const candles: CandleEntry[] = cursor.value.candles ?? [];
-                const matching = candles.filter(c => c.side !== "" && c.slPrice > 0 && c.tpPrice > 0);
-                result.push(...matching);
-                cursor.continue();
-            } else {
-                resolve(result);
-            }
-        };
+      const req = store.openCursor();
+      req.onsuccess = (event: any) => {
+        const cursor = event.target.result;
+        if (cursor) {
+          const candles: CandleEntry[] = cursor.value.candles ?? [];
+          const matching = candles.filter(c => c.side !== "" && c.slPrice > 0 && c.tpPrice > 0);
+          result.push(...matching);
+          cursor.continue();
+        } else {
+          resolve(result);
+        }
+      };
 
-        req.onerror = () => reject(req.error);
+      req.onerror = () => reject(req.error);
     });
   }
 
@@ -209,30 +197,29 @@ class KlineDbUtility {
     await this.init();
 
     if (symbol) {
-        const candles = await this.getKlines(symbol);
-        return candles.filter(c => c.openTime === timestamp);
+      const candles = await this.getKlines(symbol);
+      return candles.filter(c => c.openTime === timestamp);
     }
 
-    // Cache this or materialize once at startup
     return new Promise<CandleEntry[]>((resolve, reject) => {
-        const tx = this.db!.transaction([this.klineStoreName], "readonly");
-        const store = tx.objectStore(this.klineStoreName);
-        const result: CandleEntry[] = [];
+      const tx = this.db!.transaction([this.klineStoreName], "readonly");
+      const store = tx.objectStore(this.klineStoreName);
+      const result: CandleEntry[] = [];
 
-        const req = store.openCursor();
-        req.onsuccess = (event: any) => {
-            const cursor = event.target.result;
-            if (cursor) {
-                const candles: CandleEntry[] = cursor.value.candles ?? [];
-                const matching = candles.filter(c => c.symbol == symbol && c.openTime === timestamp);
-                result.push(...matching);
-                cursor.continue();
-            } else {
-                resolve(result);
-            }
-        };
+      const req = store.openCursor();
+      req.onsuccess = (event: any) => {
+        const cursor = event.target.result;
+        if (cursor) {
+          const candles: CandleEntry[] = cursor.value.candles ?? [];
+          const matching = candles.filter(c => c.symbol == symbol && c.openTime === timestamp);
+          result.push(...matching);
+          cursor.continue();
+        } else {
+          resolve(result);
+        }
+      };
 
-        req.onerror = () => reject(req.error);
+      req.onerror = () => reject(req.error);
     });
   }
 }
