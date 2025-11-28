@@ -1,4 +1,4 @@
-import { type FuturesSymbol } from "@/core/interfaces";
+import { type CandleEntry, type FuturesSymbol } from "@/core/interfaces";
 import { defineStore } from "pinia";
 import { ref } from "vue";
 
@@ -10,6 +10,7 @@ export const useChocoMintoStore = defineStore('choco-minto-store', () => {
     const startingTimeStamp = ref(0);
     const endingTimeStamp = ref(0)
     const marginBalance = ref(0)
+    const memoryStore: Record<string, CandleEntry[]> = {};
 
     // --- Actions ----
     function splitFutureSymbols(batches: number): FuturesSymbol[][] {
@@ -32,6 +33,7 @@ export const useChocoMintoStore = defineStore('choco-minto-store', () => {
     }
 
     return ({
+        memoryStore,
         futureSymbols,
         isManualSimulation,
         startingTimeStamp,

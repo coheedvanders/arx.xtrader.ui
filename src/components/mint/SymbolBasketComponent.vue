@@ -283,7 +283,7 @@ async function updateCandleEntryWithLastCandle(symbol:string){
     entryCandle.support = support;
     entryCandle.resistance = resistance;
 
-    await klineDbUtility.insertNewKline(symbol, entryCandle)
+    //await klineDbUtility.insertNewKline(symbol, entryCandle)
 
     await SimulationUtility.markPositionEntries(
         props.margin,
@@ -296,7 +296,7 @@ async function updateCandleEntryWithLastCandle(symbol:string){
         pastKlineEntries.length - 1,
         chocoMintoStore.startingTimeStamp);
 
-    klineDbUtility.initializeKlineData(symbol,pastKlineEntries);
+    //klineDbUtility.initializeKlineData(symbol,pastKlineEntries);
 
     var prevKlineEntry = pastKlineEntries[pastKlineEntries.length - 1];
 

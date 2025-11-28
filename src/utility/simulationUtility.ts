@@ -66,11 +66,11 @@ export class SimulationUtility {
             var movingCandles = candles.slice(0, i + 1);
             var candle = candles[i];
 
-            if(candle.openTime < startingTimeStamp && candle.closeTime > startingTimeStamp){
-                candle.side = "STARTING_POINT"
-            }
+            // if(candle.openTime < startingTimeStamp && candle.closeTime > startingTimeStamp){
+            //     candle.side = "STARTING_POINT"
+            // }
 
-            if(candle.openTime < startingTimeStamp) continue;
+            // if(candle.openTime < startingTimeStamp) continue;
             
             var prevCandle = candles[i - 1];
 
@@ -194,7 +194,7 @@ export class SimulationUtility {
                             candle.status = "LONG_LOSS"
                             openPosition.status = "LOSS"
                             _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,openPosition.slPrice, "BUY", _maxLeverage);
-                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(margin,_estimatedPnlPercentage, _maxLeverage);
+                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
                             
                             openPosition.pnl = _estimatedPnl;
 
@@ -203,7 +203,7 @@ export class SimulationUtility {
                             candle.status = "LONG_WON"
                             openPosition.status = "WON"
                             _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,openPosition.tpPrice, "BUY", _maxLeverage);
-                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(margin,_estimatedPnlPercentage, _maxLeverage);
+                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
                             
                             openPosition.pnl = _estimatedPnl;
 
@@ -212,7 +212,7 @@ export class SimulationUtility {
                             candle.status = "OPEN"
 
                             _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,candle.close, "BUY", _maxLeverage);
-                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(margin,_estimatedPnlPercentage, _maxLeverage);
+                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
                             
                             openPosition.pnl = _estimatedPnl;
                         }
@@ -230,7 +230,7 @@ export class SimulationUtility {
                             candle.status = "SHORT_LOSS"
                             openPosition.status = "LOSS"
                             _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,openPosition.slPrice, "SELL", _maxLeverage);
-                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(margin,_estimatedPnlPercentage, _maxLeverage);
+                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
                             
                             openPosition.pnl = _estimatedPnl;
                             
@@ -240,7 +240,7 @@ export class SimulationUtility {
                             candle.status = "SHORT_WON"
                             openPosition.status = "WON"
                             _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,openPosition.tpPrice, "SELL", _maxLeverage);
-                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(margin,_estimatedPnlPercentage, _maxLeverage);
+                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
                             
                             openPosition.pnl = _estimatedPnl;
 
@@ -249,7 +249,7 @@ export class SimulationUtility {
                             candle.status = "OPEN"
 
                             _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,candle.close, "SELL", _maxLeverage);
-                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(margin,_estimatedPnlPercentage, _maxLeverage);
+                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
                             
                             openPosition.pnl = _estimatedPnl;
                         }
@@ -404,6 +404,7 @@ export class SimulationUtility {
                                     candle.candleData.conditionMet = "LONG_3"
 
                                     candle.side = "LONG"
+                                    candle.margin = margin * 2
                                     candle.slPrice = candle.priceZone.mid - (atr)
 
                                     //candle.tpPrice = candle.close + (atr * 1.5)
@@ -460,6 +461,7 @@ export class SimulationUtility {
                             candle.candleData.conditionMet = "SHORT_1"
 
                             candle.side = "SHORT"
+                            candle.margin = margin  * 3
                             candle.slPrice = candle.priceZone.upper + (atr)
                             candle.tpPrice = lowerZoneEqualizerPrice
                         }else if(shortEntry2){
@@ -467,6 +469,7 @@ export class SimulationUtility {
                             candle.candleData.conditionMet = "SHORT_2"
 
                             candle.side = "SHORT"
+                            candle.margin = margin  * 2
                             candle.slPrice = candle.priceZone.upper + (atr)
                             candle.tpPrice = lowerZoneEqualizerPrice
                         }else if(shortEntry4){
@@ -507,6 +510,7 @@ export class SimulationUtility {
                                     candle.candleData.conditionMet = "SHORT_3"
 
                                     candle.side = "SHORT"
+                                    candle.margin = margin * 5
                                     candle.slPrice = candle.priceZone.upper + (atr * 1.5)
                                     candle.tpPrice = candle.priceZone.mid + (atr * 0.25)
                                 }
@@ -531,7 +535,10 @@ export class SimulationUtility {
                                 }
                             }
 
-                            candle.margin = margin
+                            if(candle.margin == 0){
+                                candle.margin = margin
+                            }
+
                             candle.leverage = _maxLeverage
                             candle.entryFee = PnlUtility.calculateTakerFee(margin,_maxLeverage)
                         }
