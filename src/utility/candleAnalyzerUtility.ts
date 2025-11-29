@@ -29,6 +29,7 @@ class CandlestickAnalyzer {
         : topWickPercentage + bodyPercentage;
 
     const changePercentage = ((c - o) / o) * 100;
+    const absCandleSize = Math.abs(((h - l) / l) * 100);
 
     const volumeChangePercentage = parseFloat(
         (((candle.volume - previousCandle.volume) / previousCandle.volume) * 100).toFixed(2)
@@ -89,7 +90,8 @@ class CandlestickAnalyzer {
         priceMove:"",
         pastZoneOverStatePriceReaction: "",
         spaceTakenInZoneLevel: 0,
-        pastCandleAverageChange: 0
+        pastCandleAverageChange: 0,
+        absCandleSize
     };
   }
 

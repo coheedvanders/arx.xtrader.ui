@@ -356,29 +356,30 @@ export class SimulationUtility {
 
 
                         if(longEntry1){
-                            // if(priceZones.length >= 2){
-                            //     var prevPriceZone = priceZones[priceZones.length - 2];
-                            //     if(prevPriceZone.priceZone!.mid > activePriceZone!.mid
-                            //         && prevPriceZone.priceZone!.upper > activePriceZone!.upper
-                            //     ){
-                            //         candle.candleData.isLongPotential = true
-                            //         candle.candleData.conditionMet = "LONG_1"
+                            if(priceZones.length >= 2){
+                                var prevPriceZone = priceZones[priceZones.length - 2];
+                                if(prevPriceZone.priceZone!.mid > activePriceZone!.mid
+                                    && prevPriceZone.priceZone!.upper > activePriceZone!.upper
+                                ){
+                                    candle.candleData.isLongPotential = true
+                                    candle.candleData.conditionMet = "LONG_1"
 
-                            //         candle.side = "LONG"
-                            //         candle.slPrice = candle.support.lower - (atr)
-                            //         candle.tpPrice = candle.priceZone.mid
-                            //     }
-                            // }
-                            // else{
-                            //     if(candle.candleData.change_percentage_v > 90){
-                            //         candle.candleData.isLongPotential = true
-                            //         candle.candleData.conditionMet = "LONG_1"
+                                    candle.side = "LONG"
+                                    candle.margin = margin * 2
+                                    candle.slPrice = candle.support.lower - (atr)
+                                    candle.tpPrice = candle.priceZone.mid
+                                }
+                            }
+                            else{
+                                if(candle.candleData.change_percentage_v > 90){
+                                    candle.candleData.isLongPotential = true
+                                    candle.candleData.conditionMet = "LONG_1"
 
-                            //         candle.side = "LONG"
-                            //         candle.slPrice = candle.support.lower - (atr)
-                            //         candle.tpPrice = candle.priceZone.mid
-                            //     }
-                            // }
+                                    candle.side = "LONG"
+                                    candle.slPrice = candle.support.lower - (atr)
+                                    candle.tpPrice = candle.priceZone.mid
+                                }
+                            }
                         } else if(longEntry2){
                             // candle.candleData.isLongPotential = true
                             // candle.candleData.conditionMet = "LONG_1"
@@ -387,50 +388,47 @@ export class SimulationUtility {
                             // candle.slPrice = candle.support.lower - (atr)
                             // candle.tpPrice = candle.priceZone.upper
                         } else if(longEntry3){
-                            candle.candleData.isLongPotential = true
-                            candle.candleData.conditionMet = "LONG_3"
+                            // candle.candleData.isLongPotential = true
+                            // candle.candleData.conditionMet = "LONG_3"
 
-                            candle.side = "LONG"
-                            candle.slPrice = candle.support.lower - (atr)
-                            candle.tpPrice = candle.priceZone.upper
+                            // candle.side = "LONG"
+                            // candle.slPrice = candle.support.lower - (atr)
+                            // candle.tpPrice = candle.priceZone.upper
                         } else if(longEntry4){
-                            if(priceZones.length >= 2){
-                                var prevPriceZone = priceZones[priceZones.length - 2];
-                                var isPrevPriceZoneEmaInUpperZone = movingCandles
-                                .filter(c => 
-                                    c.priceZone == prevPriceZone.priceZone 
-                                    && c.candleData 
-                                    && c.priceZone 
-                                    && c.candleData.ema200 < c.priceZone.upper 
-                                    && c.candleData.ema200 > c.priceZone.mid
-                                ).length > 15
+                            // if(priceZones.length >= 2){
+                            //     var prevPriceZone = priceZones[priceZones.length - 2];
+                            //     var isPrevPriceZoneEmaInUpperZone = movingCandles
+                            //     .filter(c => 
+                            //         c.priceZone == prevPriceZone.priceZone 
+                            //         && c.candleData 
+                            //         && c.priceZone 
+                            //         && c.candleData.ema200 < c.priceZone.upper 
+                            //         && c.candleData.ema200 > c.priceZone.mid
+                            //     ).length > 15
 
-                                if(isPrevPriceZoneEmaInUpperZone){
-                                    candle.candleData.isLongPotential = true
-                                    candle.candleData.conditionMet = "LONG_4"
+                            //     if(isPrevPriceZoneEmaInUpperZone){
+                            //         candle.candleData.isLongPotential = true
+                            //         candle.candleData.conditionMet = "LONG_4"
 
-                                    candle.side = "LONG"
-                                    candle.margin = margin * 5
-                                    candle.slPrice = candle.priceZone.mid - (atr)
+                            //         candle.side = "LONG"
+                            //         candle.margin = margin * 5
+                            //         candle.slPrice = candle.priceZone.mid - (atr)
 
-                                    //candle.tpPrice = candle.close + (atr * 1.5)
-                                }
-                            }
+                            //         //candle.tpPrice = candle.close + (atr * 1.5)
+                            //     }
+                            // }
                         } else if(longEntry5){
-                            candle.candleData.isLongPotential = true
-                            candle.candleData.conditionMet = "LONG_5"
+                            // candle.candleData.isLongPotential = true
+                            // candle.candleData.conditionMet = "LONG_5"
 
-                            candle.side = "LONG"
-                            candle.margin = margin * 2
+                            // candle.side = "LONG"
+                            // candle.margin = margin * 2
 
-                            if(candle.candleData.ema200 > candle.priceZone.mid){
-                                candle.slPrice = candle.priceZone.mid - (atr)
-                            }else{
-                                candle.slPrice = candle.candleData.ema200 - (atr)
-                            }
-
-                            targetTpRoi = 3;
-                            //candle.tpPrice = candle.close + (atr * 1.5)
+                            // if(candle.candleData.ema200 > candle.priceZone.mid){
+                            //     candle.slPrice = candle.priceZone.mid - (atr)
+                            // }else{
+                            //     candle.slPrice = candle.candleData.ema200 - (atr)
+                            // }
                         }
 
 
@@ -499,13 +497,13 @@ export class SimulationUtility {
                             candle.slPrice = candle.priceZone.upper + (atr)
                             candle.tpPrice = lowerZoneEqualizerPrice
                         }else if(shortEntry2){
-                            candle.candleData.isShortPotential = true
-                            candle.candleData.conditionMet = "SHORT_2"
+                            // candle.candleData.isShortPotential = true
+                            // candle.candleData.conditionMet = "SHORT_2"
 
-                            candle.side = "SHORT"
-                            candle.margin = margin  * 5
-                            candle.slPrice = candle.priceZone.upper + (atr)
-                            candle.tpPrice = lowerZoneEqualizerPrice
+                            // candle.side = "SHORT"
+                            // candle.margin = margin  * 5
+                            // candle.slPrice = candle.priceZone.upper + (atr)
+                            // candle.tpPrice = lowerZoneEqualizerPrice
                         }else if(shortEntry4){
                             // candle.candleData.isShortPotential = true
                             // candle.candleData.conditionMet = "SHORT_4"
@@ -539,8 +537,6 @@ export class SimulationUtility {
                                     candle.side = "SHORT"
                                     candle.margin = margin * 5
                                     candle.slPrice = candle.candleData.ema200 + (atr)
-
-                                    //candle.tpPrice = candle.close + (atr * 1.5)
                                 }
                             }
                         }

@@ -212,6 +212,7 @@ export interface CandleData {
   pastZoneOverStatePriceReaction: string;
   spaceTakenInZoneLevel:number;
   pastCandleAverageChange:number;
+  absCandleSize: number;
 }
 
 
