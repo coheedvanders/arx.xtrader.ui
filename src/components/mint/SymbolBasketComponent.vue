@@ -333,9 +333,9 @@ async function updateCandleEntryWithLastCandle(symbol:string){
                     { tp: prevKlineEntry.tpPrice, sl: prevKlineEntry.slPrice },
                     currentCandleData,
                     prevKlineEntry.zoneAnalysis!,
-                    props.margin,
+                    prevKlineEntry.margin,
                     futureSymbol!.maxLeverage,
-                    PnlUtility.calculateTakerFee(props.margin,futureSymbol!.maxLeverage),
+                    PnlUtility.calculateTakerFee(prevKlineEntry.margin,futureSymbol!.maxLeverage),
                     prevKlineEntry.volumeAnalysis!,
                     pastKlineCandles[pastKlineCandles.length - 1].openTime,
                     pastVolumeAnalysis
@@ -353,9 +353,9 @@ async function updateCandleEntryWithLastCandle(symbol:string){
                     { tp: prevKlineEntry.tpPrice, sl: prevKlineEntry.slPrice },
                     currentCandleData,
                     prevKlineEntry.zoneAnalysis!,
-                    props.margin,
+                    prevKlineEntry.margin,
                     futureSymbol!.maxLeverage,
-                    PnlUtility.calculateTakerFee(props.margin,futureSymbol!.maxLeverage),
+                    PnlUtility.calculateTakerFee(prevKlineEntry.margin,futureSymbol!.maxLeverage),
                     prevKlineEntry.volumeAnalysis!,
                     pastKlineCandles[pastKlineCandles.length - 1].openTime,
                     pastVolumeAnalysis
