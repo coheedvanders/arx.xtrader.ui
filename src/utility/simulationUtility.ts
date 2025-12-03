@@ -508,7 +508,7 @@ export class SimulationUtility {
                             candle.side = "SHORT"
                             candle.margin = margin  * 5
                             candle.slPrice = candle.priceZone.upper + (atr)
-                            candle.tpPrice = lowerZoneEqualizerPrice
+                            candle.tpPrice = lowerZoneEqualizerPrice + (atr * 0.2)
                         }else if(shortEntry2){
                             candle.candleData.isShortPotential = true
                             candle.candleData.conditionMet = "SHORT_2"
@@ -516,7 +516,7 @@ export class SimulationUtility {
                             candle.side = "SHORT"
                             candle.margin = margin  * 5
                             candle.slPrice = candle.priceZone.upper + (atr)
-                            candle.tpPrice = lowerZoneEqualizerPrice
+                            candle.tpPrice = lowerZoneEqualizerPrice + (atr * 0.2)
                         }else if(shortEntry4){
                             // candle.candleData.isShortPotential = true
                             // candle.candleData.conditionMet = "SHORT_4"
