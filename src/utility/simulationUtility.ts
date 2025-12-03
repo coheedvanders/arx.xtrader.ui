@@ -362,14 +362,22 @@ export class SimulationUtility {
                                     && prevPriceZone.priceZone!.upper > activePriceZone!.upper
                                     && candle.candleData.side == 'bull'
                                     && prevCandle.candleData.strength_v > 80
+                                    && candle.close
                                 ){
                                     candle.candleData.isLongPotential = true
                                     candle.candleData.conditionMet = "LONG_1"
 
-                                    candle.side = "LONG"
+                                    
                                     candle.margin = margin * 2
                                     candle.slPrice = candle.support.lower - (atr)
-                                    candle.tpPrice = candle.priceZone.mid
+
+                                    if(candle.close > candle.priceZone.mid && candle.close < candle.priceZone.upper){
+                                        candle.side = "LONG"
+                                        candle.tpPrice = candle.priceZone.upper
+                                    }else if(candle.close < candle.priceZone.mid){
+                                        candle.side = "LONG"
+                                        candle.tpPrice = candle.priceZone.mid
+                                    }
                                 }
                             }
                             else{
