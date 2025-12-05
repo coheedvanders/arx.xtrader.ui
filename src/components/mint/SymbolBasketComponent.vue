@@ -315,7 +315,7 @@ async function updateCandleEntryWithLastCandle(symbol:string){
         breakthrough_resistance: e.breakthrough_resistance,
         breakthrough_support: e.breakthrough_support,
     }));
-    var currentCandleData = candleAnalyzer.analyzeCandlestick(pastKlineCandles,pastKlineCandles.length - 1,true,5)
+    
     const pastVolumeAnalysis = candleAnalyzer.analyzePastVolumes(pastKlineCandles, pastKlineCandles.length - 1, 6);
 
     var isPrevCandleTriggeredOpen = prevKlineEntry.status == "OPEN" && prevKlineEntry.tpPrice > 0 && prevKlineEntry.slPrice > 0
@@ -331,7 +331,7 @@ async function updateCandleEntryWithLastCandle(symbol:string){
                     { lower: prevKlineEntry.resistance!.lower, upper: prevKlineEntry.resistance!.upper },
                     prevKlineEntry.close,
                     { tp: prevKlineEntry.tpPrice, sl: prevKlineEntry.slPrice },
-                    currentCandleData,
+                    prevKlineEntry.candleData!,
                     prevKlineEntry.zoneAnalysis!,
                     prevKlineEntry.margin,
                     futureSymbol!.maxLeverage,
@@ -351,7 +351,7 @@ async function updateCandleEntryWithLastCandle(symbol:string){
                     { lower: prevKlineEntry.resistance!.lower, upper: prevKlineEntry.resistance!.upper },
                     prevKlineEntry.close,
                     { tp: prevKlineEntry.tpPrice, sl: prevKlineEntry.slPrice },
-                    currentCandleData,
+                    prevKlineEntry.candleData!,
                     prevKlineEntry.zoneAnalysis!,
                     prevKlineEntry.margin,
                     futureSymbol!.maxLeverage,

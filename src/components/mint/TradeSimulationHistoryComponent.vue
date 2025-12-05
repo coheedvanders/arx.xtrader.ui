@@ -25,6 +25,7 @@
                 <th>PNL (less exit fee)</th>
                 <th>PNL % (H/L)</th>
                 <th>Duration</th>
+                <th>Condition</th>
                 <th>Details</th>
               </tr>
             </thead>
@@ -49,6 +50,7 @@
                     {{ log.pnlPercentage.lowest.toFixed(2) }}
                   </td>
                   <td>{{ formatDuration(log.duration) }}</td>
+                  <td>{{ log.currentCandleData.conditionMet }}</td>
                   <td>
                     <button @click="toggleDetails(log.id!)">View</button>
                   </td>
@@ -250,7 +252,7 @@ function copyLogJson(log: TradeLog) {
   background: #fff;
   color: #222;
   width: 90%;
-  max-width: 80vw;
+  max-width: 90vw;
   max-height: 85vh;
   overflow: hidden;
   border-radius: 10px;
