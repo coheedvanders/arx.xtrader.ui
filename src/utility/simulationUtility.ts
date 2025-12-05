@@ -500,6 +500,16 @@ export class SimulationUtility {
                         && candle.overboughSoldAnalysis.extremeLevel == "oversold"
                         && priceZoneInhabitantCount < 10
 
+                        var shortEntry6 = prevCandle.close > prevCandle.priceZone.upper
+                        && prevCandle.breakthrough_resistance
+                        && prevCandle.resistance.upper > prevCandle.priceZone.upper
+                        && prevCandle.open < prevCandle.priceZone.upper
+                        && prevCandle.candleData.volumeSpike
+                        && candle.close < candle.priceZone.upper
+                        && candle.overboughSoldAnalysis.extremeLevel == "oversold"
+                        && candle.candleData.volumeSpike
+                        && candle.candleData.priceMove == "dragged_down"
+
 
                         if(shortEntry1){
                             candle.candleData.isShortPotential = true
@@ -552,6 +562,16 @@ export class SimulationUtility {
                                     candle.slPrice = candle.candleData.ema200 + (atr)
                                 }
                             }
+                        }else if(shortEntry6){
+                            if(closeAbsDistanceToMid > 1){
+                                candle.candleData.isLongPotential = true
+                                candle.candleData.conditionMet = "SHORT_5"
+
+                                candle.side = "SHORT"
+                                candle.margin = margin * 5
+                                candle.slPrice = candle.high + (atr)
+                                candle.tpPrice = candle.priceZone.lower
+                            }
                         }
 
                         if(priceZones.length >= 2){
@@ -582,7 +602,7 @@ export class SimulationUtility {
                                 }
                             }
                         }
-                                                
+
                     }
                     //======================================================================
                     if (!openPosition) {
