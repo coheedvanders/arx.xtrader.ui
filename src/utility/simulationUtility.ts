@@ -319,9 +319,11 @@ export class SimulationUtility {
                             && c.overboughSoldAnalysis.extremeLevel == "oversold" 
                             && c.priceZone 
                             && c.close < c.priceZone?.lower
+                            && c.candleData.change_percentage_v > -4
                         ).length == 2
                         && candle.candleData.side == "bull"
                         && candle.close < candle.priceZone.mid
+                        && candle.candleData.change_percentage_v >= 0.2
 
                         var longEntry4 = prevCandle.close > prevCandle.candleData.ema200
                         && prevCandle.open < prevCandle.candleData.ema200
@@ -349,7 +351,8 @@ export class SimulationUtility {
                                     candle.candleData.conditionMet = "LONG_0"
 
                                     candle.side = "LONG"
-                                    candle.slPrice = candle.open - (atr * 0.2)
+                                    candle.margin = margin * 3
+                                    candle.slPrice = candle.open - (atr * 0.5)
                                     candle.tpPrice = candle.priceZone.mid
                                 }
                             }
@@ -408,8 +411,8 @@ export class SimulationUtility {
                             candle.candleData.conditionMet = "LONG_3"
 
                             candle.side = "LONG"
-                            candle.margin = margin * 2.5
-                            candle.slPrice = candle.support.lower - (atr)
+                            candle.margin = margin * 4
+                            candle.slPrice = candle.support.lower - (atr * 0.5)
                             candle.tpPrice = candle.priceZone.upper
                         } else if(longEntry4){
                             if(priceZones.length >= 2){
@@ -566,7 +569,7 @@ export class SimulationUtility {
 
                                     candle.side = "SHORT"
                                     candle.margin = margin * 5
-                                    candle.slPrice = candle.candleData.ema200 + (atr)
+                                    candle.slPrice = candle.candleData.ema200 + (atr * 0.5)
                                 }
                             }
                         }else if(shortEntry6){
