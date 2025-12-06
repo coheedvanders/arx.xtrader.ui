@@ -184,18 +184,24 @@ static getPreviousSessionOverStatePriceReaction(movingCandles: CandleEntry[], ov
 }
 
 static calculateEMA(candlesList: Candle[], period: number): number { 
-        if (candlesList.length < period) return 0 
-        const k = 2 / (period + 1) 
-        let ema = 0 
-        for (let i = 0; i < period; i++) { 
-            ema += candlesList[i].close 
-        } 
-        ema = ema / period 
-        for (let i = period; i < candlesList.length; i++) { 
-            ema = (candlesList[i].close * k) + (ema * (1 - k)) 
-        } 
-        return ema 
-    }
+    if (candlesList.length < period) return 0 
+    
+    const k = 2 / (period + 1) 
+    
+    // Start with SMA of first `period` candles
+    let ema = 0 
+    for (let i = 0; i < period; i++) { 
+        ema += candlesList[i].close 
+    } 
+    ema = ema / period 
+    
+    // Apply EMA formula to ALL candles from index `period` onwards to converge
+    for (let i = period; i < candlesList.length; i++) { 
+        ema = (candlesList[i].close * k) + (ema * (1 - k)) 
+    } 
+    
+    return ema 
+}
 
 static detectOverState(movingCandles: any[], windowSize = 30, threshold = 2) {
     if (movingCandles.length < windowSize + 1) return "";

@@ -1027,7 +1027,7 @@ const closeModal = () => {
 
 const formatValue = (value: any): string => {
   if (typeof value === 'number') {
-    return value.toFixed(4)
+    return value.toString()
   }
   if (typeof value === 'object') {
     return JSON.stringify(value)
