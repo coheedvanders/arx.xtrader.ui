@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.67</label>
+        <label>v1.68</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
@@ -268,7 +268,7 @@ async function initializeFutureSymbols(){
     }
 
     //chocoMintoStore.futureSymbols = chocoMintoStore.futureSymbols.slice(0,24);
-    futureSymbolBatches.value = chocoMintoStore.splitFutureSymbols(5);
+    futureSymbolBatches.value = chocoMintoStore.splitFutureSymbols(6);
 }
 
 async function onNewCandle(candle:Candle){
