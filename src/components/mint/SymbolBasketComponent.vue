@@ -1,7 +1,6 @@
 <template>
     <CardComponent class="pa-sm mr-sm">
         <CardBodyComponent>
-            {{ calculatedMaxOpenPosition }} - {{ chocoMintoStore.marginBalance }}
             <ProgressBarComponent v-if="progressCounter > 0" :max="futureSymbols.length" :value="progressCounter" />
             <div 
                 v-for="futureSymbol in futureSymbols" 
@@ -103,9 +102,9 @@ async function initializeFutureSymbolData(){
         progressCounter.value = i + 1;
 
         var futureSymbol = props.futureSymbols[i];
-        futureSymbol.status = "processing. . ."
+        futureSymbol.status = "processing"
 
-        //if(futureSymbol.symbol != "HAEDALUSDT") continue;
+        //if(futureSymbol.symbol != "FARTCOINUSDT") continue;
 
         await runPositionEntry(futureSymbol.symbol, futureSymbol.maxLeverage, true);
         
@@ -242,7 +241,7 @@ async function onNewCandleSpawed(){
 async function updateCandleEntryWithLastCandle(symbol:string){
     var futureSymbol = props.futureSymbols.find(f => f.symbol == symbol)!;
 
-    futureSymbol.status = "scanning. . ."
+    futureSymbol.status = "scanning"
 
     var pastKlineEntries = await klineDbUtility.getKlines(symbol);
     if(pastKlineEntries.length < props.maxInitCandles - 2)
