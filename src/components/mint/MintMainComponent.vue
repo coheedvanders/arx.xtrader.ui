@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.68</label>
+        <label>v1.69</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
@@ -67,7 +67,7 @@
         <div class="text-center" v-if="UI_STATE_FORCE_CLOSE_MESSAGE != ''">
             {{ UI_STATE_FORCE_CLOSE_MESSAGE }}
         </div>
-        <div v-for="(futureSymbolBatch,index) in futureSymbolBatches" class="col-lg-2 col-md-2">
+        <div v-for="(futureSymbolBatch,index) in futureSymbolBatches" class="col-lg-3 col-md-3">
             <SymbolBasketComponent 
                 :key="basketKey"
                 :future-symbols="futureSymbolBatch" 
@@ -268,7 +268,7 @@ async function initializeFutureSymbols(){
     }
 
     //chocoMintoStore.futureSymbols = chocoMintoStore.futureSymbols.slice(0,24);
-    futureSymbolBatches.value = chocoMintoStore.splitFutureSymbols(6);
+    futureSymbolBatches.value = chocoMintoStore.splitFutureSymbols(4);
 }
 
 async function onNewCandle(candle:Candle){

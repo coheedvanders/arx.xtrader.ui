@@ -621,12 +621,16 @@ export class SimulationUtility {
                                 }
                             }
                         }else if(shortEntry6){
-                            if(closeAbsDistanceToMid > 1){
+                            var closeAbsDistanceToLower = Math.abs(((candle.close - candle.priceZone.lower) / candle.priceZone.lower) * 100)
+                            if(closeAbsDistanceToMid > 1 
+                                && closeAbsDistanceToLower > 1
+                                && candle.close > candle.priceZone.lower
+                            ){
                                 candle.candleData.isLongPotential = true
                                 candle.candleData.conditionMet = "SHORT_6"
 
                                 candle.side = "SHORT"
-                                candle.margin = margin * 5
+                                candle.margin = margin * 6
                                 candle.slPrice = candle.high + (atr)
                                 candle.tpPrice = candle.priceZone.lower
                             }
@@ -642,11 +646,10 @@ export class SimulationUtility {
                             if(candle.candleData.side == "bull" 
                                 && candle.close < candle.candleData.ema200
                                 && candle.candleData.change_percentage_v > 1
-                                //&& candle.candleData.strength_v > 70
                             ){
                                 candle.candleData.isLongPotential = true
                                 candle.candleData.conditionMet = "SHORT_7"
-                                
+
                                 candle.side = "SHORT"
                                 candle.margin = margin * 5
                                 candle.slPrice = candle.candleData.ema200 + (atr * 0.5)

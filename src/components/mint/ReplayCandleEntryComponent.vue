@@ -339,7 +339,7 @@ async function markAllEntries(entryIndex: number) {
                             { tp: lastCandle.tpPrice, sl: lastCandle.slPrice },
                             lastCandle.candleData!,
                             lastCandle.zoneAnalysis!,
-                            props.margin,
+                            lastCandle.margin,
                             futureSymbol!.maxLeverage,
                             PnlUtility.calculateTakerFee(props.margin, futureSymbol!.maxLeverage),
                             lastCandle.volumeAnalysis!,
