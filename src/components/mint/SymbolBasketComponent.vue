@@ -327,7 +327,7 @@ async function updateCandleEntryWithLastCandle(symbol:string){
                     OrderMakerUtility.openOrder(
                         symbol,
                         prevKlineEntry.margin,
-                        prevKlineEntry.side,
+                        "SELL",
                         prevKlineEntry.tpPrice,
                         prevKlineEntry.slPrice);
                 }else{
@@ -356,7 +356,7 @@ async function updateCandleEntryWithLastCandle(symbol:string){
                     OrderMakerUtility.openOrder(
                         symbol,
                         prevKlineEntry.margin,
-                        prevKlineEntry.side,
+                        "BUY",
                         prevKlineEntry.tpPrice,
                         prevKlineEntry.slPrice);
                 }else{

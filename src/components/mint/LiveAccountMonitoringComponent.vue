@@ -15,7 +15,7 @@
         <div class="col-lg-4 col-md-4">
             <CardComponent class="text-center">
                 <div>Margin</div>
-                <div v-if="balanceResult">{{ balanceResult.unrealized_pnl + balanceResult.unrealized_pnl }}</div>
+                <div v-if="balanceResult">{{ balanceResult.balance + balanceResult.unrealized_pnl }}</div>
             </CardComponent>
         </div>
     </div>
