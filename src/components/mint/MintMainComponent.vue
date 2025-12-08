@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.69</label>
+        <label>v1.69B</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
@@ -12,10 +12,17 @@
     </div>
 
     <div class="pa-md">
-        <SimulatedPositionSummaryComponent :margin="MARGIN" :starting-balance="STARTING_BALANCE" />
+        <LiveAccountMonitoringComponent v-if="chocoMintoStore.isLive" />
+        <SimulatedPositionSummaryComponent v-else :margin="MARGIN" :starting-balance="STARTING_BALANCE" />
     </div>
 
     <div class="pa-md text-left">
+        <div>
+            <CheckboxComponent v-model="chocoMintoStore.isLive">
+                Is Live
+            </CheckboxComponent>
+        </div>
+        
         <ButtonComponent v-if="!isBotEnabled" @click="startChoco" color="primary" rounded class="mr-sm">start choco</ButtonComponent>
         <ButtonComponent v-else @click="isBotEnabled = false" color="danger" rounded class="mr-sm">stop choco</ButtonComponent>
 
@@ -31,6 +38,12 @@
         <div>{{ (new Date(botStartOn)).toLocaleString() }}</div>
         <div>{{ (new Date(chocoMintoStore.startingTimeStamp)).toLocaleString() }}</div>
         <div>{{ (new Date(chocoMintoStore.endingTimeStamp)).toLocaleString() }}</div>
+
+        <div class="divider"></div>
+        <div v-if="UI_SYMBOL_OF_INTEREST_MESAGE">{{ UI_SYMBOL_OF_INTEREST_MESAGE }}</div>
+        <div v-for="sym in symbolsOfInterest" @click="showEntryHistoryModal(sym)">
+            {{ sym }}
+        </div>
 
         <CardComponent v-if="chocoMintoStore.isManualSimulation">
             <CardHeaderComponent>
@@ -54,11 +67,6 @@
                 <div>Estimated Maintenance Margin: {{ estimatedMarginBalance.toFixed(2) }} USDT</div>
                 <div>Estimated Margin Used: {{ estimatedMarginUsed.toFixed(2) }}</div>
                 <div>Estimated Balance: {{ estimatedBalance.toFixed(2) }} USDT</div>
-                <div class="divider"></div>
-                <div v-if="UI_SYMBOL_OF_INTEREST_MESAGE">{{ UI_SYMBOL_OF_INTEREST_MESAGE }}</div>
-                <div v-for="sym in symbolsOfInterest" @click="showEntryHistoryModal(sym)">
-                    {{ sym }}
-                </div>
             </CardBodyComponent>
         </CardComponent>
     </div>
@@ -117,6 +125,7 @@ import SymbolBasketComponent from './SymbolBasketComponent.vue';
 import { CommonHelperUtility } from '@/utility/CommonHelperUtility';
 import SimulatedPositionSummaryComponent from './SimulatedPositionSummaryComponent.vue';
 import ButtonComponent from '../shared/form/ButtonComponent.vue';
+import CheckboxComponent from '../shared/form/CheckboxComponent.vue';
 import CardComponent from '../shared/card/CardComponent.vue';
 import CardHeaderComponent from '../shared/card/CardHeaderComponent.vue';
 import CardBodyComponent from '../shared/card/CardBodyComponent.vue';
@@ -131,6 +140,7 @@ import { BinanceMarginUtility } from '@/utility/binanceMarginUtility';
 import CandleEntryHistoryComponent from './CandleEntryHistoryComponent.vue';
 import ReplayCandleEntryComponent from './ReplayCandleEntryComponent.vue';
 import { useNotificationStore } from '@/stores/notificationStore';
+import LiveAccountMonitoringComponent from './LiveAccountMonitoringComponent.vue';
 
 const chocoMintoStore = useChocoMintoStore();
 const notificationStore = useNotificationStore();
@@ -308,11 +318,17 @@ async function runStats(){
         //     symbolsOfInterest.value.push(symbol);
         // }
 
-        //GET HIGHER LOSSES
-        var countHits = candles.filter(c => c.pnl < -3).length;
-        if(countHits > 1){
+        //==GET POSITION OPENED AFTER LIVE
+        var countHits = candles.filter(c => c.openTime >= 1765112400000 && (c.side == "SHORT" || c.side == "LONG")).length;
+        if(countHits >= 1){
             symbolsOfInterest.value.push(symbol);
         }
+
+        //GET HIGHER LOSSES
+        // var countHits = candles.filter(c => c.pnl < -3).length;
+        // if(countHits > 1){
+        //     symbolsOfInterest.value.push(symbol);
+        // }
 
         //==GET moderate_buy / strong_buy
         // var countHits = candles.filter(c => c.priceZoneInteraction && (c.priceZoneInteraction.breakoutStartScore?.recommendation == 'strong_buy')).length;

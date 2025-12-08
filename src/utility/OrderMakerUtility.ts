@@ -1,3 +1,5 @@
+import type { BalanceResponse } from "@/core/interfaces"
+
 export class OrderMakerUtility {
     static async getMaxLeverage(symbol: string): Promise<number> {
         try {
@@ -75,5 +77,34 @@ export class OrderMakerUtility {
         }
 
         throw lastError;
+    }
+
+    static async openOrder(symbol:string,margin:number,side:string,tp:number,sl:number) {
+        const res = await fetch(import.meta.env.VITE_ORDER_MAKER_API + "/open-order", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                symbol: symbol,
+                side: side,
+                cost: margin.toString(),
+                tp_roi: "0",
+                sl_roi: "0",
+                tp: tp.toString(),
+                sl: sl.toString()
+            })
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+    }
+
+    static async getBalance(): Promise<BalanceResponse> {
+        const res = await fetch(import.meta.env.VITE_ORDER_MAKER_API + "/get-bal", {
+            method: "GET"
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data: BalanceResponse = await res.json();
+        return data;
     }
 }

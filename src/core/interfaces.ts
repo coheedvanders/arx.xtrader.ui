@@ -18,6 +18,11 @@ export interface ReactionData {
     volume_increased: boolean;
 }
 
+export interface BalanceResponse {
+  balance: number;
+  mbx_weight: number;
+  unrealized_pnl: number;
+}
 export interface PriceZoneInteraction {
     touchCount: number;              // How many times price touched the zone boundary
     bounceCount: number;             // How many times price bounced off boundaries

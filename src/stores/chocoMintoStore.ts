@@ -5,6 +5,7 @@ import { ref } from "vue";
 export const useChocoMintoStore = defineStore('choco-minto-store', () => {
 
     // --- State ---
+    const isLive = ref(false);
     const futureSymbols = ref<FuturesSymbol[]>([])
     const isManualSimulation = ref(false);
     const startingTimeStamp = ref(0);
@@ -33,6 +34,7 @@ export const useChocoMintoStore = defineStore('choco-minto-store', () => {
     }
 
     return ({
+        isLive,
         memoryStore,
         futureSymbols,
         isManualSimulation,

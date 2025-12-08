@@ -323,42 +323,60 @@ async function updateCandleEntryWithLastCandle(symbol:string){
         var openPositions = await tradeLogger.getOpenPositions();
         if(!openPosition && openPositions.length <= calculatedMaxOpenPosition.value){
             if(prevKlineEntry.side == "SHORT"){
-                tradeLogger.logSignal(
-                    symbol,
-                    "SELL",
-                    { lower: prevKlineEntry.support!.lower, upper: prevKlineEntry.support!.upper },
-                    { lower: prevKlineEntry.resistance!.lower, upper: prevKlineEntry.resistance!.upper },
-                    prevKlineEntry.close,
-                    { tp: prevKlineEntry.tpPrice, sl: prevKlineEntry.slPrice },
-                    prevKlineEntry.candleData!,
-                    prevKlineEntry.zoneAnalysis!,
-                    prevKlineEntry.margin,
-                    futureSymbol!.maxLeverage,
-                    PnlUtility.calculateTakerFee(prevKlineEntry.margin,futureSymbol!.maxLeverage),
-                    prevKlineEntry.volumeAnalysis!,
-                    pastKlineCandles[pastKlineCandles.length - 1].openTime,
-                    pastVolumeAnalysis
-                );
+                if(chocoMintoStore.isLive){
+                    OrderMakerUtility.openOrder(
+                        symbol,
+                        prevKlineEntry.margin,
+                        prevKlineEntry.side,
+                        prevKlineEntry.tpPrice,
+                        prevKlineEntry.slPrice);
+                }else{
+                    tradeLogger.logSignal(
+                        symbol,
+                        "SELL",
+                        { lower: prevKlineEntry.support!.lower, upper: prevKlineEntry.support!.upper },
+                        { lower: prevKlineEntry.resistance!.lower, upper: prevKlineEntry.resistance!.upper },
+                        prevKlineEntry.close,
+                        { tp: prevKlineEntry.tpPrice, sl: prevKlineEntry.slPrice },
+                        prevKlineEntry.candleData!,
+                        prevKlineEntry.zoneAnalysis!,
+                        prevKlineEntry.margin,
+                        futureSymbol!.maxLeverage,
+                        PnlUtility.calculateTakerFee(prevKlineEntry.margin,futureSymbol!.maxLeverage),
+                        prevKlineEntry.volumeAnalysis!,
+                        pastKlineCandles[pastKlineCandles.length - 1].openTime,
+                        pastVolumeAnalysis
+                    );
+                }
 
                 notificationStore.showNotification('success', 'top-right', "SELL", 'order has been created');
                 notificationStore.sendNotification(symbol,"SELL");
             }else if(prevKlineEntry.side == "LONG"){
-                tradeLogger.logSignal(
-                    symbol,
-                    "BUY",
-                    { lower: prevKlineEntry.support!.lower, upper: prevKlineEntry.support!.upper },
-                    { lower: prevKlineEntry.resistance!.lower, upper: prevKlineEntry.resistance!.upper },
-                    prevKlineEntry.close,
-                    { tp: prevKlineEntry.tpPrice, sl: prevKlineEntry.slPrice },
-                    prevKlineEntry.candleData!,
-                    prevKlineEntry.zoneAnalysis!,
-                    prevKlineEntry.margin,
-                    futureSymbol!.maxLeverage,
-                    PnlUtility.calculateTakerFee(prevKlineEntry.margin,futureSymbol!.maxLeverage),
-                    prevKlineEntry.volumeAnalysis!,
-                    pastKlineCandles[pastKlineCandles.length - 1].openTime,
-                    pastVolumeAnalysis
-                );
+                if(chocoMintoStore.isLive){
+                    OrderMakerUtility.openOrder(
+                        symbol,
+                        prevKlineEntry.margin,
+                        prevKlineEntry.side,
+                        prevKlineEntry.tpPrice,
+                        prevKlineEntry.slPrice);
+                }else{
+                    tradeLogger.logSignal(
+                        symbol,
+                        "BUY",
+                        { lower: prevKlineEntry.support!.lower, upper: prevKlineEntry.support!.upper },
+                        { lower: prevKlineEntry.resistance!.lower, upper: prevKlineEntry.resistance!.upper },
+                        prevKlineEntry.close,
+                        { tp: prevKlineEntry.tpPrice, sl: prevKlineEntry.slPrice },
+                        prevKlineEntry.candleData!,
+                        prevKlineEntry.zoneAnalysis!,
+                        prevKlineEntry.margin,
+                        futureSymbol!.maxLeverage,
+                        PnlUtility.calculateTakerFee(prevKlineEntry.margin,futureSymbol!.maxLeverage),
+                        prevKlineEntry.volumeAnalysis!,
+                        pastKlineCandles[pastKlineCandles.length - 1].openTime,
+                        pastVolumeAnalysis
+                    );
+                }
 
                 notificationStore.showNotification('success', 'top-right', "BUY", 'order has been created');
                 notificationStore.sendNotification(symbol,"BUY");
