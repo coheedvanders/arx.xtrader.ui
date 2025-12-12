@@ -607,6 +607,20 @@ export class SimulationUtility {
                             && c.candleData.side == 'bull'
                         ).length >= 20
 
+                        var shortEntry9 = candle.close < prevCandle.resistance.upper
+                        && candle.open > prevCandle.resistance.upper
+                        && candle.close > candle.priceZone.upper
+                        && candle.close > candle.priceZone.upper
+                        && candle.candleData.change_percentage_v > -5
+                        && closeAbsDistanceToUpper > 1
+                        && movingCandles.slice(-8).filter(c => c.openTime < candle.openTime
+                            && c.breakthrough_resistance
+                        ).length >= 4
+                        && movingCandles.slice(-8).filter(c => c.openTime < candle.openTime
+                            && c.overboughSoldAnalysis
+                            && c.overboughSoldAnalysis.extremeLevel == "overbought"
+                        ).length >= 3
+
 
                         if(shortEntry1){
                             candle.candleData.isShortPotential = true
@@ -687,6 +701,14 @@ export class SimulationUtility {
                             candle.margin = margin  * 5
                             candle.slPrice = candle.open + (atr * 1)
                             candle.tpPrice = candle.priceZone.upper + (atr * 0.25)
+                        }else if(shortEntry9){
+                            candle.candleData.isShortPotential = true
+                            candle.candleData.conditionMet = "SHORT_9"
+
+                            candle.side = "SHORT"
+                            candle.margin = margin  * 5
+                            candle.slPrice = candle.close + (atr)
+                            candle.tpPrice = lowerZoneEqualizerPrice
                         }
 
                         if(prevCandle.candleData.conditionMet == "SHORT_7"){
