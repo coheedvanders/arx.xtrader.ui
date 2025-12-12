@@ -301,7 +301,7 @@ export class SimulationUtility {
                         var longEntry0 = candle.close < candle.priceZone.mid
                         && candle.close > candle.priceZone.lower
                         && candle.overboughSoldAnalysis.extremeLevel == "overbought"
-                        && closeAbsDistanceToMid > 1
+                        && closeAbsDistanceToMid > 2
                         && candle.close < lowerZoneEqualizerPrice
                         && candle.high < candle.resistance.upper
 
@@ -366,6 +366,34 @@ export class SimulationUtility {
                             && c.openTime < candle.openTime 
                             && c.breakthrough_support
                         ).length >= 10
+
+                        var longEntry9 = candle.overboughSoldAnalysis.extremeLevel == "overbought"
+                        && candle.candleData.zoneSizePercentage < 3
+                        && candle.close < candle.priceZone.lower
+                        && candle.candleData.strength_v > 60
+                        && closeAbsDistanceToLower > 1
+                        && movingCandles.slice(-5).filter(c => 
+                            c.candleData 
+                            && c.volumeAnalysis
+                            && c.overboughSoldAnalysis
+                            && c.candleData.priceMove == "dragged_down"
+                            && c.candleData.volumeSpike
+                            && c.volumeAnalysis.zScore >= 3
+                            && c.overboughSoldAnalysis.extremeLevel == "oversold"
+                        ).length >= 1
+
+                        var longEntry10 = candle.candleData.isNewZone
+                        && movingCandles.filter(c => c.priceZone 
+                            && c.priceZone == prevCandle.priceZone
+                            && c.open < c.priceZone.mid
+                            && c.close < c.priceZone.mid
+                        ).length >= 18
+                        && candle.close > candle.priceZone.mid
+                        && candle.open > candle.priceZone.mid
+                        && candle.candleData.side == "bear"
+                        && closeAbsDistanceToUpper > 3
+                        && candle.priceZone.mid < candle.candleData.ema200
+                        && candle.candleData.zoneSizePercentage > 5
 
 
                         if(longEntry0){
@@ -510,6 +538,23 @@ export class SimulationUtility {
                             candle.margin = margin * 5
                             candle.slPrice = candle.open - (atr * 1.5)
                             candle.tpPrice = candle.close + (atr * 2.3)
+                        }else if(longEntry9){
+                            //GOOD RESULT! reserve this for high balance / maintenance margin
+                            // candle.candleData.isLongPotential = true
+                            // candle.candleData.conditionMet = "LONG_9"
+                            
+                            // candle.side = "LONG"
+                            // candle.margin = margin * 3
+                            // candle.slPrice = candle.open - (atr * 0.5)
+                            // candle.tpPrice = lowerZoneEqualizerPrice
+                        }else if(longEntry10){
+                            candle.candleData.isLongPotential = true
+                            candle.candleData.conditionMet = "LONG_10"
+                            
+                            candle.side = "LONG"
+                            candle.margin = margin * 6
+                            candle.slPrice = candle.priceZone.mid - (atr * 0.8)
+                            candle.tpPrice = candle.priceZone.upper + (atr * 5)
                         }
 
                         if(prevCandle.candleData.conditionMet == "LONG_3"
@@ -620,7 +665,6 @@ export class SimulationUtility {
                             && c.overboughSoldAnalysis
                             && c.overboughSoldAnalysis.extremeLevel == "overbought"
                         ).length >= 3
-
 
                         if(shortEntry1){
                             candle.candleData.isShortPotential = true
@@ -766,6 +810,7 @@ export class SimulationUtility {
                     //======================================================================
                     if (!openPosition) {
                         if(candle.side != ""){
+
                             candle.status = 'OPEN'   
                             openPosition = candle;
 
