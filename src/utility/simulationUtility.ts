@@ -816,7 +816,7 @@ export class SimulationUtility {
 
                                     candle.side = "SHORT"
                                     candle.margin = margin * 5
-                                    candle.slPrice = candle.priceZone.upper + (atr * 0.2)
+                                    candle.slPrice = candle.priceZone.upper + (atr * 0.5)
 
                                     candle.tpPrice = candle.priceZone.mid + (atr * 0.3)
                                     candle.candleData.extraInfo = highAbsDistanceToUpper.toString()
