@@ -272,6 +272,8 @@ export class SimulationUtility {
                         var closeAbsDistanceToMid = Math.abs(((candle.close - candle.priceZone.mid) / candle.priceZone.mid) * 100)
                         var closeAbsDistanceToUpper = Math.abs(((candle.close - candle.priceZone.upper) / candle.priceZone.upper) * 100)
                         var closeAbsDistanceToLower = Math.abs(((candle.close - candle.priceZone.lower) / candle.priceZone.lower) * 100)
+                        var closeAbseDistanceToEma200 = Math.abs(((candle.close - candle.candleData.ema200) / candle.candleData.ema200) * 100)
+
                         var priceZoneInhabitantCount = movingCandles.slice(-24).filter(c => c.priceZone && c.priceZone == candle.priceZone).length
                         var priceZones = movingCandles.filter(c => c.candleData && c.candleData.isNewZone );
                         
@@ -301,7 +303,7 @@ export class SimulationUtility {
                         var longEntry0 = candle.close < candle.priceZone.mid
                         && candle.close > candle.priceZone.lower
                         && candle.overboughSoldAnalysis.extremeLevel == "overbought"
-                        && closeAbsDistanceToMid > 2
+                        && closeAbsDistanceToMid > 1
                         && candle.close < lowerZoneEqualizerPrice
                         && candle.high < candle.resistance.upper
 
@@ -345,6 +347,7 @@ export class SimulationUtility {
                         && candle.candleData.volumeSpike
                         && candle.volumeAnalysis.zScore >= 3
                         && candle.candleData.strength_v >= 55
+                        && closeAbseDistanceToEma200 < 2
                         && movingCandles.slice(-24).filter(c => 
                             c.openTime < candle.openTime 
                             && c.candleData 
@@ -361,6 +364,7 @@ export class SimulationUtility {
                         var longEntry8 = candle.overboughSoldAnalysis.extremeLevel == "overbought"
                         && candle.close < candle.priceZone.lower
                         && candle.open < candle.priceZone.lower
+                        && Math.abs(candle.candleData.change_percentage_v) > 0.5
                         && movingCandles.slice(-30).filter(c => 
                             c.priceZone 
                             && c.openTime < candle.openTime 
@@ -388,6 +392,10 @@ export class SimulationUtility {
                             && c.open < c.priceZone.mid
                             && c.close < c.priceZone.mid
                         ).length >= 18
+                        && movingCandles.slice(-6).filter(c => c.priceZone 
+                            && c.priceZone == prevCandle.priceZone
+                            && c.open > c.priceZone.mid
+                        ).length == 0
                         && candle.close > candle.priceZone.mid
                         && candle.open > candle.priceZone.mid
                         && candle.candleData.side == "bear"
@@ -523,13 +531,13 @@ export class SimulationUtility {
                             //     candle.slPrice = candle.candleData.ema200 - (atr)
                             // }
                         } else if(longEntry6){
-                            candle.candleData.isLongPotential = true
-                            candle.candleData.conditionMet = "LONG_6"
+                            // candle.candleData.isLongPotential = true
+                            // candle.candleData.conditionMet = "LONG_6"
 
-                            candle.side = "LONG"
-                            candle.margin = margin * 5
-                            candle.slPrice = candle.candleData.ema200 - (atr * 0.5)
-                            candle.tpPrice = candle.close + (atr * 2.5)
+                            // candle.side = "LONG"
+                            // candle.margin = margin * 5
+                            // candle.slPrice = candle.candleData.ema200 - (atr * 1.5)
+                            // candle.tpPrice = candle.close + (atr * 2.5)
                         } else if(longEntry8){
                             candle.candleData.isLongPotential = true
                             candle.candleData.conditionMet = "LONG_8"
@@ -537,7 +545,7 @@ export class SimulationUtility {
                             candle.side = "LONG"
                             candle.margin = margin * 5
                             candle.slPrice = candle.open - (atr * 1.5)
-                            candle.tpPrice = candle.close + (atr * 2.3)
+                            candle.tpPrice = candle.close + (atr * 2.5)
                         }else if(longEntry9){
                             //GOOD RESULT! reserve this for high balance / maintenance margin
                             // candle.candleData.isLongPotential = true
@@ -642,6 +650,7 @@ export class SimulationUtility {
                         && candle.close > candle.priceZone.upper
                         && closeAbsDistanceToUpper > 1
                         && candle.open > candle.priceZone.upper
+                        && priceZoneInhabitantCount < 16
                         && movingCandles.slice(-30).filter(c => 
                             c.priceZone 
                             && c.openTime < candle.openTime 
@@ -672,7 +681,7 @@ export class SimulationUtility {
 
                             candle.side = "SHORT"
                             candle.margin = margin  * 5
-                            candle.slPrice = candle.priceZone.upper + (atr)
+                            candle.slPrice = candle.priceZone.upper + (atr * 0.5)
                             candle.tpPrice = lowerZoneEqualizerPrice + (atr * 0.2)
                         }else if(shortEntry2){
                             // candle.candleData.isShortPotential = true
@@ -732,8 +741,9 @@ export class SimulationUtility {
                                 candle.tpPrice = candle.priceZone.lower
                             }
                         }else if(shortEntry7){
-                            var closeDistanceToEma200 = Math.abs(((candle.close - candle.candleData.ema200) / candle.candleData.ema200) * 100)
-                            if(candle.candleData.ema200 < lowerZoneEqualizerPrice){
+                            if(
+                                candle.candleData.ema200 < lowerZoneEqualizerPrice
+                            ){
                                 candle.candleData.isLongPotential = true
                                 candle.candleData.conditionMet = "SHORT_7"
                             }
@@ -745,28 +755,35 @@ export class SimulationUtility {
                             candle.margin = margin  * 5
                             candle.slPrice = candle.open + (atr * 1)
                             candle.tpPrice = candle.priceZone.upper + (atr * 0.25)
+                            candle.candleData.extraInfo = candle.candleData.zoneInhabitantCount.toString()
                         }else if(shortEntry9){
                             candle.candleData.isShortPotential = true
                             candle.candleData.conditionMet = "SHORT_9"
 
                             candle.side = "SHORT"
                             candle.margin = margin  * 5
-                            candle.slPrice = candle.close + (atr)
-                            candle.tpPrice = lowerZoneEqualizerPrice
+                            candle.slPrice = candle.close + (atr * 1.5)
+                            candle.tpPrice = candle.priceZone.lower
                         }
 
                         if(prevCandle.candleData.conditionMet == "SHORT_7"){
                             if(candle.candleData.side == "bull" 
                                 && candle.close < candle.candleData.ema200
                                 && candle.candleData.change_percentage_v > 1
+                                && candle.high > candle.candleData.ema200
                             ){
                                 candle.candleData.isLongPotential = true
-                                candle.candleData.conditionMet = "SHORT_7"
+                                candle.candleData.conditionMet = "SHORT_7_CONT"
+                                candle.candleData.extraInfo = closeAbseDistanceToEma200.toString()
+                            }
+                        }
 
+                        if(prevCandle.candleData.conditionMet == "SHORT_7_CONT"){
+                            if(candle.close < candle.candleData.ema200){
                                 candle.side = "SHORT"
                                 candle.margin = margin * 5
                                 candle.slPrice = candle.candleData.ema200 + (atr * 0.5)
-                                candle.tpPrice = prevCandle.close - (prevCandle.candleData.atr * 1.5)
+                                candle.tpPrice = prevCandle.close - (prevCandle.candleData.atr * 2.5)
                             }
                         }
 
@@ -778,7 +795,8 @@ export class SimulationUtility {
                                 && candle.candleData.zoneSizePercentage > previousCandleZoneStart.candleData.zoneSizePercentage
                             ){
                                 var zoneSizeZScore = candle.candleData.zoneSizePercentage / previousCandleZoneStart.candleData.zoneSizePercentage
-
+                                var midDistanceToEma200 = Math.abs(((candle.priceZone.mid - candle.candleData.ema200) / candle.candleData.ema200) * 100)
+                                var highAbsDistanceToUpper = Math.abs(((candle.high - candle.priceZone.upper) / candle.priceZone.upper) * 100)
                                 
                                 if(candle.candleData.isNewZone 
                                     && zoneSizeZScore >= 3
@@ -786,10 +804,22 @@ export class SimulationUtility {
                                     && candle.close < candle.priceZone.upper
                                     && candle.close > upperZoneEqualizerPrice
                                     && candle.candleData.side == "bull"
-                                    && candle.candleData.zoneSizePercentage > 60
+                                    //&& candle.candleData.zoneSizePercentage > 60
+                                    && candle.priceZone.mid > candle.candleData.ema200
+                                    && midDistanceToEma200 > 1.5
+                                    && closeAbsDistanceToUpper > 0.5
+                                    && candle.candleData.change_percentage_v > 1.5
+                                    && highAbsDistanceToUpper > 0.5
                                 ){
                                     candle.candleData.isShortPotential = true
                                     candle.candleData.conditionMet = "SHORT_3"
+
+                                    candle.side = "SHORT"
+                                    candle.margin = margin * 5
+                                    candle.slPrice = candle.priceZone.upper + (atr * 0.2)
+
+                                    candle.tpPrice = candle.priceZone.mid + (atr * 0.3)
+                                    candle.candleData.extraInfo = highAbsDistanceToUpper.toString()
                                 }
                             }
                         }
@@ -800,17 +830,13 @@ export class SimulationUtility {
                             && closeAbsDistanceToMid
                             && candle.high > candle.priceZone.upper
                         ){
-                            candle.side = "SHORT"
-                            candle.margin = margin * 5
-                            candle.slPrice = candle.priceZone.upper + (atr * 1.5)
-                            candle.tpPrice = candle.priceZone.mid
+                            
                         }
 
                     }
                     //======================================================================
                     if (!openPosition) {
                         if(candle.side != ""){
-
                             candle.status = 'OPEN'   
                             openPosition = candle;
 
@@ -831,6 +857,34 @@ export class SimulationUtility {
 
                             candle.leverage = _maxLeverage
                             candle.entryFee = PnlUtility.calculateTakerFee(candle.margin,_maxLeverage)
+
+                            var estimatedTpPnlPercentage = PnlUtility.calculatePNLPercent(candle.close,candle.tpPrice, _side, _maxLeverage);
+                            var estimatedTpPnl = PnlUtility.calculateEstimatedPnl(candle.margin,estimatedTpPnlPercentage, _maxLeverage);
+
+                            var estimatedSlPnlPercentage = PnlUtility.calculatePNLPercent(candle.close,candle.slPrice, _side, _maxLeverage);
+                            var estimatedSlPnl = PnlUtility.calculateEstimatedPnl(candle.margin,estimatedSlPnlPercentage, _maxLeverage);
+
+                            var trapSlPnl = -(candle.margin * 4)
+                            if(
+                                candle.candleData.conditionMet != "SHORT_1"
+                            ){
+                                if(
+                                    (candle.candleData.conditionMet == "SHORT_8" && estimatedSlPnl < trapSlPnl)
+                                    || (candle.candleData.conditionMet == "LONG_10" && estimatedSlPnl < trapSlPnl)
+                                    || (candle.candleData.conditionMet == "SHORT_6" && estimatedSlPnl < trapSlPnl)
+                                    || (candle.candleData.conditionMet == "SHORT_3" && estimatedSlPnl < trapSlPnl)
+                                    || (
+                                        candle.candleData.conditionMet != "SHORT_6"
+                                        && Math.abs(estimatedSlPnl) > estimatedTpPnl
+                                    )
+                                ){
+                                    candle.side = "";
+                                    candle.tpPrice = 0;
+                                    candle.slPrice = 0;
+                                    candle.leverage = 0;
+                                    candle.entryFee = 0;
+                                }
+                            }
                         }
                     }
                 }
