@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.71</label>
+        <label>v1.72</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
@@ -153,7 +153,7 @@ const MAX_INIT_CANDLES = 1000;
 const SUPPORT_AND_RESISTANCE_PERIOD_LENGTH = 10;
 
 const MARGIN = 1;
-const TP_ROI = 1.5;
+const TP_ROI = 2;
 const SL_ROI = 2.5;
 const STARTING_BALANCE = 100;
 const MAX_OPEN_POSITIONS = 20;

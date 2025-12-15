@@ -667,6 +667,8 @@ export class SimulationUtility {
                         && candle.close > candle.priceZone.upper
                         && candle.candleData.change_percentage_v > -5
                         && closeAbsDistanceToUpper > 1
+                        && candle.candleData.ema200 < candle.priceZone.upper
+                        && candle.candleData.ema200 > candle.priceZone.mid
                         && movingCandles.slice(-8).filter(c => c.openTime < candle.openTime
                             && c.breakthrough_resistance
                         ).length >= 4
@@ -883,6 +885,10 @@ export class SimulationUtility {
                                     candle.slPrice = 0;
                                     candle.leverage = 0;
                                     candle.entryFee = 0;
+                                }else{
+                                    if(candle.candleData.conditionMet == "SHORT_9"){
+                                        candle.tpPrice = candle.close - (atr * 2.5)
+                                    }
                                 }
                             }
                         }
