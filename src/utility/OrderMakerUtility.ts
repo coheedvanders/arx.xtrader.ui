@@ -31,7 +31,7 @@ export class OrderMakerUtility {
                 "DARUSDT","DEFIUSDT","FTMUSDT","GIGGLEUSDT","HIFIUSDT","LEVERUSDT","LINAUSDT",
                 "LOKAUSDT","LITUSDT","LOOMUSDT","MEMEFIUSDT","MKRUSDT","NEIROETHUSDT","OMNIUSDT",
                 "ORBSUSDT","REEFUSDT","TROYUSDT","UXLINKUSDT","VIDTUSDT","XEMUSDT","BADGERUSDT",
-                "NULSUSDT","OMGUSDT","STMXUSDT","AI16ZUSDT"
+                "NULSUSDT","OMGUSDT","STMXUSDT","AI16ZUSDT", "AIAUSDT"
             ]
 
             const futuresSymbols: string[] = data

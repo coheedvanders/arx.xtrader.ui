@@ -680,6 +680,14 @@ export class SimulationUtility {
                             && c.overboughSoldAnalysis.extremeLevel == "overbought"
                         ).length >= 3
 
+                        var shortEntry10 = candle.breakthrough_support
+                        && movingCandles.slice(-5).filter(c => c.openTime < candle.openTime && candle.breakthrough_support).length >= 2
+                        && candle.close > candle.priceZone.upper
+                        && candle.candleData.priceMove == "dragged_down"
+                        && candle.overboughSoldAnalysis.extremeLevel == "oversold"
+                        && candle.candleData.ema200 < candle.priceZone.mid
+                        && candle.candleData.ema200 > 0
+
                         if(shortEntry1){
                             candle.candleData.isShortPotential = true
                             candle.candleData.conditionMet = "SHORT_1"
@@ -781,6 +789,14 @@ export class SimulationUtility {
                                 candle.candleData.conditionMet = "SHORT_7_CONT"
                                 candle.candleData.extraInfo = closeAbseDistanceToEma200.toString()
                             }
+                        }else if(shortEntry10){
+                            candle.candleData.isLongPotential = true;
+                            candle.candleData.conditionMet = "SHORT_10"
+
+                            candle.side = "SHORT"
+                            candle.margin = margin * 4
+                            candle.slPrice = candle.open + (atr);
+                            candle.tpPrice = candle.priceZone.mid
                         }
 
                         if(prevCandle.candleData.conditionMet == "SHORT_7_CONT"){
@@ -880,6 +896,10 @@ export class SimulationUtility {
                                     || (candle.candleData.conditionMet == "SHORT_3" && estimatedSlPnl < trapSlPnl)
                                     || (
                                         candle.candleData.conditionMet != "SHORT_6"
+                                        && Math.abs(estimatedSlPnl) > estimatedTpPnl
+                                    )
+                                    || (
+                                        candle.candleData.conditionMet != "SHORT_10"
                                         && Math.abs(estimatedSlPnl) > estimatedTpPnl
                                     )
                                 ){
