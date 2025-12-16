@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.72</label>
+        <label>v1.73</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
@@ -319,7 +319,7 @@ async function runStats(){
         // }
 
         //==GET POSITION OPENED AFTER LIVE
-        var countHits = candles.filter(c => c.openTime >= 1765112400000 && (c.side == "SHORT" || c.side == "LONG")).length;
+        var countHits = candles.filter(c => c.openTime >= 1765814400000 && (c.side == "SHORT" || c.side == "LONG")).length;
         if(countHits >= 1){
             symbolsOfInterest.value.push(symbol);
         }

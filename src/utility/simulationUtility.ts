@@ -400,6 +400,9 @@ export class SimulationUtility {
                         && candle.open > candle.priceZone.mid
                         && candle.candleData.side == "bear"
                         && closeAbsDistanceToUpper > 3
+                        && closeAbsDistanceToMid > 1
+                        && candle.candleData.spaceTakenInZoneLevel < 50
+                        && Math.abs(candle.candleData.change_percentage_v) > 1
                         && candle.priceZone.mid < candle.candleData.ema200
                         && candle.candleData.zoneSizePercentage > 5
 
@@ -885,6 +888,7 @@ export class SimulationUtility {
                                     candle.slPrice = 0;
                                     candle.leverage = 0;
                                     candle.entryFee = 0;
+                                    candle.candleData.conditionMet = "IGNORED"
                                 }else{
                                     if(candle.candleData.conditionMet == "SHORT_9"){
                                         candle.tpPrice = candle.close - (atr * 2.5)
