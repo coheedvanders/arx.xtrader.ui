@@ -688,13 +688,23 @@ export class SimulationUtility {
                         && candle.candleData.ema200 < candle.priceZone.mid
                         && candle.candleData.ema200 > 0
 
+
+                        var shortEntry11 = candle.breakthrough_support
+                        && candle.high > candle.priceZone.lower
+                        && candle.close < candle.priceZone.lower
+                        && candle.candleData.priceMove == "dragged_down"
+                        && candle.candleData.volumeSpike
+                        && candle.overboughSoldAnalysis.extremeLevel == "oversold"
+                        && candle.candleData.change_percentage_v < -1.4
+
+
                         if(shortEntry1){
                             candle.candleData.isShortPotential = true
                             candle.candleData.conditionMet = "SHORT_1"
 
                             candle.side = "SHORT"
-                            candle.margin = margin  * 5
-                            candle.slPrice = candle.priceZone.upper + (atr * 0.5)
+                            candle.margin = margin
+                            candle.slPrice = candle.priceZone.upper + (atr)
                             candle.tpPrice = lowerZoneEqualizerPrice + (atr * 0.2)
                         }else if(shortEntry2){
                             // candle.candleData.isShortPotential = true
@@ -797,13 +807,28 @@ export class SimulationUtility {
                             candle.margin = margin * 4
                             candle.slPrice = candle.open + (atr);
                             candle.tpPrice = candle.priceZone.mid
+                        }else if(shortEntry11){
+                            if(priceZones.length >= 2){
+                                var prevPriceZone11 = priceZones[priceZones.length - 2].priceZone!;
+                                if(
+                                    candle.priceZone.lower > prevPriceZone11.lower
+                                ){
+                                    candle.candleData.isLongPotential = true;
+                                    candle.candleData.conditionMet = "SHORT_11"
+
+                                    candle.side = "SHORT"
+                                    candle.margin = margin * 1.5
+                                    candle.slPrice = candle.close + (atr * 1.5);
+                                    candle.tpPrice = candle.close - (atr * 2.3)
+                                }
+                            }
                         }
 
                         if(prevCandle.candleData.conditionMet == "SHORT_7_CONT"){
                             if(candle.close < candle.candleData.ema200){
                                 candle.side = "SHORT"
                                 candle.margin = margin * 5
-                                candle.slPrice = candle.candleData.ema200 + (atr * 0.5)
+                                candle.slPrice = candle.candleData.ema200 + (atr)
                                 candle.tpPrice = prevCandle.close - (prevCandle.candleData.atr * 2.5)
                             }
                         }
@@ -908,6 +933,7 @@ export class SimulationUtility {
                                     candle.slPrice = 0;
                                     candle.leverage = 0;
                                     candle.entryFee = 0;
+                                    candle.margin = 0;
                                     candle.candleData.conditionMet = "IGNORED"
                                 }else{
                                     if(candle.candleData.conditionMet == "SHORT_9"){

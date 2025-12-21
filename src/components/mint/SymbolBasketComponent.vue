@@ -104,7 +104,7 @@ async function initializeFutureSymbolData(){
         var futureSymbol = props.futureSymbols[i];
         futureSymbol.status = "processing"
 
-        //if(futureSymbol.symbol != "AIOTUSDT") continue;
+        //if(futureSymbol.symbol != "1MBABYDOGEUSDT") continue;
 
         await runPositionEntry(futureSymbol.symbol, futureSymbol.maxLeverage, true);
         
