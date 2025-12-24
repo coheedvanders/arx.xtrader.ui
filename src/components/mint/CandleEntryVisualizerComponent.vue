@@ -170,6 +170,17 @@
 
         <!-- Candles -->
         <g class="candles">
+          <g class="atr-extensions">
+              <rect
+                v-for="(candle, i) in candles"
+                :key="`atr-ext-${i}`"
+                :x="candleX(i) - candleWidth / 2"
+                :y="priceToY(Math.max(candle.close!, candle.close_atr_adjusted))"
+                :width="candleWidth"
+                :height="Math.abs(candle.close_atr_adjusted - candle.close!) / priceDelta * svgHeight"
+                class="atr-extension-rect"
+              />
+            </g>
           <g
             v-for="(candle, i) in candles"
             :key="`candle-${i}`"
@@ -1490,5 +1501,22 @@ const formatValue = (value: any): string => {
   opacity: 1;
   stroke-width: 1;
   stroke-dasharray: 8, 4;
+}
+
+.atr-extensions {
+  pointer-events: none;
+}
+
+.atr-extension-rect {
+  stroke: #808080;
+  stroke-width: 1;
+  opacity: 0.5;
+  stroke-linecap: round;
+  background: gray;
+}
+
+.atr-extension-line:hover {
+  opacity: 0.9;
+  stroke-width: 3;
 }
 </style>

@@ -131,6 +131,8 @@ export interface CandleEntry {
   high: number
   low: number
   close: number
+  close_atr_adjusted: number
+  close_atr_abs_change: number
   volume: number
   closeTime: number
   duration: number

@@ -203,6 +203,19 @@ static calculateEMA(candlesList: Candle[], period: number): number {
     return ema 
 }
 
+static isVolatilityExpanding(atrArray: number[]): boolean {
+  if (!atrArray || atrArray.length < 3) {
+    return false;
+  }
+
+  const latest = atrArray[atrArray.length - 1];
+  const previous = atrArray[atrArray.length - 2];
+  const previousPrevious = atrArray[atrArray.length - 3];
+  
+  // ATR is increasing consistently
+  return latest > previous && previous > previousPrevious;
+}
+
 static detectOverState(movingCandles: any[], windowSize = 30, threshold = 2) {
     if (movingCandles.length < windowSize + 1) return "";
 
