@@ -1001,6 +1001,7 @@ export class SimulationUtility {
                                     candle.entryFee = 0;
                                     candle.margin = 0;
                                     candle.candleData.conditionMet = "IGNORED"
+                                    openPosition = null
                                 }else{
                                     if(candle.candleData.conditionMet == "SHORT_9"){
                                         candle.tpPrice = candle.close - (atr * 2.5)

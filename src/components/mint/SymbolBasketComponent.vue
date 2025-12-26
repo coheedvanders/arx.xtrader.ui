@@ -104,7 +104,7 @@ async function initializeFutureSymbolData(){
         var futureSymbol = props.futureSymbols[i];
         futureSymbol.status = "processing"
 
-        //if(futureSymbol.symbol != "1MBABYDOGEUSDT") continue;
+        //if(futureSymbol.symbol != "YGGUSDT") continue;
 
         await runPositionEntry(futureSymbol.symbol, futureSymbol.maxLeverage, true);
         
@@ -138,6 +138,8 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
         candles = [];
         candles = raw.map(c => ({
             ...c,
+            close_atr_abs_change: 0,
+            close_atr_adjusted: 0,
             symbol: symbol,
             status: '',
             side: '',
@@ -255,6 +257,8 @@ async function updateCandleEntryWithLastCandle(symbol:string){
 
     var entryCandle: CandleEntry = {
         ...previousCandle,
+        close_atr_abs_change: 0,
+        close_atr_adjusted: 0,
         symbol: symbol,
         duration: 0,
         status: '',
