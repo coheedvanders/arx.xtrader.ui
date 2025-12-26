@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.78</label>
+        <label>v1.78A</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
