@@ -246,6 +246,8 @@ async function updateCandleEntryWithLastCandle(symbol:string){
     futureSymbol.status = "scanning"
 
     var pastKlineEntries = await klineDbUtility.getKlines(symbol);
+    pastKlineEntries = pastKlineEntries.sort((a, b) => a.openTime - b.openTime)
+
     if(pastKlineEntries.length < props.maxInitCandles - 2)
     {
         futureSymbol.status = "-";
@@ -299,7 +301,7 @@ async function updateCandleEntryWithLastCandle(symbol:string){
         pastKlineEntries.length - 1,
         chocoMintoStore.startingTimeStamp);
 
-    //klineDbUtility.initializeKlineData(symbol,pastKlineEntries);
+    klineDbUtility.initializeKlineData(symbol,pastKlineEntries);
 
     var prevKlineEntry = pastKlineEntries[pastKlineEntries.length - 1];
 
@@ -323,9 +325,9 @@ async function updateCandleEntryWithLastCandle(symbol:string){
 
     var isPrevCandleTriggeredOpen = prevKlineEntry.status == "OPEN" && prevKlineEntry.tpPrice > 0 && prevKlineEntry.slPrice > 0
     if(isPrevCandleTriggeredOpen){
-        var openPosition = await tradeLogger.getOpenPosition(symbol);
-        var openPositions = await tradeLogger.getOpenPositions();
-        if(!openPosition && openPositions.length <= calculatedMaxOpenPosition.value){
+        //var openPosition = await tradeLogger.getOpenPosition(symbol);
+        //var openPositions = await tradeLogger.getOpenPositions();
+        //if(!openPosition && openPositions.length <= calculatedMaxOpenPosition.value){
             if(prevKlineEntry.side == "SHORT"){
                 if(chocoMintoStore.isLive){
                     OrderMakerUtility.openOrder(
@@ -385,7 +387,7 @@ async function updateCandleEntryWithLastCandle(symbol:string){
                 notificationStore.showNotification('success', 'top-right', "BUY", 'order has been created');
                 notificationStore.sendNotification(symbol,"BUY");
             }   
-        }
+        //}
     }else{
         await checkOpenPosition(symbol, prevKlineEntry,futureSymbol.maxLeverage);
     }

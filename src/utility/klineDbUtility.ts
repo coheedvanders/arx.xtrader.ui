@@ -7,9 +7,6 @@ class KlineDbUtility {
   private db: IDBDatabase | null = null;
   private dbVersion = 2;
 
-  // Deduplicate concurrent requests for the same symbol
-  private pendingRequests = new Map<string, Promise<CandleEntry[]>>();
-
   async init() {
     if (this.db) return;
 
@@ -120,12 +117,7 @@ class KlineDbUtility {
   async getKlines(symbol: string): Promise<CandleEntry[]> {
     await this.init();
 
-    // Return cached promise if request is already in-flight
-    if (this.pendingRequests.has(symbol)) {
-      return this.pendingRequests.get(symbol)!;
-    }
-
-    const promise = new Promise<CandleEntry[]>((resolve, reject) => {
+    return new Promise<CandleEntry[]>((resolve, reject) => {
       const tx = this.db!.transaction([this.klineStoreName], "readonly");
       const store = tx.objectStore(this.klineStoreName);
       const req = store.get(symbol);
@@ -135,15 +127,6 @@ class KlineDbUtility {
       };
       req.onerror = () => reject(req.error);
     });
-
-    this.pendingRequests.set(symbol, promise);
-
-    // Clean up after request completes
-    promise.finally(() => {
-      this.pendingRequests.delete(symbol);
-    });
-
-    return promise;
   }
 
   async getFirstTimestamps(): Promise<number[]> {

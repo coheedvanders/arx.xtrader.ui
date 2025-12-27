@@ -883,7 +883,7 @@ export class SimulationUtility {
                                     candle.slPrice = candle.close + (atr);
                                     candle.side = "SHORT"
                                     //candle.margin = margin * 1.5
-                                    candle.tpPrice = candle.close - (atr * 3)
+                                    candle.tpPrice = candle.close - (atr * 2.5)
 
                                     if(candle.slPrice > candle.priceZone.lower){
                                         

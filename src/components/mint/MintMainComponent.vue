@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.78A</label>
+        <label>v1.78B</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
@@ -31,7 +31,7 @@
         <ButtonComponent v-if="!isBotEnabled" @click="tradeLogger.downloadBackTestLogs()" rounded class="mr-sm">download simulation</ButtonComponent>
         <ButtonComponent v-if="!isBotEnabled" @click="klineDbUtility.downloadAll()" rounded class="mr-sm">download candles</ButtonComponent>
         <ButtonComponent v-if="!isBotEnabled" @click="UI_SHOW_REPLAY = true" rounded>view replay</ButtonComponent>
-        <ButtonComponent v-if="!isBotEnabled" @click="runStats" rounded class="ml-sm">run stats</ButtonComponent>
+        <ButtonComponent @click="runStats" rounded class="ml-sm">run stats</ButtonComponent>
 
         
         <InputComponent type="numeric" v-model="chocoMintoStore.startingTimeStamp" />
@@ -319,7 +319,7 @@ async function runStats(){
         // }
 
         //==GET POSITION OPENED AFTER LIVE
-        var countHits = candles.filter(c => c.openTime >= 1766678400000 && (c.side == "SHORT" || c.side == "LONG")).length;
+        var countHits = candles.filter(c => c.openTime >= chocoMintoStore.startingTimeStamp && (c.side == "SHORT" || c.side == "LONG")).length;
         if(countHits >= 1){
             symbolsOfInterest.value.push(symbol);
         }
