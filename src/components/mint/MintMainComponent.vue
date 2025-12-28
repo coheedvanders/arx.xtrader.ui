@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.78B</label>
+        <label>v1.78D</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
@@ -32,6 +32,8 @@
         <ButtonComponent v-if="!isBotEnabled" @click="klineDbUtility.downloadAll()" rounded class="mr-sm">download candles</ButtonComponent>
         <ButtonComponent v-if="!isBotEnabled" @click="UI_SHOW_REPLAY = true" rounded>view replay</ButtonComponent>
         <ButtonComponent @click="runStats" rounded class="ml-sm">run stats</ButtonComponent>
+        <ButtonComponent @click="indexDBLogger.download" rounded class="ml-sm">view logs</ButtonComponent>
+        <ButtonComponent @click="clearLogs" rounded class="ml-sm">clear logs</ButtonComponent>
 
         
         <InputComponent type="numeric" v-model="chocoMintoStore.startingTimeStamp" />
@@ -141,6 +143,7 @@ import CandleEntryHistoryComponent from './CandleEntryHistoryComponent.vue';
 import ReplayCandleEntryComponent from './ReplayCandleEntryComponent.vue';
 import { useNotificationStore } from '@/stores/notificationStore';
 import LiveAccountMonitoringComponent from './LiveAccountMonitoringComponent.vue';
+import { indexDBLogger } from '@/utility/indexDbLoggerUtility';
 
 const chocoMintoStore = useChocoMintoStore();
 const notificationStore = useNotificationStore();
@@ -149,7 +152,7 @@ const isBotEnabled = ref(false)
 
 const MASTER_SYMBOL = "BTCUSDT";
 const KLINE_INTERVAL = "15m"
-const MAX_INIT_CANDLES = 210;
+const MAX_INIT_CANDLES = 1000;
 const SUPPORT_AND_RESISTANCE_PERIOD_LENGTH = 10;
 
 const MARGIN = 1;
@@ -300,6 +303,11 @@ function clearSessionRange(){
     localStorage.removeItem("start-time");
     localStorage.removeItem("end-time");
     notificationStore.showNotification("info","top-right","clear","Session range has been cleared");
+}
+
+function clearLogs(){
+    indexDBLogger.clearLogs();
+    notificationStore.showNotification("info","top-right","clear","Logs has been cleared");
 }
 
 async function runStats(){

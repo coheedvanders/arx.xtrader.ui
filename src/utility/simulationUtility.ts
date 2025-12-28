@@ -429,8 +429,6 @@ export class SimulationUtility {
                         && candle.overboughSoldAnalysis.extremeLevel == "overbought"
                         && closeAbsDistanceToLower > 0.5
 
-                        
-
                         if(longEntry11){
                             if(supportCandle.breakthrough_support 
                                 && candle.close < supportCandle.support!.lower
@@ -972,42 +970,43 @@ export class SimulationUtility {
                             candle.leverage = _maxLeverage
                             candle.entryFee = PnlUtility.calculateTakerFee(candle.margin,_maxLeverage)
 
-                            var estimatedTpPnlPercentage = PnlUtility.calculatePNLPercent(candle.close,candle.tpPrice, _side, _maxLeverage);
-                            var estimatedTpPnl = PnlUtility.calculateEstimatedPnl(candle.margin,estimatedTpPnlPercentage, _maxLeverage);
+                            // var estimatedTpPnlPercentage = PnlUtility.calculatePNLPercent(candle.close,candle.tpPrice, _side, _maxLeverage);
+                            // var estimatedTpPnl = PnlUtility.calculateEstimatedPnl(candle.margin,estimatedTpPnlPercentage, _maxLeverage);
 
-                            var estimatedSlPnlPercentage = PnlUtility.calculatePNLPercent(candle.close,candle.slPrice, _side, _maxLeverage);
-                            var estimatedSlPnl = PnlUtility.calculateEstimatedPnl(candle.margin,estimatedSlPnlPercentage, _maxLeverage);
+                            // var estimatedSlPnlPercentage = PnlUtility.calculatePNLPercent(candle.close,candle.slPrice, _side, _maxLeverage);
+                            // var estimatedSlPnl = PnlUtility.calculateEstimatedPnl(candle.margin,estimatedSlPnlPercentage, _maxLeverage);
 
-                            var trapSlPnl = -(candle.margin * 4)
-                            if(
-                                candle.candleData.conditionMet != "SHORT_1"
-                            ){
-                                if(
-                                    (candle.candleData.conditionMet == "SHORT_8" && estimatedSlPnl < trapSlPnl)
-                                    || (candle.candleData.conditionMet == "LONG_10" && estimatedSlPnl < trapSlPnl)
-                                    || (candle.candleData.conditionMet == "SHORT_6" && estimatedSlPnl < trapSlPnl)
-                                    || (candle.candleData.conditionMet == "SHORT_3" && estimatedSlPnl < trapSlPnl)
-                                    || (
-                                        (candle.candleData.conditionMet != "SHORT_6"
-                                        && candle.candleData.conditionMet != "SHORT_10"
-                                        && candle.candleData.conditionMet != "LONG_11")
-                                        && Math.abs(estimatedSlPnl) > estimatedTpPnl
-                                    )
-                                ){
-                                    candle.side = "";
-                                    candle.tpPrice = 0;
-                                    candle.slPrice = 0;
-                                    candle.leverage = 0;
-                                    candle.entryFee = 0;
-                                    candle.margin = 0;
-                                    candle.candleData.conditionMet = "IGNORED"
-                                    openPosition = null
-                                }else{
-                                    if(candle.candleData.conditionMet == "SHORT_9"){
-                                        candle.tpPrice = candle.close - (atr * 2.5)
-                                    }
-                                }
-                            }
+                            // var trapSlPnl = -(candle.margin * 4)
+                            // if(
+                            //     candle.candleData.conditionMet != "SHORT_1"
+                            // ){
+                            //     if(
+                            //         (candle.candleData.conditionMet == "SHORT_8" && estimatedSlPnl < trapSlPnl)
+                            //         || (candle.candleData.conditionMet == "LONG_10" && estimatedSlPnl < trapSlPnl)
+                            //         || (candle.candleData.conditionMet == "SHORT_6" && estimatedSlPnl < trapSlPnl)
+                            //         || (candle.candleData.conditionMet == "SHORT_3" && estimatedSlPnl < trapSlPnl)
+                            //         || (
+                            //             (candle.candleData.conditionMet != "SHORT_6"
+                            //             && candle.candleData.conditionMet != "SHORT_10"
+                            //             && candle.candleData.conditionMet != "LONG_11")
+                            //             && Math.abs(estimatedSlPnl) > estimatedTpPnl
+                            //         )
+                            //     ){
+                            //         candle.status = ''
+                            //         candle.side = "";
+                            //         candle.tpPrice = 0;
+                            //         candle.slPrice = 0;
+                            //         candle.leverage = 0;
+                            //         candle.entryFee = 0;
+                            //         candle.margin = 0;
+                            //         candle.candleData.conditionMet = "IGNORED"
+                            //         openPosition = null
+                            //     }else{
+                            //         if(candle.candleData.conditionMet == "SHORT_9"){
+                            //             candle.tpPrice = candle.close - (atr * 2.5)
+                            //         }
+                            //     }
+                            // }
                         }
                     }
                 }

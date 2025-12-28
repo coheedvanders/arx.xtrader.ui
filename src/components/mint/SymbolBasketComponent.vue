@@ -1,5 +1,6 @@
 <template>
     <CardComponent class="pa-sm mr-sm">
+        <!-- <button @click="updateCandleEntryWithLastCandle('PARTIUSDT')">test</button> -->
         <CardBodyComponent>
             <ProgressBarComponent v-if="progressCounter > 0" :max="futureSymbols.length" :value="progressCounter" />
             <div 
@@ -39,6 +40,7 @@ import DialogComponent from '../shared/dialog/DialogComponent.vue';
 import CandleEntryHistoryComponent from './CandleEntryHistoryComponent.vue';
 import DialogHeaderComponent from '../shared/dialog/DialogHeaderComponent.vue';
 import { tradeLogger } from '@/utility/tradeSignalLoggerUtility';
+import { indexDBLogger } from '@/utility/indexDbLoggerUtility';
 import { useNotificationStore } from '@/stores/notificationStore';
 import { useChocoMintoStore } from '@/stores/chocoMintoStore';
 import ProgressBarComponent from '../shared/ProgressBarComponent.vue';
@@ -104,7 +106,7 @@ async function initializeFutureSymbolData(){
         var futureSymbol = props.futureSymbols[i];
         futureSymbol.status = "processing"
 
-        //if(futureSymbol.symbol != "YGGUSDT") continue;
+        //if(futureSymbol.symbol != "xxx") continue;
 
         await runPositionEntry(futureSymbol.symbol, futureSymbol.maxLeverage, true);
         
@@ -248,6 +250,8 @@ async function updateCandleEntryWithLastCandle(symbol:string){
     var pastKlineEntries = await klineDbUtility.getKlines(symbol);
     pastKlineEntries = pastKlineEntries.sort((a, b) => a.openTime - b.openTime)
 
+    //indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: last item of pastKlineEntries: ${JSON.stringify(pastKlineEntries[pastKlineEntries.length - 1])}`);
+
     if(pastKlineEntries.length < props.maxInitCandles - 2)
     {
         futureSymbol.status = "-";
@@ -256,6 +260,9 @@ async function updateCandleEntryWithLastCandle(symbol:string){
 
     var latest2Candle = await KlineUtility.getRecentKlines(symbol,props.interval,2);
     var previousCandle = latest2Candle[0];
+    //var previousCandle: Candle = {"openTime":1766889900000,"open":0.1068,"high":0.10683,"low":0.1059,"close":0.10603,"volume":70149.82308,"closeTime":1766890799999,"closed":true,"breakthrough_resistance":false,"breakthrough_support":false,"support":null,"resistance":null}
+
+    //indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: latest2Candle previousCandle: ${JSON.stringify(previousCandle)}`);
 
     var entryCandle: CandleEntry = {
         ...previousCandle,
@@ -282,11 +289,15 @@ async function updateCandleEntryWithLastCandle(symbol:string){
 
     
     pastKlineEntries.push(entryCandle);
+    pastKlineEntries = pastKlineEntries.sort((a, b) => a.openTime - b.openTime)
 
     var {support,resistance} = candleAnalyzer.computeSupportResistance(pastKlineEntries,props.supportAndResistancePeriodLength);
 
     entryCandle.support = support;
     entryCandle.resistance = resistance;
+
+    entryCandle.breakthrough_resistance = entryCandle.close > resistance.upper;
+    entryCandle.breakthrough_support = entryCandle.close < support.lower;
 
     //await klineDbUtility.insertNewKline(symbol, entryCandle)
 
@@ -301,10 +312,11 @@ async function updateCandleEntryWithLastCandle(symbol:string){
         pastKlineEntries.length - 1,
         chocoMintoStore.startingTimeStamp);
 
-    klineDbUtility.initializeKlineData(symbol,pastKlineEntries);
+    //klineDbUtility.initializeKlineData(symbol,pastKlineEntries);
 
     var prevKlineEntry = pastKlineEntries[pastKlineEntries.length - 1];
 
+    //indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: prevKlineEntry: ${JSON.stringify(prevKlineEntry)}`);
 
     const pastKlineCandles: Candle[] = pastKlineEntries.map(e => ({
         openTime: e.openTime,
@@ -323,71 +335,73 @@ async function updateCandleEntryWithLastCandle(symbol:string){
     
     const pastVolumeAnalysis = candleAnalyzer.analyzePastVolumes(pastKlineCandles, pastKlineCandles.length - 1, 6);
 
-    var isPrevCandleTriggeredOpen = prevKlineEntry.status == "OPEN" && prevKlineEntry.tpPrice > 0 && prevKlineEntry.slPrice > 0
+    var isPrevCandleTriggeredOpen = prevKlineEntry.status == "OPEN"
     if(isPrevCandleTriggeredOpen){
-        //var openPosition = await tradeLogger.getOpenPosition(symbol);
-        //var openPositions = await tradeLogger.getOpenPositions();
-        //if(!openPosition && openPositions.length <= calculatedMaxOpenPosition.value){
-            if(prevKlineEntry.side == "SHORT"){
-                if(chocoMintoStore.isLive){
-                    OrderMakerUtility.openOrder(
-                        symbol,
-                        prevKlineEntry.margin,
-                        "SELL",
-                        prevKlineEntry.tpPrice,
-                        prevKlineEntry.slPrice);
-                }else{
-                    tradeLogger.logSignal(
-                        symbol,
-                        "SELL",
-                        { lower: prevKlineEntry.support!.lower, upper: prevKlineEntry.support!.upper },
-                        { lower: prevKlineEntry.resistance!.lower, upper: prevKlineEntry.resistance!.upper },
-                        prevKlineEntry.close,
-                        { tp: prevKlineEntry.tpPrice, sl: prevKlineEntry.slPrice },
-                        prevKlineEntry.candleData!,
-                        prevKlineEntry.zoneAnalysis!,
-                        prevKlineEntry.margin,
-                        futureSymbol!.maxLeverage,
-                        PnlUtility.calculateTakerFee(prevKlineEntry.margin,futureSymbol!.maxLeverage),
-                        prevKlineEntry.volumeAnalysis!,
-                        pastKlineCandles[pastKlineCandles.length - 1].openTime,
-                        pastVolumeAnalysis
-                    );
-                }
+        //indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: isPrevCandleTriggeredOpen==true, prevKlineEntry.side=${prevKlineEntry.side}`);
 
-                notificationStore.showNotification('success', 'top-right', "SELL", 'order has been created');
-                notificationStore.sendNotification(symbol,"SELL");
-            }else if(prevKlineEntry.side == "LONG"){
-                if(chocoMintoStore.isLive){
-                    OrderMakerUtility.openOrder(
-                        symbol,
-                        prevKlineEntry.margin,
-                        "BUY",
-                        prevKlineEntry.tpPrice,
-                        prevKlineEntry.slPrice);
-                }else{
-                    tradeLogger.logSignal(
-                        symbol,
-                        "BUY",
-                        { lower: prevKlineEntry.support!.lower, upper: prevKlineEntry.support!.upper },
-                        { lower: prevKlineEntry.resistance!.lower, upper: prevKlineEntry.resistance!.upper },
-                        prevKlineEntry.close,
-                        { tp: prevKlineEntry.tpPrice, sl: prevKlineEntry.slPrice },
-                        prevKlineEntry.candleData!,
-                        prevKlineEntry.zoneAnalysis!,
-                        prevKlineEntry.margin,
-                        futureSymbol!.maxLeverage,
-                        PnlUtility.calculateTakerFee(prevKlineEntry.margin,futureSymbol!.maxLeverage),
-                        prevKlineEntry.volumeAnalysis!,
-                        pastKlineCandles[pastKlineCandles.length - 1].openTime,
-                        pastVolumeAnalysis
-                    );
-                }
+        if(prevKlineEntry.side == "SHORT"){
+            if(chocoMintoStore.isLive){
+                await OrderMakerUtility.openOrder(
+                    symbol,
+                    prevKlineEntry.margin,
+                    "SELL",
+                    prevKlineEntry.tpPrice,
+                    prevKlineEntry.slPrice);
 
-                notificationStore.showNotification('success', 'top-right', "BUY", 'order has been created');
-                notificationStore.sendNotification(symbol,"BUY");
-            }   
-        //}
+                //indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: SHORT order created`);
+            }else{
+                await tradeLogger.logSignal(
+                    symbol,
+                    "SELL",
+                    { lower: prevKlineEntry.support!.lower, upper: prevKlineEntry.support!.upper },
+                    { lower: prevKlineEntry.resistance!.lower, upper: prevKlineEntry.resistance!.upper },
+                    prevKlineEntry.close,
+                    { tp: prevKlineEntry.tpPrice, sl: prevKlineEntry.slPrice },
+                    prevKlineEntry.candleData!,
+                    prevKlineEntry.zoneAnalysis!,
+                    prevKlineEntry.margin,
+                    futureSymbol!.maxLeverage,
+                    PnlUtility.calculateTakerFee(prevKlineEntry.margin,futureSymbol!.maxLeverage),
+                    prevKlineEntry.volumeAnalysis!,
+                    pastKlineCandles[pastKlineCandles.length - 1].openTime,
+                    pastVolumeAnalysis
+                );
+            }
+
+            notificationStore.showNotification('success', 'top-right', "SELL", 'order has been created');
+            notificationStore.sendNotification(symbol,"SELL");
+        }else if(prevKlineEntry.side == "LONG"){
+            if(chocoMintoStore.isLive){
+                await OrderMakerUtility.openOrder(
+                    symbol,
+                    prevKlineEntry.margin,
+                    "BUY",
+                    prevKlineEntry.tpPrice,
+                    prevKlineEntry.slPrice);
+                
+                //indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: LONG order created`);
+            }else{
+                await tradeLogger.logSignal(
+                    symbol,
+                    "BUY",
+                    { lower: prevKlineEntry.support!.lower, upper: prevKlineEntry.support!.upper },
+                    { lower: prevKlineEntry.resistance!.lower, upper: prevKlineEntry.resistance!.upper },
+                    prevKlineEntry.close,
+                    { tp: prevKlineEntry.tpPrice, sl: prevKlineEntry.slPrice },
+                    prevKlineEntry.candleData!,
+                    prevKlineEntry.zoneAnalysis!,
+                    prevKlineEntry.margin,
+                    futureSymbol!.maxLeverage,
+                    PnlUtility.calculateTakerFee(prevKlineEntry.margin,futureSymbol!.maxLeverage),
+                    prevKlineEntry.volumeAnalysis!,
+                    pastKlineCandles[pastKlineCandles.length - 1].openTime,
+                    pastVolumeAnalysis
+                );
+            }
+
+            notificationStore.showNotification('success', 'top-right', "BUY", 'order has been created');
+            notificationStore.sendNotification(symbol,"BUY");
+        }
     }else{
         await checkOpenPosition(symbol, prevKlineEntry,futureSymbol.maxLeverage);
     }

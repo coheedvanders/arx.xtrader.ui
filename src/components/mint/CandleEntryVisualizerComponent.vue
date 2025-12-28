@@ -321,6 +321,10 @@
                 <label>Close</label>
                 <span>{{ selectedCandle.close!.toFixed(4) }}</span>
               </div>
+              <div class="detail-item">
+                <label>Status</label>
+                <span>{{ selectedCandle.status }}</span>
+              </div>
 
               <div class="detail-item">
                 <label>Condition Met</label>
