@@ -124,6 +124,11 @@ export interface BreakoutStartScore {
     recommendation: "strong_buy" | "moderate_buy" | "weak_buy" | "skip";
 }
 
+export interface CloseAbsDistanceToZone{
+  upper: number
+  mid: number
+  lower: number
+}
 export interface CandleEntry {
   symbol: string;
   openTime: number
@@ -156,6 +161,7 @@ export interface CandleEntry {
   entryFee: number;
   priceZone: PriceZone | null;
   priceZoneInteraction: PriceZoneInteraction | null
+  closeAbsDistanceToZone: CloseAbsDistanceToZone | null
 }
 
 interface CandleSnapshot {
