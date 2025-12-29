@@ -335,13 +335,19 @@ export class SimulationUtility {
                         //&& movingCandles.slice(-24).filter(c => c.priceZone && c.close > c.priceZone.mid && c.open < c.priceZone.mid && c.openTime < candle.openTime).length <= 2
                         && candle.candleData.change_percentage_v > 1
 
-                        var long3 = candle.overboughSoldAnalysis.extremeLevel == "overbought"
-                        && candle.open < candle.priceZone.mid
-                        && movingCandles.slice(-96).filter(c => c.openTime < candle.openTime && c.priceZone && c.close < c.priceZone.mid && c.open < c.priceZone.mid).length >= 60
-                        && movingCandles.slice(-60).filter(c =>  c.candleData && c.candleData.isLongPotential && c.candleData.conditionMet == "LONG_3").length == 0
-                        && candle.close_atr_abs_change > 1
-
-
+                        var long3 = movingCandles.slice(-5).filter(c => c.candleData && c.candleData.side == "bear" && c.close_atr_abs_change < 1).length >= 4
+                        && movingCandles.slice(-6).filter(c => 
+                            c.overboughSoldAnalysis 
+                            && c.candleData
+                            && c.volumeAnalysis
+                            && c.overboughSoldAnalysis.extremeLevel == "oversold"
+                            && c.candleData.volumeSpike
+                            && c.volumeAnalysis.zScore >= 3
+                            && c.candleData.priceMove == "dragged_down"
+                        ).length >= 1
+                        && movingCandles.slice(-6).filter(c => c.priceZone && c.close < c.priceZone.lower && c.open < c.priceZone.lower).length >= 6
+                        && candle.candleData.side == "bull"
+                        && candle.candleData.change_percentage_v > 0.5
 
 
                         if(long1){
@@ -372,10 +378,11 @@ export class SimulationUtility {
                             candle.candleData.isLongPotential = true;
                             candle.candleData.conditionMet = "LONG_3"
 
-                            candle.side = "LONG";
+                            
                             candle.margin = margin * 3
-                            candle.tpPrice = candle.close + (atr * 1.5)
-                            candle.slPrice = candle.priceZone.lower - (atr * 1.5)
+                            candle.side = "LONG";
+                            candle.tpPrice = candle.priceZone.mid
+                            candle.slPrice = candle.close - (atr * 1.5)
                         }
 
 
@@ -468,18 +475,17 @@ export class SimulationUtility {
                             var estimatedSlPnl = PnlUtility.calculateEstimatedPnl(candle.margin,estimatedSlPnlPercentage, _maxLeverage);
 
                             var trapSlPnl = -(candle.margin * 4)
-                            // if(!["LONG_1"].includes(candle.candleData.conditionMet)){
-                            //     if(Math.abs(estimatedSlPnl) > estimatedTpPnl){
-                            //         candle.status = ''
-                            //         candle.side = "";
-                            //         candle.tpPrice = 0;
-                            //         candle.slPrice = 0;
-                            //         candle.leverage = 0;
-                            //         candle.entryFee = 0;
-                            //         candle.margin = 0;
-                            //         candle.candleData.conditionMet = "IGNORED"
-                            //         openPosition = null
-                            //     }
+                            
+                            // if(estimatedSlPnl < trapSlPnl){
+                            //     candle.status = ''
+                            //     candle.side = "";
+                            //     candle.tpPrice = 0;
+                            //     candle.slPrice = 0;
+                            //     candle.leverage = 0;
+                            //     candle.entryFee = 0;
+                            //     candle.margin = 0;
+                            //     candle.candleData.conditionMet = "IGNORED"
+                            //     openPosition = null
                             // }
                         }
                     }
