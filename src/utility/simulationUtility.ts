@@ -390,7 +390,7 @@ export class SimulationUtility {
                             
                             candle.side = "LONG"
                             candle.margin = margin * 3
-                            candle.slPrice = candle.open - (atr * 0.5)
+                            candle.slPrice = candle.open - (atr)
                             candle.tpPrice = lowerZoneEqualizerPrice
                         }
 
