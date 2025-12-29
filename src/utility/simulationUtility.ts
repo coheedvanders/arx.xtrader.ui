@@ -338,23 +338,23 @@ export class SimulationUtility {
                         && closeAbsDistanceToLower > 0.5
 
                         /*START WORKING*/
-                        // if(longEntry11){
-                        //     if(supportCandle.breakthrough_support 
-                        //         && candle.close < supportCandle.support!.lower
-                        //     ){
-                        //         candle.candleData.isLongPotential = true
-                        //         candle.candleData.conditionMet = "LONG_11"
+                        if(longEntry11){
+                            if(supportCandle.breakthrough_support 
+                                && candle.close < supportCandle.support!.lower
+                            ){
+                                candle.candleData.isLongPotential = true
+                                candle.candleData.conditionMet = "LONG_11"
 
-                        //         candle.side = "LONG"
-                        //         candle.slPrice = candle.open - (atr)
+                                candle.side = "LONG"
+                                candle.slPrice = candle.open - (atr)
 
-                        //         if(closeAbsDistanceToLower < 1){
-                        //             candle.tpPrice = lowerZoneEqualizerPrice
-                        //         }else{
-                        //             candle.tpPrice = candle.priceZone.lower
-                        //         }
-                        //     }
-                        // }
+                                if(closeAbsDistanceToLower < 1){
+                                    candle.tpPrice = lowerZoneEqualizerPrice
+                                }else{
+                                    candle.tpPrice = candle.priceZone.lower
+                                }
+                            }
+                        }
 
                         if(priceZones.length >= 3){
                             var supportingPrizeZone = priceZones[priceZones.length - 3].priceZone;
