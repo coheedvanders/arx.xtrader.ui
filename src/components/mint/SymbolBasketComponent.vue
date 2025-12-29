@@ -159,7 +159,8 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
             leverage: 0,
             margin: 0,
             entryFee: 0,
-            zoneSizePercentage: 0
+            zoneSizePercentage: 0,
+            closeAbsDistanceToZone: null
         }));
 
     }else{
@@ -284,7 +285,8 @@ async function updateCandleEntryWithLastCandle(symbol:string){
         pnl: 0,
         leverage: 0,
         margin: 0,
-        entryFee: 0
+        entryFee: 0,
+        closeAbsDistanceToZone: null
     }
 
     
