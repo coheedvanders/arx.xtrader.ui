@@ -259,23 +259,27 @@ async function prepareCandleEntryData(){
 }
 
 async function runForwardSimulation(){
-    tradeLogger.clearAllLogs();
+    try {
+        tradeLogger.clearAllLogs();
 
-    const sortedTimestamps = [...timestamps.value].sort((a, b) => a - b);
-    for (let i = props.supportAndResistanceLength - 1; i <= sortedTimestamps.length - 1; i++) {
-        currentTimestamp.value = timestamps.value[i];
-        
-        //await forceTakePnl();
+        const sortedTimestamps = [...timestamps.value].sort((a, b) => a - b);
+        for (let i = props.supportAndResistanceLength - 1; i <= sortedTimestamps.length - 1; i++) {
+            currentTimestamp.value = timestamps.value[i];
+            
+            //await forceTakePnl();
 
-        await markAllEntries(i);
+            await markAllEntries(i);
 
-        //await replayTimeStamp(currentTimestamp.value);
+            //await replayTimeStamp(currentTimestamp.value);
 
-        await getPositionEntries()
+            await getPositionEntries()
 
-        await simulateOpenPositions();
+            await simulateOpenPositions();
 
-        UI_SIMULATION_MESSAGE.value = "- - -"
+            UI_SIMULATION_MESSAGE.value = "- - -"
+        }   
+    } catch (error) {
+        console.error(error)
     }
 }
 

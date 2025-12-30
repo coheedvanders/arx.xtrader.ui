@@ -1,4 +1,4 @@
-import type { Candle, CandleData, CandleEntry, OverboughtOversoldAnalysis, PastVolumeAnalysis, PriceZone, ReactionData, VolumeAnalysis, ZoneAnalysis } from "@/core/interfaces";
+import type { Candle, CandleData, CandleEntry, OverboughtOversoldAnalysis, PastVolumeAnalysis, PriceZone, PriceZoneEvaluation, ReactionData, VolumeAnalysis, ZoneAnalysis } from "@/core/interfaces";
 
 class CandlestickAnalyzer {
 
@@ -595,6 +595,64 @@ private detectBottomWickRejection(candle: Candle, previousCandle: Candle, bodyPe
             overallBias,
             pastResistanceBreakCount,
             pastSupportBreakCount
+        };
+    }
+
+    static evaluatePriceZone(candles: CandleEntry[]): PriceZoneEvaluation {
+        if (!candles || candles.length === 0) {
+            return {
+                bulls: 0,
+                bears: 0,
+                dojis: 0,
+                bear_change: 0,
+                bull_change: 0
+            };
+        }
+
+        let bulls = 0;
+        let bears = 0;
+        let dojis = 0;
+        let bullHighest = -Infinity;
+        let bullLowest = Infinity;
+        let bearHighest = -Infinity;
+        let bearLowest = Infinity;
+
+        for (const candle of candles) {
+            const { open, close, high, low } = candle;
+            const bodySize = Math.abs(close - open);
+            const totalRange = high - low;
+
+            // Doji: very small body relative to total range (typically < 10%)
+            if (bodySize / totalRange < 0.1) {
+                dojis++;
+            } else if (close > open) {
+                // Bull candle
+                bulls++;
+                bullHighest = Math.max(bullHighest, high);
+                bullLowest = Math.min(bullLowest, low);
+            } else {
+                // Bear candle
+                bears++;
+                bearHighest = Math.max(bearHighest, high);
+                bearLowest = Math.min(bearLowest, low);
+            }
+        }
+
+        // Calculate percentage changes
+        const bull_change = bullLowest === Infinity || bullHighest === -Infinity
+            ? 0
+            : ((bullHighest - bullLowest) / bullLowest) * 100;
+
+        const bear_change = bearLowest === Infinity || bearHighest === -Infinity
+            ? 0
+            : ((bearHighest - bearLowest) / bearLowest) * 100;
+
+        return {
+            bulls,
+            bears,
+            dojis,
+            bear_change: parseFloat(bear_change.toFixed(2)),
+            bull_change: parseFloat(bull_change.toFixed(2))
         };
     }
 

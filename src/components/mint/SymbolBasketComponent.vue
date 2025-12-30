@@ -101,24 +101,28 @@ async function initializeFutureSymbolData(){
     progressCounter.value = 0;
 
     for (let i = 0; i <= props.futureSymbols.length - 1; i++) {
-        progressCounter.value = i + 1;
+        try {
+            progressCounter.value = i + 1;
 
-        var futureSymbol = props.futureSymbols[i];
-        futureSymbol.status = "processing"
+            var futureSymbol = props.futureSymbols[i];
+            futureSymbol.status = "processing"
 
-        //if(futureSymbol.symbol != "xxx") continue;
+            //if(futureSymbol.symbol != "xxx") continue;
 
-        await runPositionEntry(futureSymbol.symbol, futureSymbol.maxLeverage, true);
-        
-        await new Promise(resolve => setTimeout(resolve, 400));
+            await runPositionEntry(futureSymbol.symbol, futureSymbol.maxLeverage, true);
+            
+            await new Promise(resolve => setTimeout(resolve, 400));
 
-        if(chocoMintoStore.isManualSimulation){
-            var storeFutureSymbol = chocoMintoStore.futureSymbols.find(f => f.symbol == futureSymbol.symbol);
-            if(storeFutureSymbol){
-                futureSymbol.status = `${storeFutureSymbol.simulationStats.won}/${storeFutureSymbol.simulationStats.loss}/${storeFutureSymbol.simulationStats.open}`
-            }
-        }else{
-            futureSymbol.status = "-"
+            if(chocoMintoStore.isManualSimulation){
+                var storeFutureSymbol = chocoMintoStore.futureSymbols.find(f => f.symbol == futureSymbol.symbol);
+                if(storeFutureSymbol){
+                    futureSymbol.status = `${storeFutureSymbol.simulationStats.won}/${storeFutureSymbol.simulationStats.loss}/${storeFutureSymbol.simulationStats.open}`
+                }
+            }else{
+                futureSymbol.status = "-"
+            }   
+        } catch (error) {
+            console.error("initializeFutureSymbolData", error)
         }
     }
 
@@ -160,7 +164,8 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
             margin: 0,
             entryFee: 0,
             zoneSizePercentage: 0,
-            closeAbsDistanceToZone: null
+            closeAbsDistanceToZone: null,
+            priceZoneEvaluation: null
         }));
 
     }else{
@@ -286,7 +291,8 @@ async function updateCandleEntryWithLastCandle(symbol:string){
         leverage: 0,
         margin: 0,
         entryFee: 0,
-        closeAbsDistanceToZone: null
+        closeAbsDistanceToZone: null,
+        priceZoneEvaluation: null
     }
 
     

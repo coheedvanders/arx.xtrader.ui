@@ -129,6 +129,13 @@ export interface CloseAbsDistanceToZone{
   mid: number
   lower: number
 }
+export interface PriceZoneEvaluation {
+    bulls: number;
+    bears: number;
+    dojis: number;
+    bear_change: number;
+    bull_change: number;
+}
 export interface CandleEntry {
   symbol: string;
   openTime: number
@@ -162,6 +169,7 @@ export interface CandleEntry {
   priceZone: PriceZone | null;
   priceZoneInteraction: PriceZoneInteraction | null
   closeAbsDistanceToZone: CloseAbsDistanceToZone | null
+  priceZoneEvaluation: PriceZoneEvaluation | null
 }
 
 interface CandleSnapshot {

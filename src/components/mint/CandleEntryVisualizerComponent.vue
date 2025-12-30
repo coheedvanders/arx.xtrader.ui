@@ -145,7 +145,7 @@
         </g>
 
         <!-- EMA9 Line -->
-        <polyline
+        <!-- <polyline
           v-if="emaPoints.length > 0"
           :points="emaPoints"
           class="ema-line"
@@ -153,7 +153,7 @@
           stroke-width="2"
           stroke-linejoin="round"
           stroke-linecap="round"
-        />
+        /> -->
 
         <!-- Zone Labels -->
         <g class="zone-labels">
@@ -179,6 +179,7 @@
                 :width="candleWidth"
                 :height="Math.abs(candle.close_atr_adjusted - candle.close!) / priceDelta * svgHeight"
                 class="atr-extension-rect"
+                :class="{'is_not_1': candle.close_atr_abs_change < 2}"
               />
             </g>
           <g
@@ -1511,12 +1512,18 @@ const formatValue = (value: any): string => {
   pointer-events: none;
 }
 
+
+
 .atr-extension-rect {
   stroke: #808080;
   stroke-width: 1;
   opacity: 0.5;
   stroke-linecap: round;
   background: gray;
+}
+
+.atr-extension-rect.is_not_1 {
+  display:none;
 }
 
 .atr-extension-line:hover {

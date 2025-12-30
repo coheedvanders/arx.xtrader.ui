@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.78J3ZZ</label>
+        <label>v1.78-P4-1-N</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
@@ -152,7 +152,7 @@ const isBotEnabled = ref(false)
 
 const MASTER_SYMBOL = "BTCUSDT";
 const KLINE_INTERVAL = "15m"
-const MAX_INIT_CANDLES = 210;
+const MAX_INIT_CANDLES = 1000;
 const SUPPORT_AND_RESISTANCE_PERIOD_LENGTH = 10;
 
 const MARGIN = 1;
@@ -325,6 +325,11 @@ async function runStats(){
         // if(countHits > 1){
         //     symbolsOfInterest.value.push(symbol);
         // }
+
+        const grouped = candles.reduce((acc : any, { side }) => {
+            acc[side] = (acc[side] || 0) + 1
+            return acc
+        }, {})
 
         //==GET POSITION OPENED AFTER LIVE
         var countHits = candles.filter(c => c.openTime >= chocoMintoStore.startingTimeStamp && (c.side == "SHORT" || c.side == "LONG")).length;
