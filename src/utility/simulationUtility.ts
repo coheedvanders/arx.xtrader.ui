@@ -402,7 +402,7 @@ export class SimulationUtility {
                                 
 
                                 candle.margin = margin * 1.5
-                                candle.tpPrice = candle.close - (atr * 1.1)
+                                candle.tpPrice = candle.close - (atr * 1)
 
                                 if(past5TouchesOrCloseNearTheZoneUpper && candle.tpPrice > candle.priceZone.upper){
                                     candle.tpPrice = candle.priceZone.upper
