@@ -98,6 +98,16 @@ export class OrderMakerUtility {
         return res.json();
     }
 
+    static async closeAllOpenPositions() {
+        const res = await fetch(import.meta.env.VITE_ORDER_MAKER_API + "/close-all", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+    }
+
     static async getBalance(): Promise<BalanceResponse> {
         const res = await fetch(import.meta.env.VITE_ORDER_MAKER_API + "/get-bal", {
             method: "GET"

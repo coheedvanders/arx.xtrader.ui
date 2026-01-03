@@ -266,6 +266,7 @@ async function runForwardSimulation(){
         for (let i = props.supportAndResistanceLength - 1; i <= sortedTimestamps.length - 1; i++) {
             currentTimestamp.value = timestamps.value[i];
             
+            
             //await forceTakePnl();
 
             await markAllEntries(i);
@@ -297,6 +298,10 @@ async function markAllEntries(entryIndex: number) {
     }
     
     const chunkSize = 5;
+
+    if(simulationStats.value.totalOpenPnl > 5){
+        await tradeLogger.forceCloseOpenPositions();
+    }
 
     for (let i = 0; i < symbols.length; i += chunkSize) {
         const chunk = symbols.slice(i, i + chunkSize);

@@ -168,6 +168,41 @@
           </text>
         </g>
 
+        <!-- Pattern Track Indicators -->
+        <g v-for="(candle, i) in candles" :key="`pattern-${i}`" class="pattern-track-indicators">
+          <g v-if="candle.patternTrack === 'hl'" class="higher-low-indicator">
+            <circle
+              :cx="candleX(i)"
+              :cy="priceToY(candle.low!) + 15"
+              r="3"
+              class="hl-dot"
+            />
+            <text
+              :x="candleX(i)"
+              :y="priceToY(candle.low!) + 28"
+              class="pattern-label"
+            >
+              HL
+            </text>
+          </g>
+
+          <g v-if="candle.patternTrack === 'lh'" class="lower-high-indicator">
+            <circle
+              :cx="candleX(i)"
+              :cy="priceToY(candle.high!) - 15"
+              r="3"
+              class="lh-dot"
+            />
+            <text
+              :x="candleX(i)"
+              :y="priceToY(candle.high!) - 20"
+              class="pattern-label"
+            >
+              LH
+            </text>
+          </g>
+        </g>
+
         <!-- Candles -->
         <g class="candles">
           <g class="atr-extensions">
@@ -179,7 +214,7 @@
                 :width="candleWidth"
                 :height="Math.abs(candle.close_atr_adjusted - candle.close!) / priceDelta * svgHeight"
                 class="atr-extension-rect"
-                :class="{'is_not_1': candle.close_atr_abs_change < 2}"
+                :class="{'is_not_1': candle.close_atr_abs_change < 1}"
               />
             </g>
           <g
@@ -1529,5 +1564,40 @@ const formatValue = (value: any): string => {
 .atr-extension-line:hover {
   opacity: 0.9;
   stroke-width: 3;
+}
+
+.pattern-track-indicators {
+  pointer-events: none;
+}
+
+.higher-low-indicator {
+  opacity: 0.9;
+}
+
+.hl-dot {
+  fill: #42f12b;
+  opacity: 1;
+}
+
+.lower-high-indicator {
+  opacity: 0.9;
+}
+
+.lh-dot {
+  fill: #ff2323;
+  opacity: 1;
+}
+
+.pattern-label {
+  font-size: 10px;
+  font-weight: bold;
+  text-anchor: middle;
+  fill: #fff;
+  opacity: 0.8;
+}
+
+.pattern-label:hover {
+  opacity: 1;
+  font-size: 11px;
 }
 </style>

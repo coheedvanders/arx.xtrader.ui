@@ -165,12 +165,15 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
             entryFee: 0,
             zoneSizePercentage: 0,
             closeAbsDistanceToZone: null,
-            priceZoneEvaluation: null
+            priceZoneEvaluation: null,
+            patternTrack: ""
         }));
 
     }else{
         candles = await klineDbUtility.getKlines(symbol)
     }
+
+    candleAnalyzer.trackSwingPatterns(candles);
 
     await SimulationUtility.markPositionEntries(
         props.margin,
@@ -292,7 +295,8 @@ async function updateCandleEntryWithLastCandle(symbol:string){
         margin: 0,
         entryFee: 0,
         closeAbsDistanceToZone: null,
-        priceZoneEvaluation: null
+        priceZoneEvaluation: null,
+        patternTrack: ""
     }
 
     

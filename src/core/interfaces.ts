@@ -170,6 +170,7 @@ export interface CandleEntry {
   priceZoneInteraction: PriceZoneInteraction | null
   closeAbsDistanceToZone: CloseAbsDistanceToZone | null
   priceZoneEvaluation: PriceZoneEvaluation | null
+  patternTrack: string
 }
 
 interface CandleSnapshot {

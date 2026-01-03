@@ -2,6 +2,56 @@ import type { Candle, CandleData, CandleEntry, OverboughtOversoldAnalysis, PastV
 
 class CandlestickAnalyzer {
 
+    static trackSwingPatterns(candles: CandleEntry[]): void {
+        if (candles.length < 3) return;
+
+        // Find swing highs and lows
+        const swingHighs: number[] = [];
+        const swingLows: number[] = [];
+        const swingIndices: { index: number; type: 'high' | 'low' }[] = [];
+
+        for (let i = 1; i < candles.length - 1; i++) {
+            const prev = candles[i - 1];
+            const curr = candles[i];
+            const next = candles[i + 1];
+
+            // Swing high: current high > previous high AND current high > next high
+            if (curr.high > prev.high && curr.high > next.high) {
+            swingHighs.push(curr.high);
+            swingIndices.push({ index: i, type: 'high' });
+            }
+
+            // Swing low: current low < previous low AND current low < next low
+            if (curr.low < prev.low && curr.low < next.low) {
+            swingLows.push(curr.low);
+            swingIndices.push({ index: i, type: 'low' });
+            }
+        }
+
+        // Sort swing indices by position
+        swingIndices.sort((a, b) => a.index - b.index);
+
+        // Mark patterns based on consecutive swings
+        for (let i = 1; i < swingIndices.length; i++) {
+            const prevSwing = swingIndices[i - 1];
+            const currSwing = swingIndices[i];
+
+            if (prevSwing.type === 'low' && currSwing.type === 'low') {
+            // Two consecutive lows: check if higher low
+            if (candles[currSwing.index].low > candles[prevSwing.index].low) {
+                candles[currSwing.index].patternTrack = 'hl'; // Higher Low
+            }
+            }
+
+            if (prevSwing.type === 'high' && currSwing.type === 'high') {
+            // Two consecutive highs: check if lower high
+            if (candles[currSwing.index].high < candles[prevSwing.index].high) {
+                candles[currSwing.index].patternTrack = 'lh'; // Lower High
+            }
+            }
+        }
+        }
+
   static analyzeCandlestick(candles: Candle[], index:number, checkPast: boolean, pastCandleLookBack:number): CandleData {
     var candle = candles[index];
     var previousCandle = candles[index - 1];

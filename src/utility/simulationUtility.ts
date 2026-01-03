@@ -7,6 +7,7 @@ import { PriceZoneUtility } from "./priceZoneUtility.ts";
 import { PnlUtility } from "./PnlUtility.ts";
 import CandleEntryVisualizerComponent from "@/components/mint/CandleEntryVisualizerComponent.vue";
 import CandleEntryHistoryComponent from "@/components/mint/CandleEntryHistoryComponent.vue";
+import { createSolutionBuilderWithWatch } from "typescript";
 
 export class SimulationUtility {
     static async initializePastCandleEntryData(symbol: string, interval:string,maxCandles:number, supportAndResistancePeriodLength: number){
@@ -43,7 +44,9 @@ export class SimulationUtility {
             entryFee: 0,
             zoneSizePercentage: 0,
             closeAbsDistanceToZone: null,
-            priceZoneEvaluation: null
+            priceZoneEvaluation: null,
+            patternTrack: ""
+
         }));
 
         klineDbUtility.initializeKlineData(symbol,candles.slice(0, -1));
@@ -301,7 +304,7 @@ export class SimulationUtility {
                         var closeAbseDistanceToEma200 = Math.abs(((candle.close - candle.candleData.ema200) / candle.candleData.ema200) * 100)
 
                         var priceZoneInhabitantCount = movingCandles.slice(-24).filter(c => c.priceZone && c.priceZone == candle.priceZone).length
-                        var priceZones = movingCandles.filter(c => c.candleData && c.candleData.isNewZone );
+                        var priceZones = movingCandles.filter(c => c.candleData && c.candleData.isNewZone ).map(c => c.priceZone);
                         
 
                         var lowerZoneEqualizerPrice = (candle.priceZone.lower + candle.priceZone.mid) / 2
@@ -310,8 +313,45 @@ export class SimulationUtility {
                         lowerZoneEqualizerPrice = lowerZoneEqualizerPrice - (lowerZoneEqualizerPrice * 0.0005)
                         upperZoneEqualizerPrice = upperZoneEqualizerPrice - (upperZoneEqualizerPrice * 0.0005)
 
-                        
 
+                        if(candle.patternTrack == "hl"){
+                            var previousPatternTracks = movingCandles.filter(c => c.openTime < candle.openTime && c.patternTrack != "");
+                            if(previousPatternTracks.length >= 2){
+                                var lastPatternTrack = previousPatternTracks[previousPatternTracks.length - 1].patternTrack;
+                                if(lastPatternTrack == "lh"){
+                                    if(closeAbsDistanceToUpper > 1
+                                        && candle.close < candle.priceZone.upper
+                                    ){
+                                        candle.side = "LONG"
+                                        candle.tpPrice = candle.priceZone.upper
+
+                                        if(candle.candleData.zoneSizePercentage > 20 && candle.close < upperZoneEqualizerPrice){
+                                            candle.tpPrice = upperZoneEqualizerPrice
+                                        }
+
+                                        if(candle.close < candle.priceZone.lower && candle.open < candle.priceZone.lower && candle.candleData.zoneSizePercentage > 8){
+                                            candle.tpPrice = candle.priceZone.mid - (atr * 0.3)
+                                        }
+
+                                        if(candle.close < candle.priceZone.lower && candle.open < candle.priceZone.lower && candle.candleData.zoneSizePercentage < 3){
+                                            candle.tpPrice = candle.priceZone.mid - (atr * 0.3)
+                                        }
+
+                                        if(candle.close < candle.priceZone.lower && candle.open < candle.priceZone.lower && candle.candleData.zoneSizePercentage < 2 && closeAbsDistanceToLower > 2.5){
+                                            candle.tpPrice = candle.close + (atr * 3)
+                                        }
+
+                                        candle.slPrice = candle.open - (atr * 2.5)
+
+                                        if(candle.open < candle.priceZone.mid && candle.open > candle.priceZone.lower && candle.candleData.zoneSizePercentage < 4){
+                                            candle.slPrice = candle.priceZone.lower - (atr * 2.5)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                
 
                         /*
                         ======================================
@@ -408,13 +448,13 @@ export class SimulationUtility {
                                     candle.tpPrice = candle.priceZone.upper
                                 }
                                 
-                                candle.slPrice = candle.open + (atr)
+                                candle.slPrice = candle.open + (atr * 6)
                             }
                         }else if(short2){
                             if(priceZones.length >= 2){
                                 var previousZone = priceZones[priceZones.length - 2]
                                 var previousZoneDoesntTouchMid = movingCandles.filter(c => 
-                                    c.priceZone == previousZone.priceZone 
+                                    c.priceZone == previousZone 
                                     && c.priceZone
                                     && c.close > c.priceZone.mid
                                     && c.open > c.priceZone.mid
@@ -440,7 +480,7 @@ export class SimulationUtility {
                                 ).length <= 3
 
                                 var mostCandlesAboveZone = movingCandles.slice(-24).filter(c => 
-                                    c.priceZone == previousZone.priceZone 
+                                    c.priceZone == previousZone 
                                     && c.priceZone
                                     && c.close > c.priceZone.upper
                                 ).length > 14
@@ -451,13 +491,13 @@ export class SimulationUtility {
                                     && mostCandlesAboveZone
                                 ){
                                     candle.candleData.isShortPotential = true;
-                                    candle.candleData.conditionMet = "SHORT_1";
+                                    candle.candleData.conditionMet = "SHORT_2";
 
                                     candle.side = "SHORT";
                                     
                                     candle.margin = margin * 1.5
                                     candle.tpPrice = lowerZoneEqualizerPrice + (atr * 0.3)
-                                    candle.slPrice = candle.priceZone.upper + (atr * 0.2)
+                                    candle.slPrice = candle.priceZone.upper + (atr * 6)
                                 }
                             }
                         }
@@ -494,23 +534,24 @@ export class SimulationUtility {
                             var estimatedSlPnlPercentage = PnlUtility.calculatePNLPercent(candle.close,candle.slPrice, _side, _maxLeverage);
                             var estimatedSlPnl = PnlUtility.calculateEstimatedPnl(candle.margin,estimatedSlPnlPercentage, _maxLeverage);
 
-                            var trapSlPnl = -(candle.margin * 4)
+                            var trapSlPnl = -(candle.margin * 3)
 
                             candle.candleData.extraInfo = estimatedSlPnl.toString();
                             
-                            if(estimatedSlPnl < trapSlPnl
-                               //|| estimatedSlPnl < -20
-                            ){
-                                candle.status = ''
-                                candle.side = "";
-                                candle.tpPrice = 0;
-                                candle.slPrice = 0;
-                                candle.leverage = 0;
-                                candle.entryFee = 0;
-                                candle.margin = 0;
-                                candle.candleData.conditionMet = "IGNORED"
-                                openPosition = null
-                            }
+                            // if(estimatedSlPnl < trapSlPnl
+                            //    //|| estimatedSlPnl < -20
+                            // ){
+                            //     candle.status = ''
+                            //     candle.side = "";
+                            //     candle.tpPrice = 0;
+                            //     candle.slPrice = 0;
+                            //     candle.leverage = 0;
+                            //     candle.entryFee = 0;
+                            //     candle.margin = 0;
+                            //     candle.candleData.conditionMet = "IGNORED"
+                            //     openPosition = null
+                                
+                            // }
                         }
                     }
                 }

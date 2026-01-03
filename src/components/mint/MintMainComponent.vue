@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.80-P4-1-N</label>
+        <label>v1.81-P4-1-N</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
@@ -152,7 +152,7 @@ const isBotEnabled = ref(false)
 
 const MASTER_SYMBOL = "BTCUSDT";
 const KLINE_INTERVAL = "15m"
-const MAX_INIT_CANDLES = 210;
+const MAX_INIT_CANDLES = 1000;
 const SUPPORT_AND_RESISTANCE_PERIOD_LENGTH = 10;
 
 const MARGIN = 1;
@@ -286,6 +286,13 @@ async function initializeFutureSymbols(){
 
 async function onNewCandle(candle:Candle){
     //send event to the SymbolBasketComponent
+    if(chocoMintoStore.isLive){
+        var balance = await OrderMakerUtility.getBalance();
+        if(balance && balance.unrealized_pnl > 20){
+            await OrderMakerUtility.closeAllOpenPositions();
+        }
+
+    }
     if(!chocoMintoStore.isManualSimulation){
         setTimeout(() => {
             onNewCandleBasketTriggerKey.value = CommonHelperUtility.generateGuid();
@@ -331,11 +338,16 @@ async function runStats(){
             return acc
         }, {})
 
-        //==GET POSITION OPENED AFTER LIVE
-        var countHits = candles.filter(c => c.openTime >= chocoMintoStore.startingTimeStamp && (c.side == "SHORT" || c.side == "LONG")).length;
-        if(countHits >= 1){
+        var hit = candles[candles.length - 1].patternTrack != ""
+        if(hit){
             symbolsOfInterest.value.push(symbol);
         }
+
+        //==GET POSITION OPENED AFTER LIVE
+        // var countHits = candles.filter(c => c.openTime >= chocoMintoStore.startingTimeStamp && (c.side == "SHORT" || c.side == "LONG")).length;
+        // if(countHits >= 1){
+        //     symbolsOfInterest.value.push(symbol);
+        // }
 
         //GET HIGHER LOSSES
         // var countHits = candles.filter(c => c.pnl < -3).length;
