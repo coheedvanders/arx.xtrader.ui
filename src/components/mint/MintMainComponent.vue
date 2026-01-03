@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.81a-P4-1-N</label>
+        <label>v1.81B-P4-1-N</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
@@ -288,10 +288,9 @@ async function onNewCandle(candle:Candle){
     //send event to the SymbolBasketComponent
     if(chocoMintoStore.isLive){
         var balance = await OrderMakerUtility.getBalance();
-        if(balance && balance.unrealized_pnl > 20){
+        if(balance && balance.unrealized_pnl > 5){
             await OrderMakerUtility.closeAllOpenPositions();
         }
-
     }
     if(!chocoMintoStore.isManualSimulation){
         setTimeout(() => {
