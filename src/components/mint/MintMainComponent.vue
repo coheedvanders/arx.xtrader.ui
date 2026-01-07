@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.81F-P4-1-N</label>
+        <label>v1.81G-P4-1-N</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
@@ -288,7 +288,12 @@ async function onNewCandle(candle:Candle){
     //send event to the SymbolBasketComponent
     if(chocoMintoStore.isLive){
         var balance = await OrderMakerUtility.getBalance();
-        if(balance && balance.unrealized_pnl > 5){
+        const positions = await OrderMakerUtility.getPositions();
+        const fees = OrderMakerUtility.calculateTotalTradingFees(positions);
+        var baseTarget = 5
+        var targetProfit = baseTarget + fees.totalFees
+        
+        if(balance && balance.unrealized_pnl > targetProfit){
             try {
                 await OrderMakerUtility.closeAllOpenPositions();
             } catch (error) {

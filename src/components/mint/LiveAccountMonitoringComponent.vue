@@ -10,6 +10,16 @@
             <CardComponent class="text-center">
                 <div>Unrealized PNL</div>
                 <div>{{ balanceResult?.unrealized_pnl }}</div>
+                <div class="divider"></div>
+                <button @click="calcEstTotalTradingAndExitFees">calc est entry and exit fee</button>
+                <div>Open Positions</div>
+                <div>{{ openPositions }}</div>
+                <div>Entry Fees</div>
+                <div>{{ totalEntryFees }}</div>
+                <div>Exit Fees</div>
+                <div>{{ totalExitFees }}</div>
+                <div>Target PNL</div>
+                <div>{{ 5 + (totalEntryFees + totalExitFees) }}</div>
             </CardComponent>
         </div>
         <div class="col-lg-4 col-md-4">
@@ -25,9 +35,13 @@
 import { onMounted, ref } from 'vue';
 import CardComponent from '../shared/card/CardComponent.vue';
 import { OrderMakerUtility } from '@/utility/OrderMakerUtility';
-import { type BalanceResponse } from '@/core/interfaces';
+import { type BalanceResponse, type Position } from '@/core/interfaces';
 
 const balanceResult = ref<BalanceResponse>()
+
+const totalEntryFees = ref(0)
+const totalExitFees = ref(0)
+const openPositions = ref(0)
 
 onMounted(() => {
     startBalanceChecker();
@@ -38,4 +52,14 @@ async function startBalanceChecker(){
         balanceResult.value = await OrderMakerUtility.getBalance();
     }, 5000);
 }
+
+async function calcEstTotalTradingAndExitFees(){
+    const positions = await OrderMakerUtility.getPositions();
+    const fees = OrderMakerUtility.calculateTotalTradingFees(positions);
+    openPositions.value = positions.length
+    totalEntryFees.value = fees.entryFees
+    totalExitFees.value = fees.exitFees
+}
+
+
 </script>

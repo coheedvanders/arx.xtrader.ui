@@ -1,4 +1,4 @@
-import type { BalanceResponse } from "@/core/interfaces"
+import type { BalanceResponse, Position } from "@/core/interfaces"
 
 export class OrderMakerUtility {
     static async getMaxLeverage(symbol: string): Promise<number> {
@@ -14,6 +14,23 @@ export class OrderMakerUtility {
         } catch (error) {
             console.error('Error fetching max leverage:', error)
             throw error
+        }
+    }
+
+    static async getPositions(): Promise<Position[]> {
+        try {
+            const response = await fetch(import.meta.env.VITE_ORDER_MAKER_API  + '/get-pos');
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            const positions: Position[] = await response.json();
+            return positions;
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('Error fetching positions:', errorMessage);
+            throw error;
         }
     }
 
@@ -116,5 +133,33 @@ export class OrderMakerUtility {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data: BalanceResponse = await res.json();
         return data;
+    }
+
+    static calculateTotalTradingFees(
+    positions: Position[],
+    takerFeeRate: number = 0.0004
+    ): { entryFees: number; exitFees: number; totalFees: number } {
+        let totalEntryFees = 0;
+        let totalExitFees = 0;
+
+        for (const position of positions) {
+            const notional = Math.abs(parseFloat(position.notional));
+            
+            // Entry fee (already paid when opening position)
+            const entryFee = notional * takerFeeRate;
+            totalEntryFees += entryFee;
+            
+            // Exit fee (will pay when closing position)
+            const exitFee = notional * takerFeeRate;
+            totalExitFees += exitFee;
+        }
+
+        const totalFees = totalEntryFees + totalExitFees;
+
+        return {
+            entryFees: totalEntryFees,
+            exitFees: totalExitFees,
+            totalFees
+        };
     }
 }

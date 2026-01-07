@@ -173,6 +173,32 @@ export interface CandleEntry {
   patternTrack: string
 }
 
+export interface Position {
+  ROI: number;
+  adl: number;
+  askNotional: string;
+  bidNotional: string;
+  breakEvenPrice: string;
+  entryPrice: string;
+  initialMargin: string;
+  isolatedMargin: string;
+  isolatedWallet: string;
+  liquidationPrice: string;
+  maintMargin: string;
+  marginAsset: string;
+  markPrice: string;
+  notional: string;
+  openOrderInitialMargin: string;
+  positionAmt: string;
+  positionInitialMargin: string;
+  positionSide: string;
+  stopLossOrderId: null | string;
+  symbol: string;
+  takeProfitOrderId: null | string;
+  unRealizedProfit: string;
+  updateTime: number;
+}
+
 interface CandleSnapshot {
   o: number;
   h: number;
