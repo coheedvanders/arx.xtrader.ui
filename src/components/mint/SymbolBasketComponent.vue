@@ -1,6 +1,6 @@
 <template>
     <CardComponent class="pa-sm mr-sm">
-        <!-- <button @click="updateCandleEntryWithLastCandle('PARTIUSDT')">test</button> -->
+        <!-- <button @click="updateCandleEntryWithLastCandle('CHRUSDT')">test</button> -->
         <CardBodyComponent>
             <ProgressBarComponent v-if="progressCounter > 0" :max="futureSymbols.length" :value="progressCounter" />
             <div 
@@ -107,7 +107,7 @@ async function initializeFutureSymbolData(){
             var futureSymbol = props.futureSymbols[i];
             futureSymbol.status = "processing"
 
-            //if(futureSymbol.symbol != "xxx") continue;
+            //if(futureSymbol.symbol != "xx") continue;
 
             await runPositionEntry(futureSymbol.symbol, futureSymbol.maxLeverage, true);
             
@@ -257,6 +257,8 @@ async function updateCandleEntryWithLastCandle(symbol:string){
     futureSymbol.status = "scanning"
 
     var pastKlineEntries = await klineDbUtility.getKlines(symbol);
+    //pastKlineEntries = pastKlineEntries.filter(c => c.openTime < 1767786300000)
+
     pastKlineEntries = pastKlineEntries.sort((a, b) => a.openTime - b.openTime)
 
     //indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: last item of pastKlineEntries: ${JSON.stringify(pastKlineEntries[pastKlineEntries.length - 1])}`);
@@ -269,9 +271,39 @@ async function updateCandleEntryWithLastCandle(symbol:string){
 
     var latest2Candle = await KlineUtility.getRecentKlines(symbol,props.interval,2);
     var previousCandle = latest2Candle[0];
-    //var previousCandle: Candle = {"openTime":1766889900000,"open":0.1068,"high":0.10683,"low":0.1059,"close":0.10603,"volume":70149.82308,"closeTime":1766890799999,"closed":true,"breakthrough_resistance":false,"breakthrough_support":false,"support":null,"resistance":null}
+    var xCurrentCandle = latest2Candle[1];
+    
+    // var previousCandle: Candle = {"openTime":1767786300000,"open":0.0462,"high":0.0462,"low":0.046,"close":0.0462,"volume":7058.0023,"closeTime":1767787199999,"closed":true,"breakthrough_resistance":false,"breakthrough_support":false,"support":null,"resistance":null}
+    // var xCurrentCandle: Candle = {"openTime":1767787200000,"open":0.0462,"high":0.0462,"low":0.0461,"close":0.0461,"volume":24.2845,"closeTime":1767788099999,"closed":true,"breakthrough_resistance":false,"breakthrough_support":false,"support":null,"resistance":null}
 
-    //indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: latest2Candle previousCandle: ${JSON.stringify(previousCandle)}`);
+    // indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: latest2Candle xCurrentCandle: ${JSON.stringify(xCurrentCandle)}`);
+    // indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: latest2Candle previousCandle: ${JSON.stringify(previousCandle)}`);
+
+    var currentCandle: CandleEntry = {
+        ...xCurrentCandle,
+        close_atr_abs_change: 0,
+        close_atr_adjusted: 0,
+        symbol: symbol,
+        duration: 0,
+        status: '',
+        side: '',
+        tpPrice: 0,
+        slPrice: 0,
+        zoneAnalysis: null,
+        volumeAnalysis: null,
+        overboughSoldAnalysis: null,
+        pastVolumeAnalysis: null,
+        candleData: null,
+        priceZone: null,
+        priceZoneInteraction: null,
+        pnl: 0,
+        leverage: 0,
+        margin: 0,
+        entryFee: 0,
+        closeAbsDistanceToZone: null,
+        priceZoneEvaluation: null,
+        patternTrack: ""
+    }
 
     var entryCandle: CandleEntry = {
         ...previousCandle,
@@ -313,7 +345,10 @@ async function updateCandleEntryWithLastCandle(symbol:string){
 
     //await klineDbUtility.insertNewKline(symbol, entryCandle)
 
+    pastKlineEntries.push(currentCandle);
     candleAnalyzer.trackSwingPatterns(pastKlineEntries);
+
+    pastKlineEntries = pastKlineEntries.slice(0, -1)
 
     await SimulationUtility.markPositionEntries(
         props.margin,

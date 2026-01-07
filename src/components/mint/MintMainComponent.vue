@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.81C-P4-1-N</label>
+        <label>v1.81D-P4-1-N</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
@@ -337,16 +337,16 @@ async function runStats(){
             return acc
         }, {})
 
-        var hit = candles[candles.length - 1].patternTrack != ""
-        if(hit){
-            symbolsOfInterest.value.push(symbol);
-        }
-
-        //==GET POSITION OPENED AFTER LIVE
-        // var countHits = candles.filter(c => c.openTime >= chocoMintoStore.startingTimeStamp && (c.side == "SHORT" || c.side == "LONG")).length;
-        // if(countHits >= 1){
+        // var hit = candles[candles.length - 1].patternTrack != ""
+        // if(hit){
         //     symbolsOfInterest.value.push(symbol);
         // }
+
+        //==GET POSITION OPENED AFTER LIVE
+        var countHits = candles.filter(c => c.openTime >= chocoMintoStore.startingTimeStamp && (c.side == "SHORT" || c.side == "LONG")).length;
+        if(countHits >= 1){
+            symbolsOfInterest.value.push(symbol);
+        }
 
         //GET HIGHER LOSSES
         // var countHits = candles.filter(c => c.pnl < -3).length;
