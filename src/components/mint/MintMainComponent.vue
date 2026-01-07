@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.81E-P4-1-N</label>
+        <label>v1.81F-P4-1-N</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
@@ -289,7 +289,18 @@ async function onNewCandle(candle:Candle){
     if(chocoMintoStore.isLive){
         var balance = await OrderMakerUtility.getBalance();
         if(balance && balance.unrealized_pnl > 5){
-            await OrderMakerUtility.closeAllOpenPositions();
+            try {
+                await OrderMakerUtility.closeAllOpenPositions();
+            } catch (error) {
+                const errorDetails = {
+                    message: error instanceof Error ? error.message : String(error),
+                    stack: error instanceof Error ? error.stack : undefined,
+                    name: error instanceof Error ? error.name : 'Unknown',
+                    timestamp: new Date().toISOString(),
+                    symbol: ""
+                };
+                indexDBLogger.writeLog(`[closing positions] Error: ${JSON.stringify(errorDetails)}`);
+            }
         }
     }
     if(!chocoMintoStore.isManualSimulation){

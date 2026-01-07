@@ -237,7 +237,18 @@ async function onNewCandleSpawed(){
 
         var futureSymbol = props.futureSymbols[i];
 
-        await updateCandleEntryWithLastCandle(futureSymbol.symbol);
+        try {
+            await updateCandleEntryWithLastCandle(futureSymbol.symbol);   
+        } catch (error) {
+            const errorDetails = {
+                message: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack : undefined,
+                name: error instanceof Error ? error.name : 'Unknown',
+                timestamp: new Date().toISOString(),
+                symbol: futureSymbol.symbol
+            };
+            indexDBLogger.writeLog(`[new candle] Error: ${JSON.stringify(errorDetails)}`);
+        }
     }
 
     progressCounter.value = 0;
