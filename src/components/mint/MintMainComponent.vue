@@ -77,6 +77,9 @@
         <div class="text-center" v-if="UI_STATE_FORCE_CLOSE_MESSAGE != ''">
             {{ UI_STATE_FORCE_CLOSE_MESSAGE }}
         </div>
+        <div class="text-center">
+            Last Bal Check: {{ UI_BAL_CHECK }}
+        </div>
         <div v-for="(futureSymbolBatch,index) in futureSymbolBatches" class="col-lg-3 col-md-3">
             <SymbolBasketComponent 
                 :key="basketKey"
@@ -170,6 +173,7 @@ const UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE = ref("")
 const UI_STATE_FORCE_CLOSE_MESSAGE = ref('')
 const UI_SHOW_REPLAY = ref(false)
 const UI_SYMBOL_OF_INTEREST_MESAGE = ref('')
+const UI_BAL_CHECK = ref('')
 
 const futureSymbolBatches = ref<FuturesSymbol[][]>([])
 
@@ -292,6 +296,8 @@ async function onNewCandle(candle:Candle){
         const fees = OrderMakerUtility.calculateTotalTradingFees(positions);
         var baseTarget = 5
         var targetProfit = baseTarget + fees.totalFees
+
+        UI_BAL_CHECK.value = `T: ${targetProfit} => U: ${balance.unrealized_pnl}`
         
         if(balance && balance.unrealized_pnl > targetProfit){
             try {
