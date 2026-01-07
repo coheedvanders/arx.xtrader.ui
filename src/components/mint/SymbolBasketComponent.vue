@@ -254,7 +254,7 @@ async function onNewCandleSpawed(){
 async function updateCandleEntryWithLastCandle(symbol:string){
     var futureSymbol = props.futureSymbols.find(f => f.symbol == symbol)!;
 
-    futureSymbol.status = "scanning"
+    futureSymbol.status = "retrieving kline"
 
     var pastKlineEntries = await klineDbUtility.getKlines(symbol);
     //pastKlineEntries = pastKlineEntries.filter(c => c.openTime < 1767786300000)
@@ -269,6 +269,7 @@ async function updateCandleEntryWithLastCandle(symbol:string){
         return;
     }
 
+    futureSymbol.status = "retrieving kline 2"
     var latest2Candle = await KlineUtility.getRecentKlines(symbol,props.interval,2);
     var previousCandle = latest2Candle[0];
     var xCurrentCandle = latest2Candle[1];
@@ -335,6 +336,7 @@ async function updateCandleEntryWithLastCandle(symbol:string){
     pastKlineEntries.push(entryCandle);
     pastKlineEntries = pastKlineEntries.sort((a, b) => a.openTime - b.openTime)
 
+    futureSymbol.status = "supp res"
     var {support,resistance} = candleAnalyzer.computeSupportResistance(pastKlineEntries,props.supportAndResistancePeriodLength);
 
     entryCandle.support = support;
@@ -346,10 +348,13 @@ async function updateCandleEntryWithLastCandle(symbol:string){
     //await klineDbUtility.insertNewKline(symbol, entryCandle)
 
     pastKlineEntries.push(currentCandle);
+
+    futureSymbol.status = "track swing"
     candleAnalyzer.trackSwingPatterns(pastKlineEntries);
 
     pastKlineEntries = pastKlineEntries.slice(0, -1)
 
+    futureSymbol.status = "mark pos"
     await SimulationUtility.markPositionEntries(
         props.margin,
         props.positionDurationMedian,
@@ -390,6 +395,7 @@ async function updateCandleEntryWithLastCandle(symbol:string){
 
         if(prevKlineEntry.side == "SHORT"){
             if(chocoMintoStore.isLive){
+                futureSymbol.status = "open short"
                 await OrderMakerUtility.openOrder(
                     symbol,
                     prevKlineEntry.margin,
@@ -421,6 +427,7 @@ async function updateCandleEntryWithLastCandle(symbol:string){
             notificationStore.sendNotification(symbol,"SELL");
         }else if(prevKlineEntry.side == "LONG"){
             if(chocoMintoStore.isLive){
+                futureSymbol.status = "open long"
                 await OrderMakerUtility.openOrder(
                     symbol,
                     prevKlineEntry.margin,
