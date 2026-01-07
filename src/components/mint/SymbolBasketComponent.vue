@@ -313,6 +313,8 @@ async function updateCandleEntryWithLastCandle(symbol:string){
 
     //await klineDbUtility.insertNewKline(symbol, entryCandle)
 
+    candleAnalyzer.trackSwingPatterns(pastKlineEntries);
+
     await SimulationUtility.markPositionEntries(
         props.margin,
         props.positionDurationMedian,
