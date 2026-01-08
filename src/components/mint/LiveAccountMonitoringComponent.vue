@@ -10,20 +10,6 @@
             <CardComponent class="text-center">
                 <div>Unrealized PNL</div>
                 <div>{{ balanceResult?.unrealized_pnl }}</div>
-                <div class="divider"></div>
-                <button @click="calcEstTotalTradingAndExitFees">calc est entry and exit fee</button>
-                <div>Open Positions</div>
-                <div>{{ openPositions }}</div>
-                <div>Entry Fees</div>
-                <div>{{ totalEntryFees }}</div>
-                <div>Exit Fees</div>
-                <div>{{ totalExitFees }}</div>
-                <div>Liquidity Buffer</div>
-                <div>{{ liquidityBuffer }}</div>
-                <div>Total Notional</div>
-                <div>{{ totalNotional }}</div>
-                <div>Target PNL</div>
-                <div>{{ 5 + (totalEntryFees + totalExitFees + liquidityBuffer) }}</div>
             </CardComponent>
         </div>
         <div class="col-lg-4 col-md-4">
