@@ -299,9 +299,9 @@ async function markAllEntries(entryIndex: number) {
     
     const chunkSize = 5;
 
-    if(simulationStats.value.totalOpenPnl > 5){
-        await tradeLogger.forceCloseOpenPositions();
-    }
+    // if(simulationStats.value.totalOpenPnl > 20){
+    //     await tradeLogger.forceCloseOpenPositions();
+    // }
 
     for (let i = 0; i < symbols.length; i += chunkSize) {
         const chunk = symbols.slice(i, i + chunkSize);
