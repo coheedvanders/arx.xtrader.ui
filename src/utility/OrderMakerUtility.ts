@@ -138,7 +138,7 @@ export class OrderMakerUtility {
     static calculateTotalTradingFees(
         positions: Position[],
         takerFeeRate: number = 0.0004,
-        liquidityBufferPercent: number = 0.001
+        liquidityBufferPercent: number = 0.003
     ): { 
         entryFees: number; 
         exitFees: number; 
