@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.81K-P4-1-N</label>
+        <label>v1.81L-P4-1-N</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
@@ -156,7 +156,7 @@ const isBotEnabled = ref(false)
 
 const MASTER_SYMBOL = "BTCUSDT";
 const KLINE_INTERVAL = "15m"
-const MAX_INIT_CANDLES = 1000;
+const MAX_INIT_CANDLES = 210;
 const SUPPORT_AND_RESISTANCE_PERIOD_LENGTH = 10;
 
 const MARGIN = 1;

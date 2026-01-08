@@ -470,6 +470,14 @@ export class SimulationUtility {
                             }
                         }
 
+                        if(candle.candleData.change_percentage_v < -22){
+                            candle.candleData.conditionMet = "LONG_CRAZY"
+                            candle.side = "LONG"
+                            //candle.margin = margin * 3
+                            candle.tpPrice = candle.close + (atr * 1.5)
+                            candle.slPrice = candle.close - (atr * 0.3)
+                        }
+
 
                         /*
                         ======================================
