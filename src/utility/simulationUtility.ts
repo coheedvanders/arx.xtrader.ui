@@ -314,41 +314,79 @@ export class SimulationUtility {
                         upperZoneEqualizerPrice = upperZoneEqualizerPrice - (upperZoneEqualizerPrice * 0.0005)
 
 
-                        if(candle.patternTrack == "hl"){
-                            var previousPatternTracks = movingCandles.filter(c => c.openTime < candle.openTime && c.patternTrack != "");
-                            if(previousPatternTracks.length >= 2){
-                                var lastPatternTrack = previousPatternTracks[previousPatternTracks.length - 1].patternTrack;
-                                if(lastPatternTrack == "lh"){
-                                    if(closeAbsDistanceToUpper > 1
-                                        && candle.close < candle.priceZone.upper
-                                    ){
-                                        candle.side = "LONG"
-                                        candle.tpPrice = candle.priceZone.upper
+                        // if(candle.patternTrack == "hl"){
+                        //     var previousPatternTracks = movingCandles.filter(c => c.openTime < candle.openTime && c.patternTrack != "");
+                        //     if(previousPatternTracks.length >= 2){
+                        //         var lastPatternTrack = previousPatternTracks[previousPatternTracks.length - 1].patternTrack;
+                        //         if(lastPatternTrack == "lh"){
+                        //             if(closeAbsDistanceToUpper > 1
+                        //                 && candle.close < candle.priceZone.upper
+                        //             ){
+                        //                 candle.side = "LONG"
+                        //                 candle.tpPrice = candle.priceZone.upper
 
-                                        if(candle.candleData.zoneSizePercentage > 20 && candle.close < upperZoneEqualizerPrice){
-                                            candle.tpPrice = upperZoneEqualizerPrice
-                                        }
+                        //                 if(candle.candleData.zoneSizePercentage > 20 && candle.close < upperZoneEqualizerPrice){
+                        //                     candle.tpPrice = upperZoneEqualizerPrice
+                        //                 }
 
-                                        if(candle.close < candle.priceZone.lower && candle.open < candle.priceZone.lower && candle.candleData.zoneSizePercentage > 8){
-                                            candle.tpPrice = candle.priceZone.mid - (atr * 0.3)
-                                        }
+                        //                 if(candle.close < candle.priceZone.lower && candle.open < candle.priceZone.lower && candle.candleData.zoneSizePercentage > 8){
+                        //                     candle.tpPrice = candle.priceZone.mid - (atr * 0.3)
+                        //                 }
 
-                                        if(candle.close < candle.priceZone.lower && candle.open < candle.priceZone.lower && candle.candleData.zoneSizePercentage < 3){
-                                            candle.tpPrice = candle.priceZone.mid - (atr * 0.3)
-                                        }
+                        //                 if(candle.close < candle.priceZone.lower && candle.open < candle.priceZone.lower && candle.candleData.zoneSizePercentage < 3){
+                        //                     candle.tpPrice = candle.priceZone.mid - (atr * 0.3)
+                        //                 }
 
-                                        if(candle.close < candle.priceZone.lower && candle.open < candle.priceZone.lower && candle.candleData.zoneSizePercentage < 2 && closeAbsDistanceToLower > 2.5){
-                                            candle.tpPrice = candle.close + (atr * 3)
-                                        }
+                        //                 if(candle.close < candle.priceZone.lower && candle.open < candle.priceZone.lower && candle.candleData.zoneSizePercentage < 2 && closeAbsDistanceToLower > 2.5){
+                        //                     candle.tpPrice = candle.close + (atr * 3)
+                        //                 }
 
-                                        candle.slPrice = candle.open - (atr * 2.5)
+                        //                 candle.slPrice = candle.open - (atr * 2.5)
 
-                                        if(candle.open < candle.priceZone.mid && candle.open > candle.priceZone.lower && candle.candleData.zoneSizePercentage < 4){
-                                            candle.slPrice = candle.priceZone.lower - (atr * 2.5)
-                                        }
-                                    }
-                                }
-                            }
+                        //                 if(candle.open < candle.priceZone.mid && candle.open > candle.priceZone.lower && candle.candleData.zoneSizePercentage < 4){
+                        //                     candle.slPrice = candle.priceZone.lower - (atr * 2.5)
+                        //                 }
+                        //             }
+                        //         }
+                        //     }
+                        // }
+
+                        /*
+                        ======================================
+                        ========CRAZY CANDLE CHANGES==========
+                        ======================================
+                        */
+
+                        var xPastCandles = movingCandles.slice(-5);
+                        var lowestOpen = Math.min(...xPastCandles.map(c => c.open))
+                        var highestClose = Math.max(...xPastCandles.map(c => c.close))
+
+                        var highestLowestChangeDiff = ((highestClose - lowestOpen) / lowestOpen) * 100
+                        candle.candleData.extraInfo = highestLowestChangeDiff.toString()
+                        if(highestLowestChangeDiff > 20
+                            && movingCandles.slice(-20).filter(c => c.candleData && c.candleData.conditionMet == "SHORT_CRAZY").length == 0
+                            && candle.close > candle.priceZone.upper
+                            && xPastCandles.filter(c => c.priceZone && c.open > candle.priceZone!.upper).length >= 3
+                        ) {
+                            candle.candleData.conditionMet = "SHORT_CRAZY"
+                            candle.side = "SHORT"
+                            candle.margin = margin * 3
+                            candle.tpPrice = candle.close - (atr * 3)
+                            candle.slPrice = Math.max(...xPastCandles.map(c => c.high))
+                        }
+
+                        if(candle.candleData.change_percentage_v < -30 && candle.candleData.change_percentage_v > -50){
+                            candle.side = "LONG"
+                            candle.margin = margin * 3
+                            candle.tpPrice = candle.close + (atr * 1.5)
+                            candle.slPrice = candle.low
+                        }
+
+                        if(candle.candleData.change_percentage_v < -50){
+                            candle.side = "SHORT"
+                            candle.margin = margin * 3
+                            candle.tpPrice = candle.close - (atr)
+                            candle.slPrice = candle.close + atr
                         }
 
                         /*
