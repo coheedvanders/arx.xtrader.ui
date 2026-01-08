@@ -165,7 +165,7 @@ export class OrderMakerUtility {
 
         const totalFees = totalEntryFees + totalExitFees;
 
-        const liquidityBufferPercent = Math.pow(positions.length / 10, 1.5) * 0.01; // scales exponentially
+        const liquidityBufferPercent = Math.pow(positions.length / 10, 1.5) * 0.007; // scales exponentially
         
         // Calculate liquidity buffer based on total notional
         const liquidityBuffer = totalNotional * liquidityBufferPercent;
