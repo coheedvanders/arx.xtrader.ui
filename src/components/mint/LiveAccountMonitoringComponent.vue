@@ -20,6 +20,8 @@
                 <div>{{ totalExitFees }}</div>
                 <div>Liquidity Buffer</div>
                 <div>{{ liquidityBuffer }}</div>
+                <div>Total Notional</div>
+                <div>{{ totalNotional }}</div>
                 <div>Target PNL</div>
                 <div>{{ 5 + (totalEntryFees + totalExitFees + liquidityBuffer) }}</div>
             </CardComponent>
@@ -45,6 +47,7 @@ const totalEntryFees = ref(0)
 const totalExitFees = ref(0)
 const liquidityBuffer = ref(0)
 const openPositions = ref(0)
+const totalNotional = ref(0)
 
 onMounted(() => {
     startBalanceChecker();
@@ -62,6 +65,7 @@ async function calcEstTotalTradingAndExitFees(){
     openPositions.value = positions.length
     totalEntryFees.value = fees.entryFees
     totalExitFees.value = fees.exitFees
+    totalNotional.value = fees.totalNotional
     liquidityBuffer.value = fees.liquidityBuffer
 }
 

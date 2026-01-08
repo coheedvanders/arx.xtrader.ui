@@ -137,13 +137,13 @@ export class OrderMakerUtility {
 
     static calculateTotalTradingFees(
         positions: Position[],
-        takerFeeRate: number = 0.0004,
-        liquidityBufferPercent: number = 0.003
+        takerFeeRate: number = 0.0004
     ): { 
         entryFees: number; 
         exitFees: number; 
         totalFees: number;
         liquidityBuffer: number;
+        totalNotional: number;
         targetProfit: number;
     } {
         let totalEntryFees = 0;
@@ -164,6 +164,8 @@ export class OrderMakerUtility {
         }
 
         const totalFees = totalEntryFees + totalExitFees;
+
+        const liquidityBufferPercent = Math.pow(positions.length / 10, 1.5) * 0.01; // scales exponentially
         
         // Calculate liquidity buffer based on total notional
         const liquidityBuffer = totalNotional * liquidityBufferPercent;
@@ -177,6 +179,7 @@ export class OrderMakerUtility {
             exitFees: totalExitFees,
             totalFees,
             liquidityBuffer,
+            totalNotional,
             targetProfit
         };
     }
