@@ -18,8 +18,10 @@
                 <div>{{ totalEntryFees }}</div>
                 <div>Exit Fees</div>
                 <div>{{ totalExitFees }}</div>
+                <div>Liquidity Buffer</div>
+                <div>{{ liquidityBuffer }}</div>
                 <div>Target PNL</div>
-                <div>{{ 5 + (totalEntryFees + totalExitFees) }}</div>
+                <div>{{ 5 + (totalEntryFees + totalExitFees + liquidityBuffer) }}</div>
             </CardComponent>
         </div>
         <div class="col-lg-4 col-md-4">
@@ -41,6 +43,7 @@ const balanceResult = ref<BalanceResponse>()
 
 const totalEntryFees = ref(0)
 const totalExitFees = ref(0)
+const liquidityBuffer = ref(0)
 const openPositions = ref(0)
 
 onMounted(() => {
@@ -59,6 +62,7 @@ async function calcEstTotalTradingAndExitFees(){
     openPositions.value = positions.length
     totalEntryFees.value = fees.entryFees
     totalExitFees.value = fees.exitFees
+    liquidityBuffer.value = fees.liquidityBuffer
 }
 
 

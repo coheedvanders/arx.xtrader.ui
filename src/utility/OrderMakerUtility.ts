@@ -136,14 +136,23 @@ export class OrderMakerUtility {
     }
 
     static calculateTotalTradingFees(
-    positions: Position[],
-    takerFeeRate: number = 0.0004
-    ): { entryFees: number; exitFees: number; totalFees: number } {
+        positions: Position[],
+        takerFeeRate: number = 0.0004,
+        liquidityBufferPercent: number = 0.001
+    ): { 
+        entryFees: number; 
+        exitFees: number; 
+        totalFees: number;
+        liquidityBuffer: number;
+        targetProfit: number;
+    } {
         let totalEntryFees = 0;
         let totalExitFees = 0;
+        let totalNotional = 0;
 
         for (const position of positions) {
             const notional = Math.abs(parseFloat(position.notional));
+            totalNotional += notional;
             
             // Entry fee (already paid when opening position)
             const entryFee = notional * takerFeeRate;
@@ -155,11 +164,20 @@ export class OrderMakerUtility {
         }
 
         const totalFees = totalEntryFees + totalExitFees;
+        
+        // Calculate liquidity buffer based on total notional
+        const liquidityBuffer = totalNotional * liquidityBufferPercent;
+        
+        // Target profit to land clean 5 USDT
+        const desiredProfit = 5;
+        const targetProfit = desiredProfit + totalFees + liquidityBuffer;
 
         return {
             entryFees: totalEntryFees,
             exitFees: totalExitFees,
-            totalFees
+            totalFees,
+            liquidityBuffer,
+            targetProfit
         };
     }
 }

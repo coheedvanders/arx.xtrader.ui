@@ -73,12 +73,13 @@
         </CardComponent>
     </div>
 
+    <div class="text-center">
+        Last Bal Check: {{ UI_BAL_CHECK }}
+    </div>
+
     <div class="row pa-md" v-if="isBotEnabled || chocoMintoStore.isManualSimulation">
         <div class="text-center" v-if="UI_STATE_FORCE_CLOSE_MESSAGE != ''">
             {{ UI_STATE_FORCE_CLOSE_MESSAGE }}
-        </div>
-        <div class="text-center">
-            Last Bal Check: {{ UI_BAL_CHECK }}
         </div>
         <div v-for="(futureSymbolBatch,index) in futureSymbolBatches" class="col-lg-3 col-md-3">
             <SymbolBasketComponent 
@@ -295,7 +296,7 @@ async function onNewCandle(candle:Candle){
         const positions = await OrderMakerUtility.getPositions();
         const fees = OrderMakerUtility.calculateTotalTradingFees(positions);
         var baseTarget = 5
-        var targetProfit = baseTarget + fees.totalFees
+        var targetProfit = baseTarget + fees.totalFees + fees.liquidityBuffer
 
         UI_BAL_CHECK.value = `T: ${targetProfit} => U: ${balance.unrealized_pnl}`
         
