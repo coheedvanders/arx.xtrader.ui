@@ -5,6 +5,7 @@ import { KlineUtility } from "./klineUtility.ts";
 import { klineDbUtility } from "./klineDbUtility.ts";
 import { PriceZoneUtility } from "./priceZoneUtility.ts";
 import { PnlUtility } from "./PnlUtility.ts";
+import { TypePredicateKind } from "typescript";
 
 export class SimulationUtility {
     static async initializePastCandleEntryData(symbol: string, interval:string,maxCandles:number, supportAndResistancePeriodLength: number){
@@ -391,10 +392,17 @@ export class SimulationUtility {
                             && candle.candleData.change_percentage_v > 15
                         ){
                             if(movingCandles.slice(-24).filter(c => c.openTime < candle.openTime && c.volumeAnalysis && c.volumeAnalysis.zScore >= 3).length <= 1){
-                                candle.side = "LONG"
-                                candle.margin = margin * 3
+                                
                                 candle.tpPrice = candle.close + (atr * 1.5)
                                 candle.slPrice = candle.high - (atr * 2.5)
+                                
+                                if(candle.slPrice < candle.close){
+                                    candle.side = "LONG"
+                                    candle.margin = margin * 3
+                                }else{
+                                    candle.tpPrice = 0
+                                    candle.slPrice = 0
+                                }
                             }else{
                                 candle.side = "SHORT"
                                 candle.margin = margin * 3
