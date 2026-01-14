@@ -366,14 +366,15 @@ export class SimulationUtility {
                             && candle.close > candle.priceZone.upper
                             && xPastCandles.filter(c => c.priceZone && c.open > candle.priceZone!.upper).length >= 3
                         ) {
-                            candle.candleData.conditionMet = "SHORT_CRAZY"
+                            candle.candleData.conditionMet = "SHORT_CRAZY_1"
                             candle.side = "SHORT"
                             candle.margin = margin * 3
                             candle.tpPrice = candle.close - (atr * 3)
-                            candle.slPrice = Math.max(...xPastCandles.map(c => c.high))
+                            candle.slPrice = Math.max(...xPastCandles.map(c => c.high)) + (atr * 0.3)
                         }
 
                         if(candle.candleData.change_percentage_v < -30 && candle.candleData.change_percentage_v > -50){
+                            candle.candleData.conditionMet = "LONG_CRAZY_1"
                             candle.side = "LONG"
                             candle.margin = margin * 3
                             candle.tpPrice = candle.close + (atr * 1.5)
@@ -381,6 +382,7 @@ export class SimulationUtility {
                         }
 
                         if(candle.candleData.change_percentage_v < -50){
+                            candle.candleData.conditionMet = "SHORT_CRAZY_2"
                             candle.side = "SHORT"
                             candle.margin = margin * 3
                             candle.tpPrice = candle.close - (atr)
@@ -397,6 +399,7 @@ export class SimulationUtility {
                                 candle.slPrice = candle.high - (atr * 2.5)
                                 
                                 if(candle.slPrice < candle.close){
+                                    candle.candleData.conditionMet = "LONG_CRAZY_2"
                                     candle.side = "LONG"
                                     candle.margin = margin * 3
                                 }else{
@@ -404,6 +407,7 @@ export class SimulationUtility {
                                     candle.slPrice = 0
                                 }
                             }else{
+                                candle.candleData.conditionMet = "SHORT_CRAZY_3"
                                 candle.side = "SHORT"
                                 candle.margin = margin * 3
                                 candle.tpPrice = candle.close - (atr * 2.5)
@@ -416,7 +420,7 @@ export class SimulationUtility {
                         && movingCandles.slice(-5).filter(c => c.candleData && c.candleData.side == "bull" && c.candleData.volumeSpike).length >= 4
                         && highestLowestChangeDiff > 10
                         ){
-                            candle.candleData.conditionMet = "SHORT_CRAZY"
+                            candle.candleData.conditionMet = "SHORT_CRAZY_4"
                             candle.side = "SHORT"
                             candle.margin = margin * 3
                             candle.tpPrice = candle.close - (atr * 2)
@@ -429,6 +433,7 @@ export class SimulationUtility {
                             && prevCandle.candleData.side == "bull"
                             && candle.candleData.side == "bear"
                             && candle.close > supportCandle.open
+                            && candle.candleData.change_percentage_v < -1
                             && supportCandle.open > candle.priceZone.upper
                             && movingCandles.slice(-15).filter(c => c.candleData && c.candleData.side == "bull").length >= 9
                             && movingCandles.slice(-10).filter(c => c.openTime < supportCandle.openTime && c.close > supportCandle.open).length == 0
@@ -442,6 +447,7 @@ export class SimulationUtility {
                             if(_highestLowestChangeDiff > 10){
                                 candle.candleData.isShortPotential = true
 
+                                candle.candleData.conditionMet = "SHORT_CRAZY_5"
                                 candle.side = "SHORT"
                                 candle.margin = margin * 3
                                 candle.tpPrice = candle.close - atr * 2
@@ -469,6 +475,7 @@ export class SimulationUtility {
                                 && candle.candleData.change_percentage_v > 2
                                 && prevCandle.volumeAnalysis.zScore >= 3
                             ){
+                                candle.candleData.conditionMet = "LONG_CRAZY_3"
                                 candle.side = "LONG"
                                 candle.margin = margin * 3
                                 candle.tpPrice = candle.close + (atr * 1.8)
@@ -479,7 +486,7 @@ export class SimulationUtility {
                         }
 
                         if(candle.candleData.change_percentage_v < -22){
-                            candle.candleData.conditionMet = "LONG_CRAZY"
+                            candle.candleData.conditionMet = "LONG_CRAZY_4"
                             candle.side = "LONG"
                             //candle.margin = margin * 3
                             candle.tpPrice = candle.close + (atr * 1.5)
