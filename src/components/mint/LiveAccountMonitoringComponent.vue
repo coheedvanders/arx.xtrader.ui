@@ -42,7 +42,7 @@ onMounted(() => {
 async function startBalanceChecker(){
     var balanceInterval = setInterval(async () => {
         balanceResult.value = await OrderMakerUtility.getBalance();
-    }, 5000);
+    }, 60000);
 }
 
 async function calcEstTotalTradingAndExitFees(){
