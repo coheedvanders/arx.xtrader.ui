@@ -12,7 +12,7 @@
     </div>
 
     <div class="pa-md">
-        <LiveAccountMonitoringComponent v-if="chocoMintoStore.isLive" />
+        <LiveAccountMonitoringComponent :margin="MARGIN" v-if="chocoMintoStore.isLive" />
         <SimulatedPositionSummaryComponent v-else :margin="MARGIN" :starting-balance="STARTING_BALANCE" />
     </div>
 
@@ -159,7 +159,7 @@ const KLINE_INTERVAL = "15m"
 const MAX_INIT_CANDLES = 210;
 const SUPPORT_AND_RESISTANCE_PERIOD_LENGTH = 10;
 
-const MARGIN = 1;
+const MARGIN = 1.5;
 const TP_ROI = 2;
 const SL_ROI = 2.5;
 const STARTING_BALANCE = 100;
@@ -291,30 +291,30 @@ async function initializeFutureSymbols(){
 
 async function onNewCandle(candle:Candle){
     //send event to the SymbolBasketComponent
-    // if(chocoMintoStore.isLive){
-    //     var balance = await OrderMakerUtility.getBalance();
-    //     const positions = await OrderMakerUtility.getPositions();
-    //     const fees = OrderMakerUtility.calculateTotalTradingFees(positions);
-    //     var baseTarget = 5
-    //     var targetProfit = baseTarget + fees.totalFees + fees.liquidityBuffer
+    if(chocoMintoStore.isLive){
+        var balance = await OrderMakerUtility.getBalance();
+        const positions = await OrderMakerUtility.getPositions();
+        const fees = OrderMakerUtility.calculateTotalTradingFees(positions);
+        var baseTarget = MARGIN * 5
+        var targetProfit = baseTarget + fees.totalFees + fees.liquidityBuffer
 
-    //     UI_BAL_CHECK.value = `T: ${targetProfit} => U: ${balance.unrealized_pnl}`
+        UI_BAL_CHECK.value = `T: ${targetProfit} => U: ${balance.unrealized_pnl}`
         
-    //     if(balance && balance.unrealized_pnl > targetProfit){
-    //         try {
-    //             await OrderMakerUtility.closeAllOpenPositions();
-    //         } catch (error) {
-    //             const errorDetails = {
-    //                 message: error instanceof Error ? error.message : String(error),
-    //                 stack: error instanceof Error ? error.stack : undefined,
-    //                 name: error instanceof Error ? error.name : 'Unknown',
-    //                 timestamp: new Date().toISOString(),
-    //                 symbol: ""
-    //             };
-    //             indexDBLogger.writeLog(`[closing positions] Error: ${JSON.stringify(errorDetails)}`);
-    //         }
-    //     }
-    // }
+        if(balance && balance.unrealized_pnl > targetProfit){
+            try {
+                await OrderMakerUtility.closeAllOpenPositions();
+            } catch (error) {
+                const errorDetails = {
+                    message: error instanceof Error ? error.message : String(error),
+                    stack: error instanceof Error ? error.stack : undefined,
+                    name: error instanceof Error ? error.name : 'Unknown',
+                    timestamp: new Date().toISOString(),
+                    symbol: ""
+                };
+                indexDBLogger.writeLog(`[closing positions] Error: ${JSON.stringify(errorDetails)}`);
+            }
+        }
+    }
 
     if(!chocoMintoStore.isManualSimulation){
         setTimeout(() => {

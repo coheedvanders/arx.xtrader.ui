@@ -10,6 +10,16 @@
             <CardComponent class="text-center">
                 <div>Unrealized PNL</div>
                 <div>{{ balanceResult?.unrealized_pnl }}</div>
+                <div class="divider"></div>
+                <button @click="calcEstTotalTradingAndExitFees">calc est entry and exit fee</button>
+                <div>Open Positions</div>
+                <div>{{ openPositions }}</div>
+                <div>Entry Fees</div>
+                <div>{{ totalEntryFees }}</div>
+                <div>Exit Fees</div>
+                <div>{{ totalExitFees }}</div>
+                <div>Target PNL</div>
+                <div>{{ ((margin * 5) + (totalEntryFees + totalExitFees)) + totalLiqBuff }}</div>
             </CardComponent>
         </div>
         <div class="col-lg-4 col-md-4">
@@ -27,13 +37,16 @@ import CardComponent from '../shared/card/CardComponent.vue';
 import { OrderMakerUtility } from '@/utility/OrderMakerUtility';
 import { type BalanceResponse, type Position } from '@/core/interfaces';
 
+const props = defineProps<{
+  margin: number
+}>()
+
 const balanceResult = ref<BalanceResponse>()
 
 const totalEntryFees = ref(0)
 const totalExitFees = ref(0)
-const liquidityBuffer = ref(0)
+const totalLiqBuff = ref(0)
 const openPositions = ref(0)
-const totalNotional = ref(0)
 
 onMounted(() => {
     startBalanceChecker();
@@ -51,8 +64,7 @@ async function calcEstTotalTradingAndExitFees(){
     openPositions.value = positions.length
     totalEntryFees.value = fees.entryFees
     totalExitFees.value = fees.exitFees
-    totalNotional.value = fees.totalNotional
-    liquidityBuffer.value = fees.liquidityBuffer
+    totalLiqBuff.value = fees.liquidityBuffer
 }
 
 
