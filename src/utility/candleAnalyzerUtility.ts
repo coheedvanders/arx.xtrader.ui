@@ -50,7 +50,46 @@ class CandlestickAnalyzer {
             }
             }
         }
+    }
+
+    static getCandleChangeZScore(candles: CandleEntry[], length: number): number {
+        if (candles.length < length) {
+            return 0;
         }
+
+        // Get the last 'length' candles and filter out those without candleData
+        const recentCandles = candles.slice(-length);
+        const absChanges = recentCandles
+            .filter(c => c.candleData && c.candleData.change_percentage_v !== undefined)
+            .map(c => Math.abs(c.candleData!.change_percentage_v));
+
+        if (absChanges.length === 0) {
+            return 0;
+        }
+
+        // Calculate mean
+        const mean = absChanges.reduce((a, b) => a + b, 0) / absChanges.length;
+
+        // Calculate standard deviation
+        const variance = absChanges.reduce((sum, val) => {
+            return sum + Math.pow(val - mean, 2);
+        }, 0) / absChanges.length;
+
+        const stdDev = Math.sqrt(variance);
+
+        // Get the most recent candle's absolute change
+        const latestCandle = candles[candles.length - 1];
+        if (!latestCandle.candleData || latestCandle.candleData.change_percentage_v === undefined) {
+            return 0;
+        }
+
+        const latestAbsChange = Math.abs(latestCandle.candleData.change_percentage_v);
+
+        // Calculate z-score
+        const zScore = stdDev === 0 ? 0 : (latestAbsChange - mean) / stdDev;
+
+        return zScore;
+    }
 
   static analyzeCandlestick(candles: Candle[], index:number, checkPast: boolean, pastCandleLookBack:number): CandleData {
     var candle = candles[index];
@@ -72,6 +111,9 @@ class CandlestickAnalyzer {
     const bottomWickPercentage = size !== 0 ? (bottomWick / size) * 100 : 0;
 
     const side: "bull" | "bear" = c > o ? "bull" : "bear";
+
+    var topWickAbsChange = side == "bull" ? Math.abs(((candle.close - candle.high) / candle.high) * 100) : Math.abs(((candle.open - candle.high) / candle.high) * 100)
+    var bottomWickAbsChange = side == "bull" ? Math.abs(((candle.open - candle.low) / candle.low) * 100) : Math.abs(((candle.close - candle.low) / candle.low) * 100)
 
     const strength =
       side === "bull"
@@ -141,7 +183,10 @@ class CandlestickAnalyzer {
         pastZoneOverStatePriceReaction: "",
         spaceTakenInZoneLevel: 0,
         pastCandleAverageChange: 0,
-        absCandleSize
+        absCandleSize,
+        changePercentageZScore: 0,
+        top_wick_abs_change: topWickAbsChange,
+        bottom_wick_abs_change: bottomWickAbsChange
     };
   }
 

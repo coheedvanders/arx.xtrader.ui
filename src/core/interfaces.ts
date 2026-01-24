@@ -236,6 +236,8 @@ export interface CandleData {
   bottom_wick_v: number;
   strength_v: number;
   change_percentage_v: number;
+  bottom_wick_abs_change: number;
+  top_wick_abs_change: number;
   side: "bull" | "bear";
   previousCandleData: CandleData[] | null;
   ema200: number;
@@ -261,6 +263,7 @@ export interface CandleData {
   spaceTakenInZoneLevel:number;
   pastCandleAverageChange:number;
   absCandleSize: number;
+  changePercentageZScore: number;
 }
 
 

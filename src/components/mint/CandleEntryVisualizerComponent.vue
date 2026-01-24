@@ -368,8 +368,13 @@
               </div>
 
               <div class="detail-item">
-                <label>Close</label>
+                <label>PNL</label>
                 <span>{{ selectedCandle.pnl!.toFixed(4) }}</span>
+              </div>
+
+              <div class="detail-item">
+                <label>Extra Info</label>
+                <span>{{ selectedCandle.candleData!.extraInfo }}</span>
               </div>
 
               <!-- Price Zone -->
