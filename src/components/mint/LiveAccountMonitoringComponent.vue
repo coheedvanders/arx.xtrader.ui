@@ -7,6 +7,7 @@
                 <div>Transfer Earnings</div>
                 <div>
                     <div>{{ transferCountdown }}</div>
+                    <div>{{ transferMessage }}</div>
                 </div>
             </CardComponent>
         </div>
@@ -50,6 +51,7 @@ const props = defineProps<{
 const showBalanceInfo = ref(false);
 const balanceResult = ref<BalanceResponse>()
 const transferCountdown = ref<string>('');
+const transferMessage = ref("- - -")
 
 const totalEntryFees = ref(0)
 const totalExitFees = ref(0)
@@ -98,8 +100,11 @@ async function startEarningTransfer() {
             await OrderMakerUtility.closeAllOpenPositions();
 
             await OrderMakerUtility.transferEarnings(100);
+
+            transferMessage.value = "last transfer: " + (new Date()).toLocaleString()
             
         } catch (error) {
+            transferMessage.value = `Last transfer error (${(new Date()).toLocaleString()}): ${error instanceof Error ? error.message : String(error)}`;
             console.error('Error during earning transfer:', error);
         }
     }, timeUntilTransfer);
