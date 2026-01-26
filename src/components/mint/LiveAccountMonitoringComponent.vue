@@ -78,10 +78,10 @@ async function startEarningTransfer() {
         return;
     }
 
-    // Calculate time until 11:30 PM
+    // Calculate time until 11:25 PM
     const now = new Date();
     const target = new Date();
-    target.setHours(23, 30, 0, 0);
+    target.setHours(23, 25, 0, 0);
 
     // If it's already past 11:30 PM, schedule for tomorrow
     if (now > target) {
@@ -95,14 +95,20 @@ async function startEarningTransfer() {
     // Set timeout for the scheduled time
     setTimeout(async () => {
         try {
-            console.log('Starting earning transfer...');
+            var baseBalance = 100;
 
-            await OrderMakerUtility.closeAllOpenPositions();
+            balanceResult.value = await OrderMakerUtility.getBalance();
+            var margin = balanceResult.value.balance + balanceResult.value.unrealized_pnl
+            if(margin > (baseBalance * 1.05)){
+                await OrderMakerUtility.closeAllOpenPositions();
 
-            await OrderMakerUtility.transferEarnings(100);
+                await OrderMakerUtility.transferEarnings(baseBalance);
 
-            transferMessage.value = "last transfer: " + (new Date()).toLocaleString()
-            
+                transferMessage.value = "last transfer: " + (new Date()).toLocaleString()
+            }else{
+                transferMessage.value = `last transfer (none) balance (${margin}): ` + (new Date()).toLocaleString()
+            }
+
         } catch (error) {
             transferMessage.value = `Last transfer error (${(new Date()).toLocaleString()}): ${error instanceof Error ? error.message : String(error)}`;
             console.error('Error during earning transfer:', error);
