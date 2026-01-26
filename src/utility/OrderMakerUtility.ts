@@ -115,6 +115,19 @@ export class OrderMakerUtility {
         return res.json();
     }
 
+    static async transferEarnings(baseBalance:number) {
+        const res = await fetch(import.meta.env.VITE_ORDER_MAKER_API + "/transfer-earnings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                baseBalance: baseBalance
+            })
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+    }
+
     static async closeAllOpenPositions() {
         const res = await fetch(import.meta.env.VITE_ORDER_MAKER_API + "/close-all", {
             method: "POST",

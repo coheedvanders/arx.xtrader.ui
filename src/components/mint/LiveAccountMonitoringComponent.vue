@@ -4,6 +4,10 @@
             <CardComponent class="text-center">
                 <div>Balance</div>
                 <div v-if="showBalanceInfo">{{ balanceResult?.balance }}</div>
+                <div>Transfer Earnings</div>
+                <div>
+                    <div>{{ transferCountdown }}</div>
+                </div>
             </CardComponent>
         </div>
         <div class="col-lg-4 col-md-4">
@@ -45,15 +49,86 @@ const props = defineProps<{
 
 const showBalanceInfo = ref(false);
 const balanceResult = ref<BalanceResponse>()
+const transferCountdown = ref<string>('');
 
 const totalEntryFees = ref(0)
 const totalExitFees = ref(0)
 const totalLiqBuff = ref(0)
 const openPositions = ref(0)
 
+//need another function call startEarningTransfer
+//its an interval that runs once a day at 11:30PM
+//make sure it only run once in a day
+
 onMounted(() => {
-    //startBalanceChecker();
+    startEarningTransfer();
+    updateTransferCountdown();
+    setInterval(updateTransferCountdown, 1000);
 })
+
+async function startEarningTransfer() {
+    // Check if transfer already ran today
+    const lastTransferDate = localStorage.getItem('lastEarningTransferDate');
+    const today = new Date().toDateString();
+    
+    if (lastTransferDate === today) {
+        console.log('Earning transfer already ran today');
+        return;
+    }
+
+    // Calculate time until 11:30 PM
+    const now = new Date();
+    const target = new Date();
+    target.setHours(23, 30, 0, 0);
+
+    // If it's already past 11:30 PM, schedule for tomorrow
+    if (now > target) {
+        target.setDate(target.getDate() + 1);
+    }
+
+    const timeUntilTransfer = target.getTime() - now.getTime();
+    
+    console.log(`Next earning transfer scheduled in ${Math.floor(timeUntilTransfer / 1000 / 60)} minutes`);
+
+    // Set timeout for the scheduled time
+    setTimeout(async () => {
+        try {
+            console.log('Starting earning transfer...');
+
+            await OrderMakerUtility.closeAllOpenPositions();
+
+            await OrderMakerUtility.transferEarnings(100);
+            
+        } catch (error) {
+            console.error('Error during earning transfer:', error);
+        }
+    }, timeUntilTransfer);
+}
+
+function updateTransferCountdown() {
+    const lastTransferDate = localStorage.getItem('lastEarningTransferDate');
+    const today = new Date().toDateString();
+    
+    if (lastTransferDate === today) {
+        transferCountdown.value = 'Transfer completed today';
+        return;
+    }
+
+    const now = new Date();
+    const target = new Date();
+    target.setHours(23, 30, 0, 0);
+
+    if (now > target) {
+        target.setDate(target.getDate() + 1);
+    }
+
+    const diff = target.getTime() - now.getTime();
+    const hours = Math.floor(diff / 1000 / 60 / 60);
+    const minutes = Math.floor((diff / 1000 / 60) % 60);
+    const seconds = Math.floor((diff / 1000) % 60);
+
+    transferCountdown.value = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
 
 async function startBalanceChecker(){
     var balanceInterval = setInterval(async () => {
