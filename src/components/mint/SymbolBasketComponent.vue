@@ -131,13 +131,13 @@ async function initializeFutureSymbolData(){
 
 async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:boolean){
     var candles : CandleEntry[] = [];
-    const raw: Candle[] = []
+    
     if(isFreshRun){
-        const raw = await KlineUtility.getRecentKlines(symbol, props.interval, props.maxInitCandles);
-        if(raw.length < props.maxInitCandles) {
-            candles = [];
-            return
-        }
+        var raw = await KlineUtility.getRecentKlines(symbol, props.interval, props.maxInitCandles);
+        // if(raw.length < props.maxInitCandles) {
+        //     candles = [];
+        //     return
+        // }
 
         candleAnalyzer.initializePastCandlesSupportResistance(raw,props.maxInitCandles - props.supportAndResistancePeriodLength,props.supportAndResistancePeriodLength);
 
@@ -166,7 +166,8 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
             zoneSizePercentage: 0,
             closeAbsDistanceToZone: null,
             priceZoneEvaluation: null,
-            patternTrack: ""
+            patternTrack: "",
+            isPoint: false
         }));
 
     }else{
@@ -174,6 +175,9 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
     }
 
     candleAnalyzer.trackSwingPatterns(candles);
+
+    //candles = candles.slice(0,199);
+    //await new Promise(resolve => setTimeout(resolve, 2000));
 
     await SimulationUtility.markPositionEntries(
         props.margin,
@@ -314,7 +318,8 @@ async function updateCandleEntryWithLastCandle(symbol:string){
         entryFee: 0,
         closeAbsDistanceToZone: null,
         priceZoneEvaluation: null,
-        patternTrack: ""
+        patternTrack: "",
+        isPoint: false
     }
 
     var entryCandle: CandleEntry = {
@@ -340,7 +345,8 @@ async function updateCandleEntryWithLastCandle(symbol:string){
         entryFee: 0,
         closeAbsDistanceToZone: null,
         priceZoneEvaluation: null,
-        patternTrack: ""
+        patternTrack: "",
+        isPoint: false
     }
 
     

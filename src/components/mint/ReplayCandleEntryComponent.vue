@@ -299,7 +299,7 @@ async function markAllEntries(entryIndex: number) {
     
     const chunkSize = 5;
 
-    // if(simulationStats.value.totalOpenPnl > 20){
+    // if(simulationStats.value.totalOpenPnl > 5){
     //     await tradeLogger.forceCloseOpenPositions();
     // }
 

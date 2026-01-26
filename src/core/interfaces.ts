@@ -171,6 +171,7 @@ export interface CandleEntry {
   closeAbsDistanceToZone: CloseAbsDistanceToZone | null
   priceZoneEvaluation: PriceZoneEvaluation | null
   patternTrack: string
+  isPoint:boolean
 }
 
 export interface Position {

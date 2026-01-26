@@ -278,6 +278,15 @@
               />
             </g>
 
+            <g v-if="candle.candleData?.changePercentageZScore! > 3">
+              <circle
+                :cx="candleX(i)"
+                :cy="priceToY(candle.low!) + 56"
+                r="4"
+                class="is-change-high-dot"
+              />
+            </g>
+
             <g v-if="candle.candleData?.isLongPotential" class="long-potential">
               <polygon
                 :points="`${candleX(i)},${priceToY(candle.low!) + 25} ${candleX(i) - 5},${priceToY(candle.low!) + 33} ${candleX(i) + 5},${priceToY(candle.low!) + 33}`"/>
@@ -1344,6 +1353,11 @@ const formatValue = (value: any): string => {
 
 .is-past-volume-good-dot{
   fill: #ffffff;
+  opacity: 0.9;
+}
+
+.is-change-high-dot{
+  fill: #3bd1ff;
   opacity: 0.9;
 }
 
