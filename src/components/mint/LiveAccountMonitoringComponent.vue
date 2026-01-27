@@ -9,6 +9,17 @@
                     <div>{{ transferCountdown }}</div>
                     <div>{{ transferMessage }}</div>
                 </div>
+                <div style="margin-top: 10px; font-size: 12px;">
+                    <label>Next Run Time:</label>
+                    <input 
+                        v-model="nextRunTimeInput" 
+                        type="text" 
+                        placeholder="MM/dd/yyyy hh:mm AM/PM"
+                        @change="updateNextRunTime"
+                        style="width: 100%; padding: 5px; margin-top: 5px;"
+                    />
+                    <div v-if="nextRunTimeError" style="color: red; font-size: 11px;">{{ nextRunTimeError }}</div>
+                </div>
             </CardComponent>
         </div>
         <div class="col-lg-4 col-md-4">
@@ -42,7 +53,6 @@ import { onMounted, ref } from 'vue';
 import CardComponent from '../shared/card/CardComponent.vue';
 import { OrderMakerUtility } from '@/utility/OrderMakerUtility';
 import { type BalanceResponse, type Position } from '@/core/interfaces';
-import { RefSymbol } from '@vue/reactivity';
 
 const props = defineProps<{
   margin: number
@@ -52,61 +62,151 @@ const showBalanceInfo = ref(false);
 const balanceResult = ref<BalanceResponse>()
 const transferCountdown = ref<string>('');
 const transferMessage = ref("- - -")
+const nextRunTimeInput = ref<string>('');
+const nextRunTimeError = ref<string>('');
 
 const totalEntryFees = ref(0)
 const totalExitFees = ref(0)
 const totalLiqBuff = ref(0)
 const openPositions = ref(0)
 
-//need another function call startEarningTransfer
-//its an interval that runs once a day at 11:30PM
-//make sure it only run once in a day
+let nextRunTime: Date | null = null;
+let transferTimeout: NodeJS.Timeout | null = null;
 
 onMounted(() => {
+    // Load saved next run time from localStorage
+    const savedNextRunTime = localStorage.getItem('nextEarningTransferTime');
+    if (savedNextRunTime) {
+        nextRunTime = new Date(savedNextRunTime);
+        nextRunTimeInput.value = formatDateForInput(nextRunTime);
+    } else {
+        // Set default to tomorrow at 11:25 PM
+        nextRunTime = new Date();
+        nextRunTime.setDate(nextRunTime.getDate() + 1);
+        nextRunTime.setHours(23, 25, 0, 0);
+        nextRunTimeInput.value = formatDateForInput(nextRunTime);
+        localStorage.setItem('nextEarningTransferTime', nextRunTime.toISOString());
+    }
+
     startEarningTransfer();
     updateTransferCountdown();
     setInterval(updateTransferCountdown, 1000);
 })
 
-async function startEarningTransfer() {
-    // Check if transfer already ran today
-    const lastTransferDate = localStorage.getItem('lastEarningTransferDate');
-    const today = new Date().toDateString();
+function formatDateForInput(date: Date): string {
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const year = date.getFullYear();
+    let hours = date.getHours();
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12;
+    hours = hours ? hours : 12;
+    const hoursStr = String(hours).padStart(2, '0');
     
-    if (lastTransferDate === today) {
-        console.log('Earning transfer already ran today');
+    return `${month}/${day}/${year} ${hoursStr}:${minutes} ${ampm}`;
+}
+
+function parseInputDate(input: string): Date | null {
+    // MM/dd/yyyy hh:mm AM/PM
+    const regex = /^(\d{2})\/(\d{2})\/(\d{4})\s(\d{2}):(\d{2})\s(AM|PM)$/i;
+    const match = input.match(regex);
+    
+    if (!match) {
+        return null;
+    }
+
+    let month = parseInt(match[1]);
+    const day = parseInt(match[2]);
+    const year = parseInt(match[3]);
+    let hours = parseInt(match[4]);
+    const minutes = parseInt(match[5]);
+    const ampm = match[6].toUpperCase();
+
+    // Convert to 24-hour format
+    if (ampm === 'PM' && hours !== 12) {
+        hours += 12;
+    } else if (ampm === 'AM' && hours === 12) {
+        hours = 0;
+    }
+
+    // Validate month
+    if (month < 1 || month > 12) {
+        return null;
+    }
+
+    const date = new Date(year, month - 1, day, hours, minutes, 0, 0);
+    
+    // Validate day
+    if (date.getMonth() !== month - 1) {
+        return null;
+    }
+
+    return date;
+}
+
+function updateNextRunTime() {
+    const parsed = parseInputDate(nextRunTimeInput.value);
+    
+    if (!parsed) {
+        nextRunTimeError.value = 'Invalid format. Use MM/dd/yyyy hh:mm AM/PM';
         return;
     }
 
-    // Calculate time until 11:25 PM
     const now = new Date();
-    const target = new Date();
-    target.setHours(23, 25, 0, 0);
-
-    // If it's already past 11:30 PM, schedule for tomorrow
-    if (now > target) {
-        target.setDate(target.getDate() + 1);
+    if (parsed <= now) {
+        nextRunTimeError.value = 'Time must be in the future';
+        return;
     }
 
-    const timeUntilTransfer = target.getTime() - now.getTime();
+    nextRunTimeError.value = '';
+    nextRunTime = parsed;
+    localStorage.setItem('nextEarningTransferTime', nextRunTime.toISOString());
     
+    // Restart the transfer scheduler
+    if (transferTimeout) {
+        clearTimeout(transferTimeout);
+    }
+    startEarningTransfer();
+    
+    console.log(`Next transfer scheduled for: ${nextRunTime.toLocaleString()}`);
+}
+
+async function startEarningTransfer() {
+    if (!nextRunTime) return;
+
+    const now = new Date();
+    const timeUntilTransfer = nextRunTime.getTime() - now.getTime();
+    
+    if (timeUntilTransfer <= 0) {
+        console.log('Next run time is in the past');
+        return;
+    }
+
     console.log(`Next earning transfer scheduled in ${Math.floor(timeUntilTransfer / 1000 / 60)} minutes`);
 
     // Set timeout for the scheduled time
-    setTimeout(async () => {
+    transferTimeout = setTimeout(async () => {
         try {
-            var baseBalance = 100;
+            const baseBalance = 100;
 
             balanceResult.value = await OrderMakerUtility.getBalance();
-            var margin = balanceResult.value.balance + balanceResult.value.unrealized_pnl
-            if(margin > (baseBalance * 1.05)){
+            const margin = balanceResult.value.balance + balanceResult.value.unrealized_pnl;
+            
+            if (margin > (baseBalance * 1.05)) {
                 await OrderMakerUtility.closeAllOpenPositions();
-
                 await OrderMakerUtility.transferEarnings(baseBalance);
+                transferMessage.value = "last transfer: " + (new Date()).toLocaleString();
+            } else {
+                transferMessage.value = `last transfer (none) balance (${margin}): ` + (new Date()).toLocaleString();
+            }
 
-                transferMessage.value = "last transfer: " + (new Date()).toLocaleString()
-            }else{
-                transferMessage.value = `last transfer (none) balance (${margin}): ` + (new Date()).toLocaleString()
+            // Schedule next transfer 2 days from now
+            if (nextRunTime) {
+                nextRunTime.setDate(nextRunTime.getDate() + 2);
+                nextRunTimeInput.value = formatDateForInput(nextRunTime);
+                localStorage.setItem('nextEarningTransferTime', nextRunTime.toISOString());
+                startEarningTransfer();
             }
 
         } catch (error) {
@@ -117,23 +217,19 @@ async function startEarningTransfer() {
 }
 
 function updateTransferCountdown() {
-    const lastTransferDate = localStorage.getItem('lastEarningTransferDate');
-    const today = new Date().toDateString();
-    
-    if (lastTransferDate === today) {
-        transferCountdown.value = 'Transfer completed today';
+    if (!nextRunTime) {
+        transferCountdown.value = 'No transfer scheduled';
         return;
     }
 
     const now = new Date();
-    const target = new Date();
-    target.setHours(23, 30, 0, 0);
+    const diff = nextRunTime.getTime() - now.getTime();
 
-    if (now > target) {
-        target.setDate(target.getDate() + 1);
+    if (diff <= 0) {
+        transferCountdown.value = 'Transfer pending...';
+        return;
     }
 
-    const diff = target.getTime() - now.getTime();
     const hours = Math.floor(diff / 1000 / 60 / 60);
     const minutes = Math.floor((diff / 1000 / 60) % 60);
     const seconds = Math.floor((diff / 1000) % 60);
@@ -142,7 +238,7 @@ function updateTransferCountdown() {
 }
 
 async function startBalanceChecker(){
-    var balanceInterval = setInterval(async () => {
+    setInterval(async () => {
         balanceResult.value = await OrderMakerUtility.getBalance();
     }, 60000);
 }
@@ -150,7 +246,7 @@ async function startBalanceChecker(){
 async function calculateBalance(){
     balanceResult.value = await OrderMakerUtility.getBalance();
     showBalanceInfo.value = true;
-    setInterval(() => {
+    setTimeout(() => {
         showBalanceInfo.value = false;
     }, 5000);
 }
@@ -158,11 +254,9 @@ async function calculateBalance(){
 async function calcEstTotalTradingAndExitFees(){
     const positions = await OrderMakerUtility.getPositions();
     const fees = OrderMakerUtility.calculateTotalTradingFees(positions);
-    openPositions.value = positions.length
-    totalEntryFees.value = fees.entryFees
-    totalExitFees.value = fees.exitFees
-    totalLiqBuff.value = fees.liquidityBuffer
+    openPositions.value = positions.length;
+    totalEntryFees.value = fees.entryFees;
+    totalExitFees.value = fees.exitFees;
+    totalLiqBuff.value = fees.liquidityBuffer;
 }
-
-
 </script>
