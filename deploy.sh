@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Define variables
-HOST="192.168.1.9"
+HOST="192.168.1.10"
 USER="montecris_admin"
 PASSWORD="admin123"
 IMAGE_NAME="choco-bot"

@@ -119,19 +119,20 @@ export class SimulationUtility {
                 candle.overboughSoldAnalysis.extremeLevel = candleAnalyzer.detectOverState(movingCandles,8);
                 candle.candleData.pastCandleAverageChange = pastCandleAverageChange
                 candle.candleData.atr = atr;
+
+                if(i >= 26){
+                    candle.candleData.changePercentageZScore = candleAnalyzer.getCandleChangeZScore(movingCandles,50);
+                }
+
                 candle.isPoint = candle.candleData 
                 && candle.volumeAnalysis 
                 && candle.overboughSoldAnalysis 
                 && (candle.overboughSoldAnalysis.extremeLevel == "overbought" || candle.overboughSoldAnalysis.extremeLevel == "oversold")
                 && candle.candleData.volumeSpike
                 && candle.volumeAnalysis.zScore >= 3
-                && candle.candleData.priceMove == "dragged_down" || candle.candleData.priceMove == "shoots_up"
+                && (candle.candleData.priceMove == "dragged_down" || candle.candleData.priceMove == "shoots_up")
                 && candle.candleData.changePercentageZScore > 3
-
-
-                if(i >= 26){
-                    candle.candleData.changePercentageZScore = candleAnalyzer.getCandleChangeZScore(movingCandles,50);
-                }
+                
 
                 var isHighlyVolatile = false;
                 if(movingCandles.length > 20){
@@ -339,6 +340,15 @@ export class SimulationUtility {
                             candle.side = "LONG"
                             candle.tpPrice = candle.close + (atr * 3.5)
                             candle.slPrice = supportCandle.open - (atr * 0.3)
+                        }
+
+                        if(candle.isPoint
+                            && candle.candleData.side == "bull"
+                            && candle.volumeAnalysis.zScore < 4
+                        ){
+                            candle.side = "SHORT"
+                            candle.tpPrice = candle.open - (atr * 1.5)
+                            candle.slPrice = candle.close + atr
                         }
 
                         if(candle.isPoint){

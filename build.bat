@@ -4,7 +4,7 @@
 set IMAGE_NAME=choco-bot
 set TAR_FILE=choco-bot.tar
 set SERVER_USER=montecris_admin
-set SERVER_IP=192.168.1.9
+set SERVER_IP=192.168.1.10
 set REMOTE_DIR=~/docker-images
 set DEPLOY_SCRIPT=deploy.sh
 
