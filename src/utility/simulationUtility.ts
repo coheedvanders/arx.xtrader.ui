@@ -336,19 +336,32 @@ export class SimulationUtility {
                             && pastThree.filter(c => c.candleData && c.candleData.change_percentage_v > 0.5).length >= 2
                             && pastThree.filter(c => c.candleData && c.candleData.lookbackTrend == "strong_downtrend").length == 3
                             && pastThree.filter(c => c.zoneAnalysis && c.zoneAnalysis.momentum < 20).length == 0
+                            && movingCandles.slice(15).filter(c => c.isPoint && c.candleData && c.candleData.side == "bear").length == 0
                         ){
-                            candle.side = "LONG"
-                            candle.tpPrice = candle.close + (atr * 3.5)
-                            candle.slPrice = supportCandle.open - (atr * 0.3)
+                            var candlesBeforeSupport = movingCandles.filter(c => c.openTime < supportCandle.openTime)
+                            if(candlesBeforeSupport.length > 0){
+                                var candleBeforeSupport = candlesBeforeSupport[candlesBeforeSupport.length - 1]
+                                if(candleBeforeSupport!.candleData!.side == "bear"){
+                                    candle.side = "LONG"
+                                    candle.tpPrice = candle.close + (atr * 2.5)
+                                    candle.slPrice = supportCandle.open - (atr * 0.3)
+                                }
+                            }
                         }
 
                         if(candle.isPoint
                             && candle.candleData.side == "bull"
-                            && candle.volumeAnalysis.zScore < 4
+                            && candle.open < candle.priceZone.upper
+                            && candle.close > candle.priceZone.upper
                         ){
                             candle.side = "SHORT"
                             candle.tpPrice = candle.open - (atr * 1.5)
                             candle.slPrice = candle.close + atr
+
+                            if(candle.candleData.changePercentageZScore > 5){
+                                candle.tpPrice = candle.open
+                                candle.slPrice = candle.close + (atr * 3)
+                            }
                         }
 
                         if(candle.isPoint){
@@ -359,7 +372,7 @@ export class SimulationUtility {
                                 && movingCandles.slice(-8).filter(c => c.priceZone && (c.open > c.priceZone.upper || c.close > c.priceZone.upper)).length >= 2
                             ){
                                 candle.side = "SHORT"
-                                candle.tpPrice = candle.close - (atr * 3.5)
+                                candle.tpPrice = candle.close - (atr * 2.5)
                                 candle.slPrice = candle.close + (atr * 1.5)
                             }
                         }
