@@ -67,6 +67,9 @@ export class SimulationUtility {
         var activePriceZone: PriceZone | null = null;
         var basePriceZonePoint: number | null = null;
         var zoneOpenTime = 0
+        var pointZone: PriceZone | null = null;
+        var pointZoneChangePercentageAbs = 0;
+        var pointZoneOpenTime = 0;
 
 
         for (let i = 1; i <= entryIndex; i++) {
@@ -132,6 +135,25 @@ export class SimulationUtility {
                 && candle.volumeAnalysis.zScore >= 3
                 && (candle.candleData.priceMove == "dragged_down" || candle.candleData.priceMove == "shoots_up")
                 && candle.candleData.changePercentageZScore > 3
+
+                if(candle.candleData.changePercentageZScore > 3){
+                    pointZoneChangePercentageAbs = Math.abs(candle.candleData.change_percentage_v);
+                    pointZoneOpenTime = candle.openTime;
+
+                    if(candle.candleData.side == "bull"){
+                        pointZone = {
+                            upper: candle.close,
+                            mid: 0,
+                            lower: candle.open
+                        }
+                    }else{
+                        pointZone = {
+                            upper: candle.open,
+                            mid: 0,
+                            lower: candle.close
+                        }
+                    }
+                }
                 
 
                 var isHighlyVolatile = false;
@@ -328,6 +350,24 @@ export class SimulationUtility {
                         upperZoneEqualizerPrice = upperZoneEqualizerPrice - (upperZoneEqualizerPrice * 0.0005)
 
                         //start
+
+                        if(pointZone){
+                            if(prevCandle.close < pointZone.lower
+                                && candle.close > pointZone.lower
+                                && candle.close < pointZone.upper
+                                && candle.candleData.side == "bull"
+                                && pointZoneChangePercentageAbs > 4
+                            ){
+                                var distanceCountFromPointZone = movingCandles.filter(c => c.openTime > pointZoneOpenTime).length
+                                if(distanceCountFromPointZone > 8
+                                    && distanceCountFromPointZone < 20
+                                ){
+                                    candle.side = "LONG"
+                                    candle.tpPrice = pointZone.upper
+                                    candle.slPrice = candle.open - (atr * 0.5)
+                                }
+                            }
+                        }
 
                         var pastThree = movingCandles.slice(-3);
                         if(
