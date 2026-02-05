@@ -359,8 +359,10 @@ export class SimulationUtility {
                                 && pointZoneChangePercentageAbs > 4
                             ){
                                 var distanceCountFromPointZone = movingCandles.filter(c => c.openTime > pointZoneOpenTime).length
+                                var belowPointZoneLowerCount = movingCandles.filter(c => c.openTime > pointZoneOpenTime && c.close < pointZone!.lower).length
                                 if(distanceCountFromPointZone > 8
                                     && distanceCountFromPointZone < 20
+                                    && belowPointZoneLowerCount > 3
                                 ){
                                     candle.side = "LONG"
                                     candle.tpPrice = pointZone.upper
@@ -376,7 +378,7 @@ export class SimulationUtility {
                             && pastThree.filter(c => c.candleData && c.candleData.change_percentage_v > 0.5).length >= 2
                             && pastThree.filter(c => c.candleData && c.candleData.lookbackTrend == "strong_downtrend").length == 3
                             && pastThree.filter(c => c.zoneAnalysis && c.zoneAnalysis.momentum < 20).length == 0
-                            && movingCandles.slice(15).filter(c => c.isPoint && c.candleData && c.candleData.side == "bear").length == 0
+                            && movingCandles.slice(-15).filter(c => c.breakthrough_support).length >= 4
                         ){
                             var candlesBeforeSupport = movingCandles.filter(c => c.openTime < supportCandle.openTime)
                             if(candlesBeforeSupport.length > 0){
@@ -393,13 +395,14 @@ export class SimulationUtility {
                             && candle.candleData.side == "bull"
                             && candle.open < candle.priceZone.upper
                             && candle.close > candle.priceZone.upper
+                            && movingCandles.slice(-15).filter(c => c.candleData && c.candleData.changePercentageZScore < 1).length >= 5
                         ){
                             candle.side = "SHORT"
                             candle.tpPrice = candle.open - (atr * 1.5)
-                            candle.slPrice = candle.close + atr
+                            candle.slPrice = candle.close + atr * 2.5
 
                             if(candle.candleData.changePercentageZScore > 5){
-                                candle.tpPrice = candle.open
+                                candle.tpPrice = candle.open - (atr * 0.5)
                                 candle.slPrice = candle.close + (atr * 3)
                             }
                         }
@@ -412,8 +415,9 @@ export class SimulationUtility {
                                 && movingCandles.slice(-8).filter(c => c.priceZone && (c.open > c.priceZone.upper || c.close > c.priceZone.upper)).length >= 2
                             ){
                                 candle.side = "SHORT"
+                                candle.margin = margin * 3
                                 candle.tpPrice = candle.close - (atr * 2.5)
-                                candle.slPrice = candle.close + (atr * 1.5)
+                                candle.slPrice = candle.close + (atr * 2.5)
                             }
                         }
 
@@ -421,6 +425,11 @@ export class SimulationUtility {
 
                         if(pointCandles.length >= 1){
                             var lastPointCandle = pointCandles[pointCandles.length - 1]
+                            var candlesBeforeLastPointCandle = movingCandles
+                            .filter(c => c.openTime < lastPointCandle.openTime)
+                            .slice(-5)
+                            var supportCandlesBeforeLastPointCandleCount = candlesBeforeLastPointCandle
+                            .filter(c => !c.isPoint && c.candleData && c.candleData.side == "bear" && c.candleData.change_percentage_v < -0.5).length
 
                             if(candle.close_atr_abs_change > 1
                                 && movingCandles.slice(-4)[0].openTime == lastPointCandle.openTime
@@ -429,6 +438,8 @@ export class SimulationUtility {
                                 && lastPointCandle.candleData!.side == "bear"
                                 && candle.candleData.side == "bear"
                                 && movingCandles.slice(-3).filter(c => c.candleData && Math.abs(c.candleData.change_percentage_v) > 0.4)
+                                && supportCandlesBeforeLastPointCandleCount  >= 3
+                                && candlesBeforeLastPointCandle.filter(c => c.isPoint).length == 0
                             ){
                                 candle.side = "SHORT"
                                 candle.tpPrice = candle.close - (atr * 1.8)
@@ -479,7 +490,7 @@ export class SimulationUtility {
                             candle.candleData.extraInfo = estimatedSlPnl.toString();
 
                             if(estimatedSlPnl > (estimatedTpPnl * 1.5)
-                                || estimatedSlPnl < -(margin * 10)
+                                || estimatedSlPnl < -(margin * 4)
                             ){
                                 candle.status = ''
                                 candle.side = "";
