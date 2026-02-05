@@ -365,6 +365,7 @@ export class SimulationUtility {
                                     && belowPointZoneLowerCount > 3
                                 ){
                                     candle.side = "LONG"
+                                    candle.margin = margin * 2
                                     candle.tpPrice = pointZone.upper
                                     candle.slPrice = candle.open - (atr * 0.5)
                                 }
@@ -385,6 +386,7 @@ export class SimulationUtility {
                                 var candleBeforeSupport = candlesBeforeSupport[candlesBeforeSupport.length - 1]
                                 if(candleBeforeSupport!.candleData!.side == "bear"){
                                     candle.side = "LONG"
+                                    candle.margin = margin * 2
                                     candle.tpPrice = candle.close + (atr * 2.5)
                                     candle.slPrice = supportCandle.open - (atr * 0.3)
                                 }
@@ -398,6 +400,7 @@ export class SimulationUtility {
                             && movingCandles.slice(-15).filter(c => c.candleData && c.candleData.changePercentageZScore < 1).length >= 5
                         ){
                             candle.side = "SHORT"
+                            candle.margin = margin * 2
                             candle.tpPrice = candle.open - (atr * 1.5)
                             candle.slPrice = candle.close + atr * 2.5
 
@@ -442,6 +445,7 @@ export class SimulationUtility {
                                 && candlesBeforeLastPointCandle.filter(c => c.isPoint).length == 0
                             ){
                                 candle.side = "SHORT"
+                                candle.margin = margin * 2
                                 candle.tpPrice = candle.close - (atr * 1.8)
                                 candle.slPrice = candle.close + (atr * 1.25)
 
