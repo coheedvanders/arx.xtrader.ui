@@ -72,6 +72,8 @@ export class SimulationUtility {
         var pointZoneChangePercentageAbs = 0;
         var pointZoneOpenTime = 0;
 
+        var pointBearCandle: CandleEntry | null = null;
+
 
         for (let i = 1; i <= entryIndex; i++) {
             var movingCandles = candles.slice(0, i + 1);
@@ -353,6 +355,31 @@ export class SimulationUtility {
 
                         //start
 
+                        var pointVolumeBearCandles = movingCandles.filter(c => c.openTime < candle.openTime && c.candleData && c.volumeAnalysis && c.candleData.volumeSpike && c.volumeAnalysis.zScore >= 3 && c.candleData.side == "bear");
+
+                        if(pointVolumeBearCandles.length >= 1){
+                            var lastPointVolumeBearCandle = pointVolumeBearCandles[pointVolumeBearCandles.length - 1];
+                            var adjustedPotentialClose = lastPointVolumeBearCandle.close_atr_adjusted - (atr * 0.5)
+                            if(candle.candleData.changePercentageZScore > 3
+                                && candle.open > adjustedPotentialClose
+                                && candle.close < adjustedPotentialClose
+                            ){
+                                candle.candleData.conditionMet = "POTENTIAL_LIQ_SHORT_GRAB"
+                            }
+                        }
+
+                        if(prevCandle.candleData.conditionMet == "POTENTIAL_LIQ_SHORT_GRAB"
+                            && candle.candleData.side == "bull"
+                            && candle.candleData.volumeSpike
+                        ){
+                            candle.side = "LONG"
+                            candle.slPrice = candle.low - (atr * 0.3)
+
+                            const risk = candle.close - candle.slPrice
+                            candle.tpPrice = candle.close + (risk * 2.5)
+                        }
+
+
                         if(pointZone){
                             if(prevCandle.close < pointZone.lower
                                 && candle.close > pointZone.lower
@@ -422,21 +449,6 @@ export class SimulationUtility {
                                 candle.slPrice = candle.close + (atr * 3)
                             }
                         }
-
-                        // if(candle.isPoint){
-                        //     if(
-                        //         candle.zoneAnalysis.momentumStrength > 80
-                        //         && candle.candleData.side == "bear"
-                        //         && candle.candleData.changePercentageZScore < 5
-                        //         && movingCandles.slice(-8).filter(c => c.priceZone && (c.open > c.priceZone.upper || c.close > c.priceZone.upper)).length >= 2
-                        //     ){
-                        //         candle.side = "SHORT"
-                        //         candle.candleData.conditionMet = "SHORT2"
-                        //         candle.margin = margin * 3
-                        //         candle.tpPrice = candle.close - (atr * 2.5)
-                        //         candle.slPrice = candle.open + (atr)
-                        //     }
-                        // }
 
                         var pointCandles = movingCandles.filter(c => c.isPoint);
 
