@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.81Y2-P4-1-N</label>
+        <label>v1.81X2-P4-1-N</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
@@ -20,6 +20,9 @@
         <div>
             <CheckboxComponent v-model="chocoMintoStore.isLive">
                 Is Live
+            </CheckboxComponent>
+            <CheckboxComponent v-model="chocoMintoStore.isRedeemerEnabled">
+                Enable Redeemer
             </CheckboxComponent>
         </div>
         
@@ -291,7 +294,7 @@ async function initializeFutureSymbols(){
 
 async function onNewCandle(candle:Candle){
     //send event to the SymbolBasketComponent
-    if(chocoMintoStore.isLive){
+    if(chocoMintoStore.isLive && chocoMintoStore.isRedeemerEnabled){
         var balance = await OrderMakerUtility.getBalance();
         const positions = await OrderMakerUtility.getPositions();
         const fees = OrderMakerUtility.calculateTotalTradingFees(positions);

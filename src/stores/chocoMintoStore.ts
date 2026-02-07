@@ -6,6 +6,7 @@ export const useChocoMintoStore = defineStore('choco-minto-store', () => {
 
     // --- State ---
     const isLive = ref(false);
+    const isRedeemerEnabled = ref(true)
     const futureSymbols = ref<FuturesSymbol[]>([])
     const isManualSimulation = ref(false);
     const startingTimeStamp = ref(0);
@@ -35,6 +36,7 @@ export const useChocoMintoStore = defineStore('choco-minto-store', () => {
 
     return ({
         isLive,
+        isRedeemerEnabled,
         memoryStore,
         futureSymbols,
         isManualSimulation,
