@@ -482,6 +482,28 @@ export class SimulationUtility {
                             }
                         }
 
+                        var resistanceBreakCandles = movingCandles.filter(c => c.breakthrough_resistance);
+                        if(resistanceBreakCandles.length > 0){
+                            var lastResistanceBreakCandle = resistanceBreakCandles[resistanceBreakCandles.length - 1];
+
+                            if(candle.candleData.side == "bear"
+                                && candle.close < lastResistanceBreakCandle.resistance!.upper
+                                && candle.open > lastResistanceBreakCandle.resistance!.upper
+                                && candle.overboughSoldAnalysis.extremeLevel == "oversold"
+                                && lastResistanceBreakCandle.overboughSoldAnalysis?.extremeLevel == "overbought"
+                                && lastResistanceBreakCandle.candleData?.volumeSpike
+                                && candle.candleData.priceMove == "dragged_down"
+                                && candle.priceZoneInteraction
+                                && candle.candleData.strength_v >= 85
+                                && candle.zoneAnalysis.momentum >= 98
+                            ){
+                                candle.side = "SHORT"
+                                candle.candleData.conditionMet = "SHORT4"
+                                candle.slPrice = candle.high + (atr * 1.5)
+                                candle.tpPrice = candle.close - (atr  * 2.5)
+                            }
+                        }
+
                         //end
                     }
 
