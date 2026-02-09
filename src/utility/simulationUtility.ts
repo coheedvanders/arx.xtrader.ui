@@ -325,6 +325,8 @@ export class SimulationUtility {
                         }
                     }
                 }else {
+                    if(candle.openTime < startingTimeStamp) continue;
+
                     if(prevCandle.resistance
                         && prevCandle.support
                         && prevCandle.priceZone

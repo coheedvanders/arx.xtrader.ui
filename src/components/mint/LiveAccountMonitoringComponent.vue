@@ -18,6 +18,8 @@
                         @change="updateNextRunTime"
                         style="width: 100%; padding: 5px; margin-top: 5px;"
                     />
+                    <label>Checkpoint Time:</label>
+                    <div>{{ chocoMintoStore.checkpointTime.toLocaleString() }}</div>
                     <div v-if="nextRunTimeError" style="color: red; font-size: 11px;">{{ nextRunTimeError }}</div>
                 </div>
             </CardComponent>
@@ -53,10 +55,13 @@ import { onMounted, ref } from 'vue';
 import CardComponent from '../shared/card/CardComponent.vue';
 import { OrderMakerUtility } from '@/utility/OrderMakerUtility';
 import { type BalanceResponse, type Position } from '@/core/interfaces';
+import { useChocoMintoStore } from '@/stores/chocoMintoStore';
 
 const props = defineProps<{
   margin: number
 }>()
+
+const chocoMintoStore = useChocoMintoStore();
 
 const showBalanceInfo = ref(false);
 const balanceResult = ref<BalanceResponse>()
@@ -76,6 +81,9 @@ let transferTimeout: NodeJS.Timeout | null = null;
 onMounted(() => {
     // Load saved next run time from localStorage
     const savedNextRunTime = localStorage.getItem('nextEarningTransferTime');
+    const checkPointTimeLocal = localStorage.getItem("checkPointTime");
+
+
     if (savedNextRunTime) {
         nextRunTime = new Date(savedNextRunTime);
         nextRunTimeInput.value = formatDateForInput(nextRunTime);
@@ -87,6 +95,9 @@ onMounted(() => {
         nextRunTimeInput.value = formatDateForInput(nextRunTime);
         localStorage.setItem('nextEarningTransferTime', nextRunTime.toISOString());
     }
+
+    chocoMintoStore.checkpointTime = new Date(`${checkPointTimeLocal}`);
+    chocoMintoStore.startingTimeStamp = chocoMintoStore.checkpointTime.getTime();
 
     startEarningTransfer();
     updateTransferCountdown();
@@ -188,13 +199,18 @@ async function startEarningTransfer() {
     // Set timeout for the scheduled time
     transferTimeout = setTimeout(async () => {
         try {
-            const baseBalance = 100;
+            const baseBalance = 200;
 
             balanceResult.value = await OrderMakerUtility.getBalance();
             const margin = balanceResult.value.balance + balanceResult.value.unrealized_pnl;
+
+            chocoMintoStore.checkpointTime = new Date();
+            chocoMintoStore.startingTimeStamp = chocoMintoStore.checkpointTime.getTime();
+            localStorage.setItem("checkPointTime",chocoMintoStore.checkpointTime.toLocaleString());
+
+            await OrderMakerUtility.closeAllOpenPositions();
             
-            if (margin > (baseBalance * 1.05)) {
-                await OrderMakerUtility.closeAllOpenPositions();
+            if (margin > baseBalance) {
                 await OrderMakerUtility.transferEarnings(baseBalance);
                 transferMessage.value = "last transfer: " + (new Date()).toLocaleString();
             } else {

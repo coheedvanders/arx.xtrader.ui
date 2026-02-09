@@ -13,6 +13,7 @@ export const useChocoMintoStore = defineStore('choco-minto-store', () => {
     const endingTimeStamp = ref(0)
     const marginBalance = ref(0)
     const memoryStore: Record<string, CandleEntry[]> = {};
+    const checkpointTime = ref<Date>(new Date())
 
     // --- Actions ----
     function splitFutureSymbols(batches: number): FuturesSymbol[][] {
@@ -43,6 +44,7 @@ export const useChocoMintoStore = defineStore('choco-minto-store', () => {
         startingTimeStamp,
         endingTimeStamp,
         marginBalance,
+        checkpointTime,
 
         splitFutureSymbols
     })
