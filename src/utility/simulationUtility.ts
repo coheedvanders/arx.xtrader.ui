@@ -89,6 +89,7 @@ export class SimulationUtility {
             var supportCandle = candles[i - 2];
 
             if(candle && candle.support && candle.resistance){
+
                 var _side = candle.close > candle.open ? "BUY" : "SELL";
 
                 var zoneAnalysis = candleAnalyzer.analyzeZoneInteraction(
@@ -325,7 +326,6 @@ export class SimulationUtility {
                         }
                     }
                 }else {
-                    if(candle.openTime < startingTimeStamp) continue;
 
                     if(prevCandle.resistance
                         && prevCandle.support

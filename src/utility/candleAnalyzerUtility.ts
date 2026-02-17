@@ -131,20 +131,20 @@ class CandlestickAnalyzer {
 
     var previousCandleData: CandleData[] = []
 
-    if(checkPast){
-        for (let i = 1; i <= pastCandleLookBack; i++) {
-            var pastCandleData = this.analyzeCandlestick(candles,index - i,false,0);
-            previousCandleData.push(pastCandleData);
-        }
+    // if(checkPast){
+    //     for (let i = 1; i <= pastCandleLookBack; i++) {
+    //         var pastCandleData = this.analyzeCandlestick(candles,index - i,false,0);
+    //         previousCandleData.push(pastCandleData);
+    //     }
 
-        for (let i = 1; i <= pastCandleLookBack; i++) {
-            var pastIndex = index - (pastCandleLookBack + i);
-            if(pastIndex <= 1) break;
+    //     for (let i = 1; i <= pastCandleLookBack; i++) {
+    //         var pastIndex = index - (pastCandleLookBack + i);
+    //         if(pastIndex <= 1) break;
 
-            var pastCandleData = this.analyzeCandlestick(candles,pastIndex,false,0);
-            previousCandleData[previousCandleData.length - 1].previousCandleData?.push(pastCandleData);
-        }
-    }
+    //         var pastCandleData = this.analyzeCandlestick(candles,pastIndex,false,0);
+    //         previousCandleData[previousCandleData.length - 1].previousCandleData?.push(pastCandleData);
+    //     }
+    // }
 
     return {
       o,
@@ -887,16 +887,18 @@ private detectBottomWickRejection(candle: Candle, previousCandle: Candle, bodyPe
         static initializePastCandlesSupportResistance(_candles: Candle[], initSRLength: number, srPeriod:number) {
             for (let i = 1; i <= initSRLength; i++) {
                 var candleIndex = (_candles.length - 1) - i;
-                var history = _candles.slice(0,candleIndex + 1);
-                const { support, resistance } = this.computeSupportResistance(history, srPeriod);
+                if(candleIndex >= 0){
+                    var history = _candles.slice(0,candleIndex + 1);
+                    const { support, resistance } = this.computeSupportResistance(history, srPeriod);
 
-                _candles[candleIndex].support = Object.freeze({ lower: support.lower, upper: support.upper, mid: 0 });
-                _candles[candleIndex].resistance = Object.freeze({ lower: resistance.lower, upper: resistance.upper, mid: 0 });
+                    _candles[candleIndex].support = Object.freeze({ lower: support.lower, upper: support.upper, mid: 0 });
+                    _candles[candleIndex].resistance = Object.freeze({ lower: resistance.lower, upper: resistance.upper, mid: 0 });
 
-                const close = _candles[candleIndex].close ?? 0;
+                    const close = _candles[candleIndex].close ?? 0;
 
-                _candles[candleIndex].breakthrough_resistance = close > resistance.upper;
-                _candles[candleIndex].breakthrough_support = close < support.lower;
+                    _candles[candleIndex].breakthrough_resistance = close > resistance.upper;
+                    _candles[candleIndex].breakthrough_support = close < support.lower;
+                }
             }
         }
 

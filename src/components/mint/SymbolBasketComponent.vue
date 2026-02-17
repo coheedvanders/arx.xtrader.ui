@@ -107,7 +107,7 @@ async function initializeFutureSymbolData(){
             var futureSymbol = props.futureSymbols[i];
             futureSymbol.status = "processing"
 
-            //if(futureSymbol.symbol != "xx") continue;
+            //if(futureSymbol.symbol != "0GUSDT") continue;
 
             await runPositionEntry(futureSymbol.symbol, futureSymbol.maxLeverage, true);
             
@@ -131,13 +131,15 @@ async function initializeFutureSymbolData(){
 
 async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:boolean){
     var candles : CandleEntry[] = [];
-    
+
     if(isFreshRun){
         var raw = await KlineUtility.getRecentKlines(symbol, props.interval, props.maxInitCandles);
         // if(raw.length < props.maxInitCandles) {
         //     candles = [];
         //     return
         // }
+
+        raw = raw.filter(c => c.openTime >= chocoMintoStore.startingTimeStamp);
 
         candleAnalyzer.initializePastCandlesSupportResistance(raw,props.maxInitCandles - props.supportAndResistancePeriodLength,props.supportAndResistancePeriodLength);
 
@@ -172,6 +174,7 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
 
     }else{
         candles = await klineDbUtility.getKlines(symbol)
+        candles = candles.filter(c => c.openTime >= chocoMintoStore.startingTimeStamp);
     }
 
     candleAnalyzer.trackSwingPatterns(candles);
