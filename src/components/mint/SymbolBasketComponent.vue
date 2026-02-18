@@ -281,11 +281,11 @@ async function updateCandleEntryWithLastCandle(symbol:string){
 
     //indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: last item of pastKlineEntries: ${JSON.stringify(pastKlineEntries[pastKlineEntries.length - 1])}`);
 
-    if(pastKlineEntries.length < props.maxInitCandles - 2)
-    {
-        futureSymbol.status = "-";
-        return;
-    }
+    // if(pastKlineEntries.length < props.maxInitCandles - 2)
+    // {
+    //     futureSymbol.status = "-";
+    //     return;
+    // }
 
     futureSymbol.status = "retrieving kline 2"
     var latest2Candle = await KlineUtility.getRecentKlines(symbol,props.interval,2);
