@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.9 - JamuymuyChucman</label>
+        <label>v1.9 - go my chwic</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
