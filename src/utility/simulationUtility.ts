@@ -369,7 +369,7 @@ export class SimulationUtility {
                                     var pastResistanceBreaksCount = movingCandles.slice(-8).filter(c => c.breakthrough_resistance).length
                                     var pastBullPushCount = movingCandles.filter(c => c.openTime > latestPointCandle.openTime && c.candleData && c.candleData.volumeSpike && c.candleData.side == "bull").length
                                     
-                                    var entry1 = candle.overboughSoldAnalysis.extremeLevel == "oversold" && candle.close > latestPointCandle.close && pastResistanceBreaksCount >= 3 && pastBullPushCount >= 2
+                                    var entry1 = candle.overboughSoldAnalysis.extremeLevel == "oversold" && candle.close > latestPointCandle.close && pastResistanceBreaksCount >= 3 && pastBullPushCount >= 2 && candle.candleData.changePercentageZScore < 3
                                     var entry2 = prevCandle.candleData.side == "bull" && prevCandle.candleData.body_v > 80 && prevCandle.candleData.change_percentage_v > 1 
                                                 && candle.candleData.side == "bear" && candle.candleData.body_v > 70
                                     if(entry1 || entry2){
@@ -377,14 +377,13 @@ export class SimulationUtility {
 
                                         candle.side = "SHORT"
                                         //candle.margin = margin * 3
-                                        candle.tpPrice = candle.close_atr_adjusted
+                                        candle.tpPrice = latestPointCandle.open
                                         candle.slPrice = candle.open + (atr)
                                     }
                                 }
 
                                 var highestCloseAfterLatestPoint = Math.max(...movingCandles.filter(c => c.openTime >= latestPointCandle.openTime).map(c => c.close))
                                 var changeAfterHighestPoint = ((candle.close - highestCloseAfterLatestPoint) / highestCloseAfterLatestPoint) * 100
-                                candle.candleData.conditionMet = changeAfterHighestPoint.toFixed(2).toString() + "x"
 
                                 if(changeAfterHighestPoint < -7){
                                     var pastSupportBreaksCount = movingCandles.slice(-20).filter(c => c.breakthrough_support).length
@@ -402,7 +401,7 @@ export class SimulationUtility {
                                 }
                             }else if(latestPointCandle.candleData!.side == "bear"){
                                 var isLatestPointWithinHealthyPeriod = movingCandles.slice(-50).filter(c => c.openTime == latestPointCandle.openTime).length > 0;
-                                var entry1B = candle.overboughSoldAnalysis.extremeLevel == "overbought" && candle.candleData.changePercentageZScore >= 3 && candle.close < latestPointCandle.close && isLatestPointWithinHealthyPeriod
+                                var entry1B = candle.overboughSoldAnalysis.extremeLevel == "overbought" && candle.candleData.changePercentageZScore >= 3 && candle.close < latestPointCandle.close && isLatestPointWithinHealthyPeriod && candle.candleData.changePercentageZScore < 3
                                 if(entry1B){
                                     candle.side = "LONG"
                                     candle.margin = margin * 3
@@ -418,7 +417,7 @@ export class SimulationUtility {
                                 if(changeAfterLastPoint > 5){
                                     var pastResistanceBreaksCount = movingCandles.slice(-20).filter(c => c.breakthrough_resistance).length
                                     var pastVolumeSpikeCount = movingCandles.slice(-20).filter(c => c.candleData?.volumeSpike).length
-                                    var entry1C = candle.close > latestPointCandle.open && candle.overboughSoldAnalysis.extremeLevel == "overbought" && pastResistanceBreaksCount >= 5 && candle.candleData.top_wick_abs_change >= 0.5 && candle.candleData.volumeSpike && pastVolumeSpikeCount <= 2;
+                                    var entry1C = candle.close > latestPointCandle.open && candle.overboughSoldAnalysis.extremeLevel == "overbought" && pastResistanceBreaksCount >= 5 && candle.candleData.top_wick_abs_change >= 0.5 && candle.candleData.volumeSpike && pastVolumeSpikeCount <= 2  && candle.candleData.changePercentageZScore < 3
 
                                     if(entry1C){
                                         candle.candleData.conditionMet = "SHORT_1"
@@ -476,7 +475,7 @@ export class SimulationUtility {
                             candle.candleData.extraInfo = estimatedSlPnl.toString();
 
                             if(estimatedSlPnl > (estimatedTpPnl * 1.5)
-                                //|| estimatedSlPnl < -(margin * 4)
+                                || estimatedSlPnl < -(margin * 3)
                             ){
                                 candle.status = ''
                                 candle.side = "";
