@@ -61,6 +61,7 @@ const props = defineProps<{
   newCandleTriggerKey: string;
   positionDurationMedian: number;
   maxOpenPositions: number;
+  simulationStart:string,
 }>();
 
 const showEntryHistory = ref(false);
@@ -127,19 +128,39 @@ async function initializeFutureSymbolData(){
     }
 
     progressCounter.value = 0;
+    chocoMintoStore.completedRunCount += 1;
 }
 
 async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:boolean){
     var candles : CandleEntry[] = [];
 
     if(isFreshRun){
-        var raw = await KlineUtility.getRecentKlines(symbol, props.interval, props.maxInitCandles);
+        var startTime = (new Date(props.simulationStart)).getTime()
+        var endTimeStr = computed(() => {
+            const start = new Date(props.simulationStart);
+            const end = new Date(start);
+            end.setDate(end.getDate() + 2);
+            end.setHours(23, 45, 0, 0);
+            
+            const month = end.getMonth() + 1;
+            const day = end.getDate();
+            const year = end.getFullYear();
+            
+            return `${month}/${day}/${year} 11:45 PM`;
+        });
+
+        var endTime = (new Date(`${endTimeStr.value}`)).getTime();
+
+        var raw = await KlineUtility.getRecentKlines(symbol, props.interval, props.maxInitCandles, startTime, endTime);
+
+        raw = raw.filter(c => c.openTime > startTime && c.openTime < endTime)
+
         // if(raw.length < props.maxInitCandles) {
         //     candles = [];
         //     return
         // }
 
-        raw = raw.filter(c => c.openTime >= chocoMintoStore.startingTimeStamp);
+        //raw = raw.filter(c => c.openTime >= chocoMintoStore.startingTimeStamp);
 
         candleAnalyzer.initializePastCandlesSupportResistance(raw,props.maxInitCandles - props.supportAndResistancePeriodLength,props.supportAndResistancePeriodLength);
 
@@ -169,7 +190,8 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
             closeAbsDistanceToZone: null,
             priceZoneEvaluation: null,
             patternTrack: "",
-            isPoint: false
+            isPoint: false,
+            isWeakening: false
         }));
 
     }else{
@@ -322,7 +344,8 @@ async function updateCandleEntryWithLastCandle(symbol:string){
         closeAbsDistanceToZone: null,
         priceZoneEvaluation: null,
         patternTrack: "",
-        isPoint: false
+        isPoint: false,
+        isWeakening: false
     }
 
     var entryCandle: CandleEntry = {
@@ -349,7 +372,8 @@ async function updateCandleEntryWithLastCandle(symbol:string){
         closeAbsDistanceToZone: null,
         priceZoneEvaluation: null,
         patternTrack: "",
-        isPoint: false
+        isPoint: false,
+        isWeakening: false
     }
 
     

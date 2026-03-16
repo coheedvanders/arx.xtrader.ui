@@ -145,7 +145,7 @@
         </g>
 
         <!-- EMA9 Line -->
-        <!-- <polyline
+        <polyline
           v-if="emaPoints.length > 0"
           :points="emaPoints"
           class="ema-line"
@@ -153,7 +153,7 @@
           stroke-width="2"
           stroke-linejoin="round"
           stroke-linecap="round"
-        /> -->
+        />
 
         <!-- Zone Labels -->
         <g class="zone-labels">
@@ -170,6 +170,19 @@
 
         <!-- Pattern Track Indicators -->
         <g v-for="(candle, i) in candles" :key="`pattern-${i}`" class="pattern-track-indicators">
+          <!-- Weakening Indicator -->
+          <g v-if="candle.isWeakening" class="weakening-indicator">
+            <polygon
+              :points="`
+                ${candleX(i)},${priceToY(candle.low!) + 62}
+                ${candleX(i) - 5},${priceToY(candle.low!) + 70}
+                ${candleX(i)},${priceToY(candle.low!) + 78}
+                ${candleX(i) + 5},${priceToY(candle.low!) + 70}
+              `"
+              class="weakening-diamond"
+            />
+          </g>
+
           <g v-if="candle.patternTrack === 'hl'" class="higher-low-indicator">
             <circle
               :cx="candleX(i)"
@@ -391,15 +404,15 @@
                 <h3>Price Zone</h3>
                 <div class="detail-item">
                   <label>Upper</label>
-                  <span>{{ selectedCandle.priceZone!.upper!.toFixed(4) }}</span>
+                  <span>{{ selectedCandle.priceZone!.upper }}</span>
                 </div>
                 <div class="detail-item">
                   <label>Mid</label>
-                  <span>{{ selectedCandle.priceZone!.mid!.toFixed(4) }}</span>
+                  <span>{{ selectedCandle.priceZone!.mid }}</span>
                 </div>
                 <div class="detail-item">
                   <label>Lower</label>
-                  <span>{{ selectedCandle.priceZone!.lower!.toFixed(4) }}</span>
+                  <span>{{ selectedCandle.priceZone!.lower }}</span>
                 </div>
               </div>
 
@@ -1618,5 +1631,16 @@ const formatValue = (value: any): string => {
 .pattern-label:hover {
   opacity: 1;
   font-size: 11px;
+}
+
+.weakening-indicator {
+  pointer-events: none;
+}
+
+.weakening-diamond {
+  fill: #f59e0b;
+  opacity: 0.9;
+  stroke: #fcd34d;
+  stroke-width: 1;
 }
 </style>

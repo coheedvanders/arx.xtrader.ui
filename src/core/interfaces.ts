@@ -172,6 +172,22 @@ export interface CandleEntry {
   priceZoneEvaluation: PriceZoneEvaluation | null
   patternTrack: string
   isPoint:boolean
+  isWeakening:boolean
+}
+
+export interface SimulationReport{
+  start: string,
+  end: string,
+  starting_balance: number,
+  ending_balance: number,
+  margin_balance: number,
+  result: number,
+  open:number,
+  won:number,
+  loss:number,
+  open_value:number,
+  won_value: number,
+  loss_value:number
 }
 
 export interface Position {

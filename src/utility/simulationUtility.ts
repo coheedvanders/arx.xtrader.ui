@@ -5,7 +5,6 @@ import { KlineUtility } from "./klineUtility.ts";
 import { klineDbUtility } from "./klineDbUtility.ts";
 import { PriceZoneUtility } from "./priceZoneUtility.ts";
 import { PnlUtility } from "./PnlUtility.ts";
-import { TypePredicateKind } from "typescript";
 
 export class SimulationUtility {
     static async initializePastCandleEntryData(symbol: string, interval:string,maxCandles:number, supportAndResistancePeriodLength: number){
@@ -44,8 +43,8 @@ export class SimulationUtility {
             closeAbsDistanceToZone: null,
             priceZoneEvaluation: null,
             patternTrack: "",
-            isPoint: false
-
+            isPoint: false,
+            isWeakening: false
         }));
 
         klineDbUtility.initializeKlineData(symbol,candles.slice(0, -1));
@@ -126,6 +125,7 @@ export class SimulationUtility {
                 candle.overboughSoldAnalysis.extremeLevel = candleAnalyzer.detectOverState(movingCandles,8);
                 candle.candleData.pastCandleAverageChange = pastCandleAverageChange
                 candle.candleData.atr = atr;
+                candle.isWeakening = candleAnalyzer.isWeakening(movingCandles);
 
                 if(i >= 26){
                     candle.candleData.changePercentageZScore = candleAnalyzer.getCandleChangeZScore(movingCandles,50);
@@ -174,7 +174,7 @@ export class SimulationUtility {
 
                 candle.close_atr_abs_change = Math.abs(((candle.close - candle.close_atr_adjusted) / candle.close_atr_adjusted) * 100)
 
-                candle.candleData.ema200 = candleAnalyzer.calculateEMA(movingCandles, 200);
+                candle.candleData.ema200 = candleAnalyzer.calculateEMA(movingCandles, 40);
 
                 if(candle.overboughSoldAnalysis.extremeLevel != ""){
                     candle.candleData.pastZoneOverStatePriceReaction = candleAnalyzer.getPreviousSessionOverStatePriceReaction(movingCandles,candle.overboughSoldAnalysis.extremeLevel)
@@ -346,7 +346,10 @@ export class SimulationUtility {
                         var closeAbseDistanceToEma200 = Math.abs(((candle.close - candle.candleData.ema200) / candle.candleData.ema200) * 100)
 
                         var priceZoneInhabitantCount = movingCandles.slice(-24).filter(c => c.priceZone && c.priceZone == candle.priceZone).length
-                        var priceZones = movingCandles.filter(c => c.candleData && c.candleData.isNewZone ).map(c => c.priceZone);
+                        var priceZones = movingCandles
+                        .filter(c => c.candleData && c.candleData.isNewZone)
+                        .map(c => c.priceZone)
+                        .filter((z): z is PriceZone => z !== null);
 
 
                         var lowerZoneEqualizerPrice = (candle.priceZone.lower + candle.priceZone.mid) / 2
@@ -357,87 +360,75 @@ export class SimulationUtility {
 
                         //start
 
-                        var pointCandles = movingCandles.filter(c => c.isPoint);
-                        if(pointCandles.length > 0){
-                            var latestPointCandle = pointCandles[pointCandles.length - 1];
+                        var isRejectedFromTopBigTime = candle.candleData.top_wick_abs_change > Math.abs(candle.candleData.change_percentage_v) 
+                        && candle.high > candle.priceZone.upper
+                        && candle.open < candle.priceZone.upper 
+                        && candle.close < candle.priceZone.upper
+                        && candle.close > candle.priceZone.mid
+                        && candle.candleData.top_wick_v > 60
+                        && candle.volumeAnalysis.zScore > 3
+                        && candle.closeAbsDistanceToZone!.mid > 1
+                        && candle.candleData.ema200 < candle.priceZone.upper
+                        && candle.candleData.ema200 > candle.priceZone.mid
+                        && candle.volumeAnalysis.corrVolumeMomentum > 0.021
+                        && candle.candleData.lookbackChangePercentage > 2.3
+                        && candle.priceZoneInteraction!.avgDistanceFromCenter > 0.0048
+                        && priceZoneInhabitantCount <= 15
 
-                            var changeAfterLastPoint = ((candle.close - latestPointCandle.close) / latestPointCandle.close) * 100
-                            candle.candleData.conditionMet = changeAfterLastPoint.toFixed(2).toString()
+                        var noPreviousCandleOpensBetweenHighAndOpen = movingCandles.slice(-4).filter(c => c.openTime < candle.openTime && c.open > candle.open && c.open < candle.high).length == 0;
 
-                            if(latestPointCandle.candleData!.side == "bull"){
-                                if(changeAfterLastPoint > 5){
-                                    var pastResistanceBreaksCount = movingCandles.slice(-8).filter(c => c.breakthrough_resistance).length
-                                    var pastBullPushCount = movingCandles.filter(c => c.openTime > latestPointCandle.openTime && c.candleData && c.candleData.volumeSpike && c.candleData.side == "bull").length
-                                    
-                                    var entry1 = candle.overboughSoldAnalysis.extremeLevel == "oversold" && candle.close > latestPointCandle.close && pastResistanceBreaksCount >= 3 && pastBullPushCount >= 2 && candle.candleData.changePercentageZScore < 3
-                                    var entry2 = prevCandle.candleData.side == "bull" && prevCandle.candleData.body_v > 80 && prevCandle.candleData.change_percentage_v > 1 
-                                                && candle.candleData.side == "bear" && candle.candleData.body_v > 70
-                                    if(entry1 || entry2){
-                                        candle.candleData.conditionMet = "SHORT_1"
+                    
 
-                                        candle.side = "SHORT"
-                                        //candle.margin = margin * 3
-                                        candle.tpPrice = latestPointCandle.open
-                                        candle.slPrice = candle.open + (atr)
-                                    }
-                                }
+                        if(isRejectedFromTopBigTime && noPreviousCandleOpensBetweenHighAndOpen){
+                            candle.candleData.conditionMet = "SHORT_1"
+                            candle.side = "SHORT"
+                            candle.margin = margin * 3
+                            
+                            if(candle.candleData.side == "bear"){
+                                candle.tpPrice = lowerZoneEqualizerPrice;
+                            }else{
+                                candle.tpPrice = candle.priceZone.mid;
+                            }
 
-                                var highestCloseAfterLatestPoint = Math.max(...movingCandles.filter(c => c.openTime >= latestPointCandle.openTime).map(c => c.close))
-                                var changeAfterHighestPoint = ((candle.close - highestCloseAfterLatestPoint) / highestCloseAfterLatestPoint) * 100
+                            candle.slPrice = candle.high + (atr * 0.5)
+                        }
 
-                                if(changeAfterHighestPoint < -7){
-                                    var pastSupportBreaksCount = movingCandles.slice(-20).filter(c => c.breakthrough_support).length
-                                    var pastVolumeSpikeCount = movingCandles.slice(-20).filter(c => c.candleData?.volumeSpike).length
-                                    var entry1 = candle.overboughSoldAnalysis.extremeLevel == "overbought" && pastSupportBreaksCount >= 4 && pastVolumeSpikeCount >= 3
+                        //===
 
-                                    if(entry1){
-                                        candle.candleData.conditionMet = "LONG_1"
+                        var candleFellAboveZone = candle.close < candle.priceZone.upper && candle.open > candle.priceZone.upper;
+                        var previousCandlePointBreakUpper = movingCandles.slice(-8).filter(c => 
+                            c.candleData && c.volumeAnalysis && c.priceZone
+                            && (c.isPoint || (c.candleData.volumeSpike && c.volumeAnalysis.zScore > 3))
+                            && c.priceZone 
+                            && c.close > c.priceZone.upper 
+                            && c.open < c.priceZone.upper 
+                            && c.open > c.priceZone.mid 
+                            && c.priceZone == candle.priceZone
+                            && c.candleData.ema200 < c.priceZone.mid
+                            && c.candleData.ema200 > c.priceZone.lower
+                        )
+                        var candleStillAtUpperArea = candle.close > candle.priceZone.mid;
 
-                                        candle.side = "LONG"
-                                        //candle.margin = margin * 3
-                                        candle.tpPrice = latestPointCandle.close
-                                        candle.slPrice = candle.open - (atr * 2.5)
-                                    }
-                                }
-                            }else if(latestPointCandle.candleData!.side == "bear"){
-                                var isLatestPointWithinHealthyPeriod = movingCandles.slice(-50).filter(c => c.openTime == latestPointCandle.openTime).length > 0;
-                                var entry1B = candle.overboughSoldAnalysis.extremeLevel == "overbought" && candle.candleData.changePercentageZScore >= 3 && candle.close < latestPointCandle.close && isLatestPointWithinHealthyPeriod && candle.candleData.changePercentageZScore < 3
-                                if(entry1B){
-                                    candle.side = "LONG"
-                                    candle.margin = margin * 3
-                                    candle.tpPrice = latestPointCandle.open
-                                    candle.slPrice = candle.open - (atr * 2.5)
-                                }
+                        if(candleFellAboveZone && previousCandlePointBreakUpper.length >= 1 && candleStillAtUpperArea){
+                            var lastPreviousCandlePointBreakUpper = previousCandlePointBreakUpper[previousCandlePointBreakUpper.length - 1];
+                            var previousCandlePointBreakUpperEmaDistanceToMid = Math.abs((lastPreviousCandlePointBreakUpper.priceZone!.mid - candle.candleData.ema200) / candle.candleData.ema200) * 100
 
-                                var lowestCloseAfterLatestPoint = Math.min(...movingCandles.filter(c => c.openTime >= latestPointCandle.openTime).map(c => c.close))
-                                var changeAfterLowestPoint = ((candle.close - lowestCloseAfterLatestPoint) / lowestCloseAfterLatestPoint) * 100
+                            if(previousCandlePointBreakUpperEmaDistanceToMid > 0.6 && priceZoneInhabitantCount > 5){
+                                candle.candleData.conditionMet = "SHORT_3"
+                                candle.side = "SHORT"
+                                candle.margin = margin * 5
+                                candle.tpPrice = lowerZoneEqualizerPrice
+                                candle.slPrice = candle.priceZone.upper + atr
 
-                                candle.candleData.extraInfo = changeAfterLowestPoint.toFixed() + "y"
-
-                                if(changeAfterLastPoint > 5){
-                                    var pastResistanceBreaksCount = movingCandles.slice(-20).filter(c => c.breakthrough_resistance).length
-                                    var pastVolumeSpikeCount = movingCandles.slice(-20).filter(c => c.candleData?.volumeSpike).length
-                                    var entry1C = candle.close > latestPointCandle.open && candle.overboughSoldAnalysis.extremeLevel == "overbought" && pastResistanceBreaksCount >= 5 && candle.candleData.top_wick_abs_change >= 0.5 && candle.candleData.volumeSpike && pastVolumeSpikeCount <= 2  && candle.candleData.changePercentageZScore < 3
-
-                                    if(entry1C){
-                                        candle.candleData.conditionMet = "SHORT_1"
-
-                                        candle.side = "SHORT"
-                                        //candle.margin = margin * 3
-                                        candle.tpPrice = latestPointCandle.close
-
-                                        if(candle.candleData.side == "bear"){
-                                            candle.slPrice = candle.open + (atr)
-                                        }else{
-                                            candle.slPrice = candle.close + (atr)
-                                        }
-                                    }
-                                }
+                                candle.candleData.extraInfo = previousCandlePointBreakUpperEmaDistanceToMid.toFixed(2).toString()
                             }
                         }
 
+
                         //end
                     }
+
+                    
 
 
                     //======================================================================
@@ -472,27 +463,48 @@ export class SimulationUtility {
 
                             var trapSlPnl = -(candle.margin * 3)
 
-                            candle.candleData.extraInfo = estimatedSlPnl.toString();
+                            //candle.candleData.extraInfo = estimatedSlPnl.toString();
 
-                            if(estimatedSlPnl > (estimatedTpPnl * 1.5)
-                                || estimatedSlPnl < -(margin * 3)
-                            ){
-                                candle.status = ''
-                                candle.side = "";
-                                candle.tpPrice = 0;
-                                candle.slPrice = 0;
-                                candle.leverage = 0;
-                                candle.entryFee = 0;
-                                candle.margin = 0;
-                                candle.candleData.conditionMet = "IGNORED"
-                                openPosition = null
+                            // if(estimatedSlPnl > (estimatedTpPnl * 1.5)
+                            //     || estimatedSlPnl < -(margin * 3)
+                            // ){
+                            //     candle.status = ''
+                            //     candle.side = "";
+                            //     candle.tpPrice = 0;
+                            //     candle.slPrice = 0;
+                            //     candle.leverage = 0;
+                            //     candle.entryFee = 0;
+                            //     candle.margin = 0;
+                            //     candle.candleData.conditionMet = "IGNORED"
+                            //     openPosition = null
 
-                            }
+                            // }
                         }
                     }
                 }
             }
         }
+    }
+
+    static getLadderDirection(zones: PriceZone[]): 'laddering_up' | 'laddering_down' | null {
+        if (zones.length < 2) return null;
+
+        let ups = 0;
+        let downs = 0;
+
+        for (let i = zones.length - 1; i > 0; i--) {
+            const curr = zones[i].mid;
+            const prev = zones[i - 1].mid;
+            if (curr > prev) ups++;
+            else if (curr < prev) downs++;
+        }
+
+        const total = ups + downs;
+        const threshold = 0.7; // 70% must agree
+
+        if (downs / total >= threshold) return 'laddering_down';
+        if (ups   / total >= threshold) return 'laddering_up';
+        return null;
     }
 
     static getTrendDirection(

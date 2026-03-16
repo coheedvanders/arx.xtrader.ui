@@ -36,7 +36,9 @@ export class KlineUtility{
     static async getRecentKlines(
         symbol: string,
         interval: string,
-        limit: number
+        limit: number,
+        startTime?: number,
+        endTime?: number
     ): Promise<Candle[]> {
 
         const intervalMsMap: Record<string, number> = {
@@ -58,18 +60,20 @@ export class KlineUtility{
         if (!intervalMs) throw new Error('Unsupported interval')
 
         const candles: Candle[] = []
-        let startTime = Date.now() - limit * intervalMs
+        let currentStart = startTime ?? Date.now() - limit * intervalMs
+        const resolvedEnd = endTime ?? Date.now()
 
         try {
             while (candles.length < limit) {
                 const remaining = limit - candles.length
                 const batchLimit = Math.min(1000, remaining)
 
-                const url =
+                let url =
                     `https://fapi.binance.com/fapi/v1/klines` +
                     `?symbol=${symbol.toUpperCase()}` +
                     `&interval=${interval}` +
-                    `&startTime=${startTime}` +
+                    `&startTime=${currentStart}` +
+                    `&endTime=${resolvedEnd}` +
                     `&limit=${batchLimit}`
 
                 const res = await fetch(url)
@@ -95,9 +99,9 @@ export class KlineUtility{
                 candles.push(...batch)
 
                 const lastOpenTime = data[data.length - 1][0]
-                startTime = lastOpenTime + intervalMs
+                currentStart = lastOpenTime + intervalMs
 
-                if (data.length < batchLimit) break
+                if (data.length < batchLimit || currentStart >= resolvedEnd) break
             }
 
             return candles

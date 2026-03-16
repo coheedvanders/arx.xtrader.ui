@@ -37,12 +37,16 @@
         <ButtonComponent @click="runStats" rounded class="ml-sm">run stats</ButtonComponent>
         <ButtonComponent @click="indexDBLogger.download" rounded class="ml-sm">view logs</ButtonComponent>
         <ButtonComponent @click="clearLogs" rounded class="ml-sm">clear logs</ButtonComponent>
+        <ButtonComponent @click="runContinuousSimulation" rounded class="ml-sm">Run Continuous Sim</ButtonComponent>
+        <ButtonComponent @click="nextPeriodRun" rounded class="ml-sm">Next period ></ButtonComponent>
+
 
         
         <InputComponent type="numeric" v-model="chocoMintoStore.startingTimeStamp" />
         <div>{{ (new Date(botStartOn)).toLocaleString() }}</div>
         <div>{{ (new Date(chocoMintoStore.startingTimeStamp)).toLocaleString() }}</div>
         <div>{{ (new Date(chocoMintoStore.endingTimeStamp)).toLocaleString() }}</div>
+        <div>{{ simulationStartTime }}</div>
 
         <div class="divider"></div>
         <div v-if="UI_SYMBOL_OF_INTEREST_MESAGE">{{ UI_SYMBOL_OF_INTEREST_MESAGE }}</div>
@@ -96,7 +100,8 @@
                 :target-sl-roi="SL_ROI"
                 :new-candle-trigger-key="onNewCandleBasketTriggerKey"
                 :position-duration-median="POSITION_DURATION_MEDIAN"
-                :max-open-positions="MAX_OPEN_POSITIONS"/>
+                :max-open-positions="MAX_OPEN_POSITIONS"
+                :simulation-start="simulationStartTime"/>
         </div>
     </div>
 
@@ -122,14 +127,54 @@
         <CandleEntryHistoryComponent :candle-entries="selectedSymbolCandleEntries"/>
     </DialogComponent>
 
+    <TableComponent>
+        <template #header>
+            <TableHeaderComponent>
+                <th>Start</th>
+                <th>End</th>
+                <th>Starting Balance</th>
+                <th>Ending Balance</th>
+                <th>Margin Balance</th>
+                <th>Result</th>
+                <th>Open</th>
+                <th>Won</th>
+                <th>Loss</th>
+                <th>Open Value</th>
+                <th>Won Value</th>
+                <th>Loss Value</th>
+            </TableHeaderComponent>
+        </template>
+
+        <template #body>
+            <TableBodyComponent>
+                <tr v-for="(report, index) in simulationReport" :key="index">
+                    <td>{{ report.start }}</td>
+                    <td>{{ report.end }}</td>
+                    <td>{{ report.starting_balance.toFixed(2) }}</td>
+                    <td>{{ report.ending_balance.toFixed(2) }}</td>
+                    <td>{{ report.margin_balance.toFixed(2) }}</td>
+                    <td :class="report.result >= 0 ? 'text-green-500' : 'text-red-500'">
+                        {{ report.result.toFixed(2) }}
+                    </td>
+                    <td>{{ report.open }}</td>
+                    <td>{{ report.won }}</td>
+                    <td>{{ report.loss }}</td>
+                    <td>{{ report.open_value.toFixed(2) }}</td>
+                    <td>{{ report.won_value.toFixed(2) }}</td>
+                    <td>{{ report.loss_value.toFixed(2) }}</td>
+                </tr>
+            </TableBodyComponent>
+        </template>
+    </TableComponent>
+
 </template>
 
 <script setup lang="ts">
-import type { Candle, CandleEntry, FuturesSymbol, SimulationStats, TradeLog } from '@/core/interfaces';
+import type { Candle, CandleEntry, FuturesSymbol, SimulationReport, SimulationStats, TradeLog } from '@/core/interfaces';
 import SymbolSocketComponent from './SymbolSocketComponent.vue';
 import { OrderMakerUtility } from '@/utility/OrderMakerUtility';
 import { useChocoMintoStore } from '@/stores/chocoMintoStore';
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import SymbolBasketComponent from './SymbolBasketComponent.vue';
 import { CommonHelperUtility } from '@/utility/CommonHelperUtility';
 import SimulatedPositionSummaryComponent from './SimulatedPositionSummaryComponent.vue';
@@ -151,6 +196,9 @@ import ReplayCandleEntryComponent from './ReplayCandleEntryComponent.vue';
 import { useNotificationStore } from '@/stores/notificationStore';
 import LiveAccountMonitoringComponent from './LiveAccountMonitoringComponent.vue';
 import { indexDBLogger } from '@/utility/indexDbLoggerUtility';
+import TableBodyComponent from '../shared/table/TableBodyComponent.vue';
+import TableHeaderComponent from '../shared/table/TableHeaderComponent.vue';
+import TableComponent from '../shared/table/TableComponent.vue';
 
 const chocoMintoStore = useChocoMintoStore();
 const notificationStore = useNotificationStore();
@@ -159,13 +207,13 @@ const isBotEnabled = ref(false)
 
 const MASTER_SYMBOL = "BTCUSDT";
 const KLINE_INTERVAL = "15m"
-const MAX_INIT_CANDLES = 210;
+const MAX_INIT_CANDLES = 1000;
 const SUPPORT_AND_RESISTANCE_PERIOD_LENGTH = 10;
 
 const MARGIN = 1.5;
 const TP_ROI = 2;
 const SL_ROI = 2.5;
-const STARTING_BALANCE = 100;
+const STARTING_BALANCE = 300;
 const MAX_OPEN_POSITIONS = 20;
 const TARGET_GAIN = 10;
 const POSITION_DURATION_MEDIAN = 10;
@@ -189,6 +237,10 @@ const basketKey = ref(CommonHelperUtility.generateGuid());
 const showEntryHistory = ref(false);
 const selectedSymbolCandleEntries = ref<CandleEntry[]>([])
 const selectedSymbol = ref("")
+
+const simulationReport = ref<SimulationReport[]>([])
+const simulationStartTime = ref("1/1/2022 11:25 PM");
+const simulationRunningBalance = ref(300)
 
 const botStartOn = ref(0)
 
@@ -330,6 +382,125 @@ function runManualSimulation(){
     chocoMintoStore.isManualSimulation = true;
     tradeLogger.clearBackTestLogs();
     basketKey.value = CommonHelperUtility.generateGuid();
+}
+
+function nextPeriodRun(){
+    const start = new Date(simulationStartTime.value);
+    start.setDate(start.getDate() + 2);
+    start.setHours(23, 25, 0, 0);
+
+    const month = start.getMonth() + 1;
+    const day = start.getDate();
+    const year = start.getFullYear();
+
+    simulationStartTime.value = `${month}/${day}/${year} 11:25 PM`;
+
+    chocoMintoStore.futureSymbols.forEach(f => {
+        f.simulationStats = {
+            won: 0,
+            loss: 0,
+            open: 0,
+            mid: 0,
+            takerFee: 0,
+            closedPnl: 0,
+            openPnl: 0,
+            wonPnl: 0,
+            lossPnl: 0
+        }
+    })
+
+    chocoMintoStore.isManualSimulation = true;
+    tradeLogger.clearBackTestLogs();
+    basketKey.value = CommonHelperUtility.generateGuid();
+}
+
+async function runContinuousSimulation() {
+    chocoMintoStore.isManualSimulation = true;
+    tradeLogger.clearBackTestLogs();
+    basketKey.value = CommonHelperUtility.generateGuid();
+
+    const unwatch = watch(
+        () => chocoMintoStore.completedRunCount,
+        async (count) => {
+            if (count >= 4) {
+                chocoMintoStore.completedRunCount = 0;
+                //tradeLogger.downloadBackTestLogs()
+                unwatch();
+
+                if (new Date(simulationStartTime.value) < new Date()) {
+                    
+                    simulationReport.value.push({
+                        start: simulationStartTime.value,
+                        end: "",
+                        starting_balance: simulationRunningBalance.value,
+                        ending_balance: estimatedBalance.value,
+                        margin_balance: estimatedMarginBalance.value,
+                        result: estimatedMarginBalance.value - simulationRunningBalance.value,
+                        open: manualSimulationStats.value.open,
+                        won: manualSimulationStats.value.won,
+                        loss: manualSimulationStats.value.loss,
+                        open_value: manualSimulationStats.value.openPnl,
+                        won_value: manualSimulationStats.value.wonPnl,
+                        loss_value: manualSimulationStats.value.lossPnl
+                    })
+
+                    const start = new Date(simulationStartTime.value);
+                    start.setDate(start.getDate() + 2);
+                    start.setHours(23, 25, 0, 0);
+
+                    const month = start.getMonth() + 1;
+                    const day = start.getDate();
+                    const year = start.getFullYear();
+
+                    simulationStartTime.value = `${month}/${day}/${year} 11:25 PM`;
+
+                    await new Promise(resolve => setTimeout(resolve, 5000));
+
+                    chocoMintoStore.futureSymbols.forEach(f => {
+                        f.simulationStats = {
+                            won: 0,
+                            loss: 0,
+                            open: 0,
+                            mid: 0,
+                            takerFee: 0,
+                            closedPnl: 0,
+                            openPnl: 0,
+                            wonPnl: 0,
+                            lossPnl: 0
+                        }
+                    })
+                    runContinuousSimulation();
+                } else {
+                    downloadSimulationReport();
+                }
+            }
+        }
+    )
+}
+
+function downloadSimulationReport() {
+    if (simulationReport.value.length === 0) return;
+
+    const headers = [
+        'start', 'end', 'starting_balance', 'ending_balance',
+        'margin_balance', 'result', 'open', 'won', 'loss',
+        'open_value', 'won_value', 'loss_value'
+    ];
+
+    const rows = simulationReport.value.map(row =>
+        headers.map(h => `"${(row as any)[h] ?? ''}"`).join(',')
+    );
+
+    const csv = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `simulation_report_${Date.now()}.csv`;
+    a.click();
+
+    URL.revokeObjectURL(url);
 }
 
 function clearSessionRange(){
