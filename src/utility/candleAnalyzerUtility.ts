@@ -91,151 +91,59 @@ class CandlestickAnalyzer {
         return zScore;
     }
 
-static buyingInterestScore(candles: CandleEntry[]): number {
-  if (candles.length === 0) return 0;
+    static clamp(v: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, v))
+}
 
-  const n = candles.length;
+static average(values: number[]): number {
+  if (values.length === 0) return 0
+  return values.reduce((a, b) => a + b, 0) / values.length
+}
 
-  // Each signal casts a vote: +1 (bullish), -1 (bearish), 0 (skip/no data)
-  // We collect all votes, sum them, then map min..max → 0..100
-  const votes: number[] = [];
+static buyerInterestScore(
+  candles: Candle[],
+  lookback: number = 20
+): number {
 
-  // ── Loop 1: Structure ──────────────────────────────────────────────────────
-  // One vote per candle per signal — zone quality, bias, EMA, trend
+  if (candles.length === 0) return 0
 
-  for (const c of candles) {
-    if (c.zoneAnalysis) {
-      // Zone strength: strong zone = bullish structure
-      const zs = c.zoneAnalysis.zoneStrength;
-      votes.push(zs > 0.6 ? 1 : zs < 0.3 ? -1 : 0);
+  const c = candles[candles.length - 1]
 
-      // Bias
-      votes.push(
-        c.zoneAnalysis.overallBias === "long"  ?  1 :
-        c.zoneAnalysis.overallBias === "short" ? -1 : 0
-      );
-    }
+  const range = Math.max(c.high - c.low, 0.0000001)
+  const body = Math.abs(c.close - c.open)
 
-    if (c.candleData) {
-      // EMA position
-      votes.push(c.candleData.emaLevel === "above" ? 1 : -1);
+  const bodyRatio = body / range
+  const bottomWick = Math.min(c.open, c.close) - c.low
+  const bottomWickRatio = bottomWick / range
+  const closePosition = (c.close - c.low) / range
 
-      // Trend
-      const trend = c.candleData.lookbackTrend;
-      votes.push(
-        trend === "strong_uptrend" ?  2 :  // double vote — strongest signal
-        trend === "uptrend"        ?  1 :
-        trend === "strong_downtrend" ? -2 :
-        trend === "downtrend"      ? -1 : 0
-      );
-    }
-  }
+  const recent = candles.slice(
+    Math.max(0, candles.length - lookback - 1),
+    candles.length - 1
+  )
 
-  // ── Loop 2: Demand ─────────────────────────────────────────────────────────
-  // Volume pressure, delta, zone reactions, wick rejections
+  const avgVolume = this.average(recent.map(x => x.volume)) || c.volume
+  const avgRange = this.average(recent.map(x => x.high - x.low)) || range
 
-  for (const c of candles) {
-    if (c.volumeAnalysis) {
-      const va = c.volumeAnalysis;
-      const totalVol = va.buyVolume + va.sellVolume;
+  const volumeRatio = c.volume / avgVolume
+  const rangeRatio = range / avgRange
 
-      // Buy/sell dominance
-      if (totalVol > 0) {
-        const buyRatio = va.buyVolume / totalVol;
-        votes.push(buyRatio > 0.55 ? 1 : buyRatio < 0.45 ? -1 : 0);
-      }
+  const bodyScore = this.clamp(bodyRatio * 100, 0, 100)
+  const wickScore = this.clamp(bottomWickRatio * 120, 0, 100)
+  const closeScore = this.clamp(closePosition * 100, 0, 100)
+  const volumeScore = this.clamp(volumeRatio * 60, 0, 100)
+  const expansionScore = this.clamp(rangeRatio * 60, 0, 100)
 
-      // Delta ratio — scaled, -1..1
-      const delta = Math.max(-1, Math.min(1, va.deltaRatio * 100));
-      votes.push(delta > 0.2 ? 1 : delta < -0.2 ? -1 : 0);
+  const rawScore =
+    bodyScore * 0.30 +
+    wickScore * 0.20 +
+    closeScore * 0.25 +
+    volumeScore * 0.15 +
+    expansionScore * 0.10
 
-      // Delta alignment with momentum
-      votes.push(va.deltaAlignment ? 1 : -1);
-    }
+  const directionPenalty = c.close >= c.open ? 1 : 0.6
 
-    if (c.zoneAnalysis) {
-      const za = c.zoneAnalysis;
-
-      // Zone reversal candle
-      votes.push(za.currentCandleReversal ? 1 : 0);
-
-      // Reaction velocity — meaningful bounce vs weak drift
-      votes.push(za.reactionVelocity > 0.5 ? 1 : za.reactionVelocity < 0.1 ? -1 : 0);
-    }
-
-    if (c.candleData) {
-      // Bottom wick rejection
-      votes.push(c.candleData.bottom_wick_v > 20 ? 1 : c.candleData.bottom_wick_v < 5 ? -1 : 0);
-
-      // Top wick — selling pressure
-      votes.push(c.candleData.top_wick_v > 30 ? -1 : c.candleData.top_wick_v < 10 ? 1 : 0);
-
-      // Candle side
-      votes.push(c.candleData.side === "bull" ? 1 : -1);
-    }
-
-    if (c.overboughSoldAnalysis) {
-      votes.push(c.overboughSoldAnalysis.extremeLevel === "oversold" ? 1 : 0);
-    }
-  }
-
-  // ── Loop 3: Interest — recency-weighted ────────────────────────────────────
-  // Same signals as demand but exponentially weighted toward recent candles
-  // Recent candles cast heavier fractional votes instead of flat ±1
-
-  for (let i = 0; i < n; i++) {
-    const c = candles[i];
-    // Exponential weight: oldest ≈ 0.14x, newest = 1x
-    const w = Math.exp((i / (n - 1 || 1)) * 2) / Math.exp(2);
-
-    if (c.zoneAnalysis) {
-      const momentumNorm = Math.min(1, c.zoneAnalysis.momentumStrength / 50);
-      // momentum above midpoint = buying interest building
-      votes.push((momentumNorm > 0.5 ? 1 : -1) * w);
-
-      votes.push(
-        (c.zoneAnalysis.overallBias === "long"  ?  1 :
-         c.zoneAnalysis.overallBias === "short" ? -1 : 0) * w
-      );
-    }
-
-    if (c.candleData) {
-      votes.push((c.candleData.side === "bull" ? 1 : -1) * w);
-    }
-
-    if (c.volumeAnalysis) {
-      const va = c.volumeAnalysis;
-      const totalVol = va.buyVolume + va.sellVolume;
-      if (totalVol > 0) {
-        const buyRatio = va.buyVolume / totalVol;
-        votes.push((buyRatio > 0.5 ? 1 : -1) * w);
-      }
-    }
-  }
-
-  // ── Map vote sum → 0..100 ──────────────────────────────────────────────────
-  // Theoretical min/max depends on n — derive it from actual vote count
-  // so the scale is always relative to the data you passed in
-
-  const voteSum = votes.reduce((a, b) => a + b, 0);
-
-  // Max possible = every vote is +1 (or +2 for double votes)
-  // We approximate by running a hypothetical all-bull pass
-  let maxPossible = 0;
-  let minPossible = 0;
-
-  for (const v of votes) {
-    if (v > 0) maxPossible += v;
-    if (v < 0) minPossible += v;
-  }
-
-  // Edge case: all neutral
-  if (maxPossible === 0 && minPossible === 0) return 50;
-
-  // Linear map: minPossible → 0, maxPossible → 100
-  const score = ((voteSum - minPossible) / (maxPossible - minPossible)) * 100;
-
-  return Math.max(0, Math.min(100, Math.round(score)));
+  return this.clamp(rawScore * directionPenalty, 0, 100)
 }
 
     static isWeakening(candles: CandleEntry[], length: number = 10): boolean {
@@ -378,7 +286,9 @@ static buyingInterestScore(candles: CandleEntry[]): number {
         absCandleSize,
         changePercentageZScore: 0,
         top_wick_abs_change: topWickAbsChange,
-        bottom_wick_abs_change: bottomWickAbsChange
+        bottom_wick_abs_change: bottomWickAbsChange,
+        crossedEma: false,
+        buyerInterestRate: 0
     };
   }
 

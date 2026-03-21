@@ -281,6 +281,8 @@ export interface CandleData {
   pastCandleAverageChange:number;
   absCandleSize: number;
   changePercentageZScore: number;
+  crossedEma:boolean;
+  buyerInterestRate:number;
 }
 
 

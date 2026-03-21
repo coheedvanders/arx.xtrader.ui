@@ -1,6 +1,6 @@
 <template>
     <div class="text-center text-secondary">
-        <label>v1.9 - go my chwic</label>
+        <label>v1.9 - test3</label>
     </div>
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
@@ -39,6 +39,7 @@
         <ButtonComponent @click="clearLogs" rounded class="ml-sm">clear logs</ButtonComponent>
         <ButtonComponent @click="runContinuousSimulation" rounded class="ml-sm">Run Continuous Sim</ButtonComponent>
         <ButtonComponent @click="nextPeriodRun" rounded class="ml-sm">Next period ></ButtonComponent>
+        <ButtonComponent @click="runDownloadConfluenceDates" rounded class="ml-sm">extract conf</ButtonComponent>
 
 
         
@@ -207,7 +208,7 @@ const isBotEnabled = ref(false)
 
 const MASTER_SYMBOL = "BTCUSDT";
 const KLINE_INTERVAL = "15m"
-const MAX_INIT_CANDLES = 1000;
+const MAX_INIT_CANDLES = 210;
 const SUPPORT_AND_RESISTANCE_PERIOD_LENGTH = 10;
 
 const MARGIN = 1.5;
@@ -241,6 +242,27 @@ const selectedSymbol = ref("")
 const simulationReport = ref<SimulationReport[]>([])
 const simulationStartTime = ref("1/1/2022 11:25 PM");
 const simulationRunningBalance = ref(300)
+
+var dates = [
+    '1/19/2022',
+    '2/16/2022',
+    '3/28/2022 ',
+    '3/30/2022',
+    '3/30/2022',
+    '4/1/2022',
+    '4/29/2022',
+    '6/14/2022',
+    '12/15/2022',
+    '6/21/2023',
+    '10/3/2023',
+    '1/11/2024',
+    '3/31/2024',
+    '9/3/2024',
+    '9/29/2024',
+    '11/30/2024'
+]
+
+var i = 0;
 
 const botStartOn = ref(0)
 
@@ -341,6 +363,8 @@ async function initializeFutureSymbols(){
     }
 
     //chocoMintoStore.futureSymbols = chocoMintoStore.futureSymbols.slice(0,24);
+    //chocoMintoStore.futureSymbols = chocoMintoStore.futureSymbols.filter(s => s.symbol == "BTCUSDT")
+    
     futureSymbolBatches.value = chocoMintoStore.splitFutureSymbols(4);
 }
 
@@ -448,13 +472,18 @@ async function runContinuousSimulation() {
                     start.setDate(start.getDate() + 2);
                     start.setHours(23, 25, 0, 0);
 
+                    // If we've crossed into a new month, snap to the 1st
+                    if (start.getDate() !== 1) {
+                    // just let it run — only enforce 1st on initial value
+                    }
+
                     const month = start.getMonth() + 1;
                     const day = start.getDate();
                     const year = start.getFullYear();
 
                     simulationStartTime.value = `${month}/${day}/${year} 11:25 PM`;
 
-                    await new Promise(resolve => setTimeout(resolve, 5000));
+                    //await new Promise(resolve => setTimeout(resolve, 2000));
 
                     chocoMintoStore.futureSymbols.forEach(f => {
                         f.simulationStats = {
@@ -473,6 +502,62 @@ async function runContinuousSimulation() {
                 } else {
                     downloadSimulationReport();
                 }
+            }
+        }
+    )
+}
+
+async function runDownloadConfluenceDates() {
+    if(i >= dates.length) return;
+
+    simulationStartTime.value = dates[i] + ' 11:25 PM';
+
+    chocoMintoStore.isManualSimulation = true;
+    tradeLogger.clearBackTestLogs();
+    basketKey.value = CommonHelperUtility.generateGuid();
+
+    
+
+    const unwatch = watch(
+        () => chocoMintoStore.completedRunCount,
+        async (count) => {
+            if (count >= 4) {
+                chocoMintoStore.completedRunCount = 0;
+                //tradeLogger.downloadBackTestLogs()
+                unwatch();
+
+                simulationReport.value.push({
+                    start: simulationStartTime.value,
+                    end: "",
+                    starting_balance: simulationRunningBalance.value,
+                    ending_balance: estimatedBalance.value,
+                    margin_balance: estimatedMarginBalance.value,
+                    result: estimatedMarginBalance.value - simulationRunningBalance.value,
+                    open: manualSimulationStats.value.open,
+                    won: manualSimulationStats.value.won,
+                    loss: manualSimulationStats.value.loss,
+                    open_value: manualSimulationStats.value.openPnl,
+                    won_value: manualSimulationStats.value.wonPnl,
+                    loss_value: manualSimulationStats.value.lossPnl
+                })
+
+                i++
+                //tradeLogger.downloadBackTestLogs()
+
+                chocoMintoStore.futureSymbols.forEach(f => {
+                    f.simulationStats = {
+                        won: 0,
+                        loss: 0,
+                        open: 0,
+                        mid: 0,
+                        takerFee: 0,
+                        closedPnl: 0,
+                        openPnl: 0,
+                        wonPnl: 0,
+                        lossPnl: 0
+                    }
+                })
+                runDownloadConfluenceDates();
             }
         }
     )

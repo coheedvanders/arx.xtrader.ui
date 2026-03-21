@@ -108,7 +108,7 @@ async function initializeFutureSymbolData(){
             var futureSymbol = props.futureSymbols[i];
             futureSymbol.status = "processing"
 
-            //if(futureSymbol.symbol != "0GUSDT") continue;
+            //if(futureSymbol.symbol != "BTCUSDT") continue;
 
             await runPositionEntry(futureSymbol.symbol, futureSymbol.maxLeverage, true);
             
@@ -152,6 +152,7 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
         var endTime = (new Date(`${endTimeStr.value}`)).getTime();
 
         var raw = await KlineUtility.getRecentKlines(symbol, props.interval, props.maxInitCandles, startTime, endTime);
+        //var raw = await KlineUtility.getRecentKlines(symbol, props.interval, props.maxInitCandles);
 
         raw = raw.filter(c => c.openTime > startTime && c.openTime < endTime)
 
