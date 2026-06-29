@@ -288,7 +288,10 @@ static buyerInterestScore(
         top_wick_abs_change: topWickAbsChange,
         bottom_wick_abs_change: bottomWickAbsChange,
         crossedEma: false,
-        buyerInterestRate: 0
+        buyerInterestRate: 0,
+        isCandleInAbsorption: false,
+        isBuyingExhaustion: false,
+        isSellingExhaustion: false
     };
   }
 
@@ -338,6 +341,185 @@ static detectPriceMove(
     }
     
     return "normal";
+}
+
+/**
+ * Detects "absorption" on the most recent candle in the array: high volume
+ * relative to recent history, but a disproportionately small/rejected body
+ * (price didn't move much despite the participation, or got pushed back).
+ *
+ * candles: oldest -> newest. The LAST element is the candle being evaluated;
+ * everything before it is used as volume context. Needs at least a few
+ * candles of lookback to be meaningful -- without context, "high volume"
+ * can't be judged against anything.
+ */
+static isCandleInAbsorption(
+  candles: CandleEntry[],
+  priceZones: PriceZone[],
+  options?: {
+    lookbackPeriod?: number;              // candles used for avg volume (default 20)
+    volumeMultiplier?: number;            // x avg volume to count as "huge effort" (default 1.8)
+    maxBodyToRangeRatio?: number;         // body <= this fraction of range -- the "small result" (default 0.3)
+    minDominantWickToRangeRatio?: number; // rejection-side wick >= this fraction of range (default 0.45)
+    minWickDominanceRatio?: number;       // dominant wick must be this many x the opposite wick (default 1.8)
+    zoneTouchTolerancePct?: number;       // % tolerance around zone boundary for "touch" (default 0.1%)
+  }
+): boolean {
+  const lookbackPeriod = options?.lookbackPeriod ?? 20;
+  const volumeMultiplier = options?.volumeMultiplier ?? 1.8;
+  const maxBodyToRangeRatio = options?.maxBodyToRangeRatio ?? 0.3;
+  const minDominantWickToRangeRatio = options?.minDominantWickToRangeRatio ?? 0.45;
+  const minWickDominanceRatio = options?.minWickDominanceRatio ?? 1.8;
+  const zoneTouchTolerancePct = options?.zoneTouchTolerancePct ?? 0.1;
+
+  if (candles.length < 2 || priceZones.length === 0) return false;
+
+  const candle = candles[candles.length - 1];
+  const lookback = candles.slice(Math.max(0, candles.length - 1 - lookbackPeriod), candles.length - 1);
+  const zone = priceZones[priceZones.length - 1];
+
+  const range = candle.high - candle.low;
+  if (range <= 0) return false;
+
+  // --- estimate delta volume from the candle's own OHLCV ---
+  const closeLocationValue = (candle.close - candle.low) / range; // 0 = closed at low, 1 = closed at high
+  const buyVolumeEstimate = candle.volume * closeLocationValue;
+  const sellVolumeEstimate = candle.volume * (1 - closeLocationValue);
+  const deltaVolume = buyVolumeEstimate - sellVolumeEstimate; // negative = net selling pressure, positive = net buying
+
+  // --- effort check: was volume abnormally huge? ---
+  const avgVolume = lookback.length > 0
+    ? lookback.reduce((sum, c) => sum + c.volume, 0) / lookback.length
+    : 0;
+  const hugeEffort = avgVolume > 0 && candle.volume >= avgVolume * volumeMultiplier;
+  if (!hugeEffort) return false;
+
+  // --- result check: did all that effort actually move price? ---
+  const body = Math.abs(candle.close - candle.open);
+  const bodyToRange = body / range;
+  const smallResult = bodyToRange <= maxBodyToRangeRatio;
+  if (!smallResult) return false;
+
+  // --- direction check: which side got rejected? ---
+  const topWick = candle.high - Math.max(candle.open, candle.close);
+  const bottomWick = Math.min(candle.open, candle.close) - candle.low;
+
+  const lowerWickDominant = bottomWick / range >= minDominantWickToRangeRatio
+    && bottomWick >= topWick * minWickDominanceRatio;
+
+  const upperWickDominant = topWick / range >= minDominantWickToRangeRatio
+    && topWick >= bottomWick * minWickDominanceRatio;
+
+  // --- zone relevance ---
+  const tolerance = (zone.upper - zone.lower) * (zoneTouchTolerancePct / 100) || zone.mid * (zoneTouchTolerancePct / 100);
+  const touchedLower = candle.low <= zone.lower + tolerance;
+  const touchedUpper = candle.high >= zone.upper - tolerance;
+
+  const bullishAbsorption = lowerWickDominant && touchedLower;
+    const bearishAbsorption = upperWickDominant && touchedUpper;
+
+    return bullishAbsorption || bearishAbsorption;
+}
+
+static touchesZoneBoundary(
+  candle: CandleEntry,
+  zone: PriceZone,
+  boundary: "upper" | "lower",
+  tolerancePct: number
+): boolean {
+  const level = boundary === "upper" ? zone.upper : zone.lower;
+  const zoneSize = zone.upper - zone.lower;
+  const tolerance = (zoneSize > 0 ? zoneSize : zone.mid) * (tolerancePct / 100);
+  return candle.high >= level - tolerance && candle.low <= level + tolerance;
+}
+
+static isBuyingExhaustion(
+  candles: CandleEntry[],
+  priceZones: PriceZone[],
+  options?: {
+    runLength?: number;            // how many recent candles define the "push up" (default 3)
+    minBodyShrinkRatio?: number;   // latest body must be <= this fraction of the run's avg body (default 0.6)
+    minVolumeDeclineRatio?: number;// latest volume must be <= this fraction of the run's avg volume (default 0.7)
+    minUpperWickToRangeRatio?: number; // latest candle's upper wick >= this fraction of its range (default 0.4)
+    zoneTouchTolerancePct?: number;
+  }
+): boolean {
+  const runLength = options?.runLength ?? 3;
+  const minBodyShrinkRatio = options?.minBodyShrinkRatio ?? 0.6;
+  const minVolumeDeclineRatio = options?.minVolumeDeclineRatio ?? 0.7;
+  const minUpperWickToRangeRatio = options?.minUpperWickToRangeRatio ?? 0.4;
+  const zoneTouchTolerancePct = options?.zoneTouchTolerancePct ?? 0.1;
+
+  if (candles.length < runLength + 1 || priceZones.length === 0) return false;
+
+  const candle = candles[candles.length - 1];
+  const zone = priceZones[priceZones.length - 1];
+
+  // must be at/near the upper boundary -- exhaustion only means something at resistance
+  if (!this.touchesZoneBoundary(candle, zone, "upper", zoneTouchTolerancePct)) return false;
+
+  const run = candles.slice(candles.length - 1 - runLength, candles.length - 1); // the push-up candles, excluding the latest
+  const upCandles = run.filter(c => c.close > c.open);
+  if (upCandles.length === 0) return false; // no actual upward push to be exhausted from
+
+  const avgRunBody = upCandles.reduce((sum, c) => sum + Math.abs(c.close - c.open), 0) / upCandles.length;
+  const avgRunVolume = upCandles.reduce((sum, c) => sum + c.volume, 0) / upCandles.length;
+
+  const latestBody = Math.abs(candle.close - candle.open);
+  const latestRange = candle.high - candle.low;
+  if (latestRange <= 0) return false;
+
+  const bodyShrunk = avgRunBody > 0 && latestBody <= avgRunBody * minBodyShrinkRatio;
+  const volumeDeclined = avgRunVolume > 0 && candle.volume <= avgRunVolume * minVolumeDeclineRatio;
+
+  const upperWick = candle.high - Math.max(candle.open, candle.close);
+  const upperWickHeavy = (upperWick / latestRange) >= minUpperWickToRangeRatio;
+
+  return bodyShrunk && volumeDeclined && upperWickHeavy;
+}
+
+static isSellingExhaustion(
+  candles: CandleEntry[],
+  priceZones: PriceZone[],
+  options?: {
+    runLength?: number;
+    minBodyShrinkRatio?: number;
+    minVolumeDeclineRatio?: number;
+    minLowerWickToRangeRatio?: number; // (default 0.4)
+    zoneTouchTolerancePct?: number;
+  }
+): boolean {
+  const runLength = options?.runLength ?? 3;
+  const minBodyShrinkRatio = options?.minBodyShrinkRatio ?? 0.6;
+  const minVolumeDeclineRatio = options?.minVolumeDeclineRatio ?? 0.7;
+  const minLowerWickToRangeRatio = options?.minLowerWickToRangeRatio ?? 0.4;
+  const zoneTouchTolerancePct = options?.zoneTouchTolerancePct ?? 0.1;
+
+  if (candles.length < runLength + 1 || priceZones.length === 0) return false;
+
+  const candle = candles[candles.length - 1];
+  const zone = priceZones[priceZones.length - 1];
+
+  if (!this.touchesZoneBoundary(candle, zone, "lower", zoneTouchTolerancePct)) return false;
+
+  const run = candles.slice(candles.length - 1 - runLength, candles.length - 1);
+  const downCandles = run.filter(c => c.close < c.open);
+  if (downCandles.length === 0) return false;
+
+  const avgRunBody = downCandles.reduce((sum, c) => sum + Math.abs(c.close - c.open), 0) / downCandles.length;
+  const avgRunVolume = downCandles.reduce((sum, c) => sum + c.volume, 0) / downCandles.length;
+
+  const latestBody = Math.abs(candle.close - candle.open);
+  const latestRange = candle.high - candle.low;
+  if (latestRange <= 0) return false;
+
+  const bodyShrunk = avgRunBody > 0 && latestBody <= avgRunBody * minBodyShrinkRatio;
+  const volumeDeclined = avgRunVolume > 0 && candle.volume <= avgRunVolume * minVolumeDeclineRatio;
+
+  const lowerWick = Math.min(candle.open, candle.close) - candle.low;
+  const lowerWickHeavy = (lowerWick / latestRange) >= minLowerWickToRangeRatio;
+
+  return bodyShrunk && volumeDeclined && lowerWickHeavy;
 }
 
 static getPreviousSessionOverStatePriceReaction(movingCandles: CandleEntry[], overState: string): "up" | "down" | "neutral" {

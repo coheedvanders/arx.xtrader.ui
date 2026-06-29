@@ -199,6 +199,33 @@
             </text>
           </g>
 
+          <text
+              v-if="candle.candleData?.isCandleInAbsorption"
+              :x="candleX(i)"
+              :y="priceToY(candle.low!) + 45"
+              class="pattern-label"
+            >
+              x
+            </text>
+
+            <text
+              v-if="candle.candleData?.isSellingExhaustion"
+              :x="candleX(i)"
+              :y="priceToY(candle.low!) + 55"
+              class="pattern-label"
+            >
+              S
+            </text>
+
+            <text
+              v-if="candle.candleData?.isBuyingExhaustion"
+              :x="candleX(i)"
+              :y="priceToY(candle.low!) + 55"
+              class="pattern-label"
+            >
+              B
+            </text>
+
           <g v-if="candle.patternTrack === 'lh'" class="lower-high-indicator">
             <circle
               :cx="candleX(i)"

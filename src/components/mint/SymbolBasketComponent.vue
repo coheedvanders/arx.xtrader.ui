@@ -117,7 +117,7 @@ async function initializeFutureSymbolData(){
             if(chocoMintoStore.isManualSimulation){
                 var storeFutureSymbol = chocoMintoStore.futureSymbols.find(f => f.symbol == futureSymbol.symbol);
                 if(storeFutureSymbol){
-                    futureSymbol.status = `${storeFutureSymbol.simulationStats.won}/${storeFutureSymbol.simulationStats.loss}/${storeFutureSymbol.simulationStats.open}`
+                    futureSymbol.status = `${storeFutureSymbol.simulationStats.won}/${storeFutureSymbol.simulationStats.loss}/${storeFutureSymbol.simulationStats.open}-${storeFutureSymbol.simulationStats.mid}`
                 }
             }else{
                 futureSymbol.status = "-"

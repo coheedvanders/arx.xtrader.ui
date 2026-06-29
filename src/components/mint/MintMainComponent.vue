@@ -448,7 +448,7 @@ async function runContinuousSimulation() {
         async (count) => {
             if (count >= 4) {
                 chocoMintoStore.completedRunCount = 0;
-                //tradeLogger.downloadBackTestLogs()
+                tradeLogger.downloadBackTestLogs()
                 unwatch();
 
                 if (new Date(simulationStartTime.value) < new Date()) {

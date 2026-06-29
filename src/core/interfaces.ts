@@ -283,6 +283,9 @@ export interface CandleData {
   changePercentageZScore: number;
   crossedEma:boolean;
   buyerInterestRate:number;
+  isCandleInAbsorption:boolean;
+  isBuyingExhaustion: boolean;
+  isSellingExhaustion: boolean;
 }
 
 
