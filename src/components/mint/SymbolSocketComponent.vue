@@ -24,12 +24,16 @@ const emits = defineEmits([
   "on-socket-close",
   "on-socket-open",
   "on-socket-error",
-  "on-new-candle"
+  "on-new-candle",
+  "on-pre-close"
 ]);
+
+const PRE_CLOSE_THRESHOLD_SECONDS = 70; // 1 min 10 sec
 
 const wsCandle = ref<WebSocket | null>(null);
 const candles = ref<Candle[]>([]);
 const timeRemainingInCandle = ref(60);
+const preCloseEmitted = ref(false);
 
 const timeRemainingDisplay = computed(() => {
   const mins = Math.floor(timeRemainingInCandle.value / 60);
@@ -38,18 +42,31 @@ const timeRemainingDisplay = computed(() => {
 });
 
 let reconnectTimeout: ReturnType<typeof setTimeout>;
+let tickInterval: ReturnType<typeof setInterval>;
 
 function updateTimeRemaining() {
-  if (!candles.value[candles.value.length - 1]) return;
+  const lastCandle = candles.value[candles.value.length - 1];
+  if (!lastCandle) return;
+
   const now = Date.now();
-  const timeLeft = (candles.value[candles.value.length - 1].closeTime - now) / 1000;
+  const timeLeft = (lastCandle.closeTime - now) / 1000;
   timeRemainingInCandle.value = Math.max(Math.round(timeLeft), 0);
+
+  if (
+    !preCloseEmitted.value &&
+    !lastCandle.closed &&
+    timeLeft <= PRE_CLOSE_THRESHOLD_SECONDS &&
+    timeLeft > 0
+  ) {
+    preCloseEmitted.value = true;
+    emits("on-pre-close", lastCandle);
+  }
 }
 
 function createCandleSocket() {
   try {
     wsCandle.value = new WebSocket(
-      `wss://fstream.binance.com/ws/${props.symbol.toLowerCase()}@kline_${props.interval}`
+      `wss://fstream.binance.com/market/ws/${props.symbol.toLowerCase()}@kline_${props.interval}`
     );
 
     let initialized = false;
@@ -97,6 +114,9 @@ function createCandleSocket() {
         candles.value.push(newCandle);
         if (candles.value.length > 3) candles.value.shift();
 
+        // New candle started — reset the pre-close flag so it can fire again for this one
+        preCloseEmitted.value = false;
+
         if (initialized) emits("on-new-candle", newCandle);
         initialized = true;
       } else {
@@ -115,12 +135,12 @@ function createCandleSocket() {
 
 onMounted(() => {
   createCandleSocket();
-  setInterval(updateTimeRemaining, 1000);
+  tickInterval = setInterval(updateTimeRemaining, 1000);
 });
 
 onUnmounted(() => {
   wsCandle.value?.close();
   clearTimeout(reconnectTimeout);
+  clearInterval(tickInterval);
 });
 </script>
-

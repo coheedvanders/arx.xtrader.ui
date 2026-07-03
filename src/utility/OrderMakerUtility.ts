@@ -104,10 +104,10 @@ export class OrderMakerUtility {
                 symbol: symbol,
                 side: side,
                 cost: margin.toString(),
-                tp_roi: "0",
-                sl_roi: "0",
-                tp: tp.toString(),
-                sl: sl.toString()
+                tp_roi: "2",
+                sl_roi: "2",
+                tp: "0",
+                sl: "0"
             })
         });
 
@@ -178,7 +178,7 @@ export class OrderMakerUtility {
 
         const totalFees = totalEntryFees + totalExitFees;
 
-        const liquidityBufferPercent = Math.pow(positions.length / 10, 1.5) * 0.001; // scales exponentially
+        const liquidityBufferPercent = Math.pow(positions.length / 80, 0.7) * 0.00000018;
         
         // Calculate liquidity buffer based on total notional
         const liquidityBuffer = totalNotional * liquidityBufferPercent;

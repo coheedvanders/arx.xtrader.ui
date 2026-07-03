@@ -5,7 +5,8 @@
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
         :interval="KLINE_INTERVAL" 
-        @on-new-candle="onNewCandle"/>
+        
+        @on-pre-close="onNewCandle"/>
 
     <div v-if="UI_STATE_INITIALIZING_FUTURE_SYMBOLS" class="text-center">
         {{ UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE }}
@@ -40,22 +41,20 @@
         <ButtonComponent @click="runContinuousSimulation" rounded class="ml-sm">Run Continuous Sim</ButtonComponent>
         <ButtonComponent @click="nextPeriodRun" rounded class="ml-sm">Next period ></ButtonComponent>
         <ButtonComponent @click="runDownloadConfluenceDates" rounded class="ml-sm">extract conf</ButtonComponent>
-
-
         
-        <InputComponent type="numeric" v-model="chocoMintoStore.startingTimeStamp" />
-        <div>{{ (new Date(botStartOn)).toLocaleString() }}</div>
+        <!-- <InputComponent type="numeric" v-model="chocoMintoStore.startingTimeStamp" /> -->
+        <!-- <div>{{ (new Date(botStartOn)).toLocaleString() }}</div>
         <div>{{ (new Date(chocoMintoStore.startingTimeStamp)).toLocaleString() }}</div>
         <div>{{ (new Date(chocoMintoStore.endingTimeStamp)).toLocaleString() }}</div>
-        <div>{{ simulationStartTime }}</div>
+        <div>{{ simulationStartTime }}</div> -->
 
-        <div class="divider"></div>
+        <!-- <div class="divider"></div>
         <div v-if="UI_SYMBOL_OF_INTEREST_MESAGE">{{ UI_SYMBOL_OF_INTEREST_MESAGE }}</div>
         <div v-for="sym in symbolsOfInterest" @click="showEntryHistoryModal(sym)">
             {{ sym }}
-        </div>
+        </div> -->
 
-        <CardComponent v-if="chocoMintoStore.isManualSimulation">
+        <!-- <CardComponent v-if="chocoMintoStore.isManualSimulation">
             <CardHeaderComponent>
                 Manual Simulation Stats
             </CardHeaderComponent>
@@ -78,7 +77,7 @@
                 <div>Estimated Margin Used: {{ estimatedMarginUsed.toFixed(2) }}</div>
                 <div>Estimated Balance: {{ estimatedBalance.toFixed(2) }} USDT</div>
             </CardBodyComponent>
-        </CardComponent>
+        </CardComponent> -->
     </div>
 
     <div class="text-center">
@@ -102,9 +101,15 @@
                 :new-candle-trigger-key="onNewCandleBasketTriggerKey"
                 :position-duration-median="POSITION_DURATION_MEDIAN"
                 :max-open-positions="MAX_OPEN_POSITIONS"
-                :simulation-start="simulationStartTime"/>
+                :simulation-start="simulationStartTime"
+                @on-completed="symbolBasket_OnCompleted"/>
         </div>
     </div>
+
+    <label>Cost</label>
+    <InputComponent type="numeric" v-model="chocoMintoStore.orderCost"/>
+    
+    <TrendRiderComponent ref="trendRiderRef"/>
 
     <DialogComponent :model-value="UI_SHOW_REPLAY" width="95vw" @update:model-value="UI_SHOW_REPLAY = false">
         <DialogHeaderComponent>View Candle Entry Replay</DialogHeaderComponent>
@@ -128,7 +133,7 @@
         <CandleEntryHistoryComponent :candle-entries="selectedSymbolCandleEntries"/>
     </DialogComponent>
 
-    <TableComponent>
+    <!-- <TableComponent>
         <template #header>
             <TableHeaderComponent>
                 <th>Start</th>
@@ -166,7 +171,7 @@
                 </tr>
             </TableBodyComponent>
         </template>
-    </TableComponent>
+    </TableComponent> -->
 
 </template>
 
@@ -200,6 +205,8 @@ import { indexDBLogger } from '@/utility/indexDbLoggerUtility';
 import TableBodyComponent from '../shared/table/TableBodyComponent.vue';
 import TableHeaderComponent from '../shared/table/TableHeaderComponent.vue';
 import TableComponent from '../shared/table/TableComponent.vue';
+import type { forEach } from 'jszip'
+import TrendRiderComponent from './TrendRiderComponent.vue';
 
 const chocoMintoStore = useChocoMintoStore();
 const notificationStore = useNotificationStore();
@@ -208,7 +215,7 @@ const isBotEnabled = ref(false)
 
 const MASTER_SYMBOL = "BTCUSDT";
 const KLINE_INTERVAL = "15m"
-const MAX_INIT_CANDLES = 210;
+const MAX_INIT_CANDLES = 100;
 const SUPPORT_AND_RESISTANCE_PERIOD_LENGTH = 10;
 
 const MARGIN = 1.5;
@@ -240,8 +247,12 @@ const selectedSymbolCandleEntries = ref<CandleEntry[]>([])
 const selectedSymbol = ref("")
 
 const simulationReport = ref<SimulationReport[]>([])
-const simulationStartTime = ref("1/1/2022 11:25 PM");
+const simulationStartTime = ref("");
 const simulationRunningBalance = ref(300)
+
+const completionCount = ref(0);
+
+const trendRiderRef = ref()
 
 var dates = [
     '1/19/2022',
@@ -300,6 +311,7 @@ onMounted(async () => {
 })
 
 function startChoco(){
+    completionCount.value = 0;
     botStartOn.value = (new Date()).getTime();
 
     var sessionRange = getSessionRange(new Date());
@@ -350,7 +362,14 @@ async function initializeFutureSymbols(){
                         openPnl: 0,
                         wonPnl: 0,
                         lossPnl: 0
-                    }
+                    },
+                    conditionMet: "",
+                    usdtValue: 0,
+                    trend: "",
+                    lookbackTrend: "",
+                    change: 0,
+                    candlesAboveCount: 0,
+                    candlesBelowCount: 0
                 })
             }
         }
@@ -370,6 +389,8 @@ async function initializeFutureSymbols(){
 
 async function onNewCandle(candle:Candle){
     //send event to the SymbolBasketComponent
+    
+    completionCount.value = 0;
     if(chocoMintoStore.isLive && chocoMintoStore.isRedeemerEnabled){
         var balance = await OrderMakerUtility.getBalance();
         const positions = await OrderMakerUtility.getPositions();
@@ -398,7 +419,16 @@ async function onNewCandle(candle:Candle){
     if(!chocoMintoStore.isManualSimulation){
         setTimeout(() => {
             onNewCandleBasketTriggerKey.value = CommonHelperUtility.generateGuid();
-        }, 5000);
+        }, 500);
+    }
+}
+
+function symbolBasket_OnCompleted(){
+    completionCount.value++;
+    console.log("completionCount",completionCount.value);
+    if(completionCount.value >= 4){
+        notificationStore.showNotification("success","top-right","Scan Complete","The market scan has been completed.");
+        trendRiderRef.value.shoutMarketSentiment();
     }
 }
 

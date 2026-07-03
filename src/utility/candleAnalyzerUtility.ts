@@ -291,7 +291,9 @@ static buyerInterestScore(
         buyerInterestRate: 0,
         isCandleInAbsorption: false,
         isBuyingExhaustion: false,
-        isSellingExhaustion: false
+        isSellingExhaustion: false,
+        candlesAboveCount: 0,
+        candlesBelowCount: 0
     };
   }
 
@@ -1170,7 +1172,7 @@ private detectBottomWickRejection(candle: Candle, previousCandle: Candle, bodyPe
 
         static initializePastCandlesSupportResistance(_candles: Candle[], initSRLength: number, srPeriod:number) {
             for (let i = 1; i <= initSRLength; i++) {
-                var candleIndex = (_candles.length - 1) - i;
+                var candleIndex = (_candles.length) - i;
                 if(candleIndex >= 0){
                     var history = _candles.slice(0,candleIndex + 1);
                     const { support, resistance } = this.computeSupportResistance(history, srPeriod);

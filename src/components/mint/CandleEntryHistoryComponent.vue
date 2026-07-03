@@ -5,7 +5,12 @@
         
         <div class="divider"></div>
 
-        <CandleEntryVisualizerComponent :candles="candleEntries" />
+        <div class="text-right">
+            <ButtonComponent :color="'primary'" rounded @click="openOrder('BUY')">BUY</ButtonComponent>
+            <ButtonComponent :color="'danger'" rounded  @click="openOrder('SELL')">SELL</ButtonComponent>
+        </div>
+
+        <CandleEntryVisualizerComponent :symbol="symbol" :candles="candleEntries" />
 
         <TableComponent border-type="rows" :alternate-row-color="true" v-if="false">
             <template #header>
@@ -94,9 +99,14 @@ import TableComponent from '../shared/table/TableComponent.vue';
 import TableHeaderComponent from '../shared/table/TableHeaderComponent.vue';
 import TableBodyComponent from '../shared/table/TableBodyComponent.vue';
 import CandleEntryVisualizerComponent from './CandleEntryVisualizerComponent.vue';
+import ButtonComponent from '../shared/form/ButtonComponent.vue';
+import { useNotificationStore } from '@/stores/notificationStore.ts';
+import { OrderMakerUtility } from '@/utility/OrderMakerUtility.ts';
+import { useChocoMintoStore } from '@/stores/chocoMintoStore.ts';
 
 const props = defineProps<{
-  candleEntries: CandleEntry[]
+  candleEntries: CandleEntry[],
+  symbol?: string
 }>()
 
 const selected = ref<number|null>(null)
@@ -109,6 +119,11 @@ function calcPastStrengthMean(strength1:number,strength2:number,strength3:number
 
 function selectRow(t:number){
   selected.value = t
+}
+
+function openOrder(side:string){
+    useNotificationStore().showNotification("success","top-right","Order", side + " Order Created");
+    OrderMakerUtility.openOrder(props.symbol!,useChocoMintoStore().orderCost,side,0,0);
 }
 </script>
 

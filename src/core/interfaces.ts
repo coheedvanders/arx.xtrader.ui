@@ -79,6 +79,13 @@ export interface FuturesSymbol{
   maxLeverage: number;
   status: string;
   simulationStats:SimulationStats;
+  conditionMet: string;
+  usdtValue: number;
+  trend: string;
+  lookbackTrend: string;
+  change: number;
+  candlesAboveCount: number,
+  candlesBelowCount: number
 }
 
 export interface PastVolumeAnalysis{
@@ -286,6 +293,8 @@ export interface CandleData {
   isCandleInAbsorption:boolean;
   isBuyingExhaustion: boolean;
   isSellingExhaustion: boolean;
+  candlesAboveCount: number;
+  candlesBelowCount: number;
 }
 
 

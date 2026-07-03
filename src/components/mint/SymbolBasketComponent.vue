@@ -9,7 +9,7 @@
                 @click="showEntryHistoryModal(futureSymbol)" 
                 :style="{ color: visitedSymbols.has(futureSymbol.symbol) ? 'orange' : 'inherit' }">
                 <div class="col-lg-8 col-md-8">
-                    {{ futureSymbol.symbol }}
+                    {{ futureSymbol.symbol }} <span v-if="futureSymbol.conditionMet">[{{ futureSymbol.conditionMet }}]</span>
                 </div>
                 <div class="col-lg-4 col-md-4 text-right">
                     {{ futureSymbol.status }}
@@ -22,7 +22,7 @@
         <DialogHeaderComponent>
             {{ selectedSymbol }}
         </DialogHeaderComponent>
-        <CandleEntryHistoryComponent :candle-entries="selectedSymbolCandleEntries"/>
+        <CandleEntryHistoryComponent :symbol="selectedSymbol" :candle-entries="selectedSymbolCandleEntries"/>
     </DialogComponent>
 </template>
 
@@ -70,6 +70,9 @@ const selectedSymbol = ref("")
 
 const progressCounter = ref(0)
 
+const emit = defineEmits(['onCompleted'])
+
+const currentFutureSumbol = ref<FuturesSymbol>();
 
 const calculatedMaxOpenPosition = computed(() => {
   const mb = chocoMintoStore.marginBalance;
@@ -82,7 +85,7 @@ const calculatedMaxOpenPosition = computed(() => {
 watch(
   () => props.newCandleTriggerKey,
   async () => {
-    await onNewCandleSpawed(); 
+    await initializeFutureSymbolData(); 
   }
 );
 
@@ -106,7 +109,8 @@ async function initializeFutureSymbolData(){
             progressCounter.value = i + 1;
 
             var futureSymbol = props.futureSymbols[i];
-            futureSymbol.status = "processing"
+            currentFutureSumbol.value = futureSymbol;
+            currentFutureSumbol.value.status = "processing"
 
             //if(futureSymbol.symbol != "BTCUSDT") continue;
 
@@ -129,6 +133,10 @@ async function initializeFutureSymbolData(){
 
     progressCounter.value = 0;
     chocoMintoStore.completedRunCount += 1;
+
+    if(chocoMintoStore.isLive){
+        emit("onCompleted")
+    }
 }
 
 async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:boolean){
@@ -151,10 +159,10 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
 
         var endTime = (new Date(`${endTimeStr.value}`)).getTime();
 
-        var raw = await KlineUtility.getRecentKlines(symbol, props.interval, props.maxInitCandles, startTime, endTime);
-        //var raw = await KlineUtility.getRecentKlines(symbol, props.interval, props.maxInitCandles);
+        //var raw = await KlineUtility.getRecentKlines(symbol, props.interval, props.maxInitCandles, startTime, endTime);
+        var raw = await KlineUtility.getRecentKlines(symbol, props.interval, props.maxInitCandles);
 
-        raw = raw.filter(c => c.openTime > startTime && c.openTime < endTime)
+        //raw = raw.filter(c => c.openTime > startTime && c.openTime < endTime)
 
         // if(raw.length < props.maxInitCandles) {
         //     candles = [];
@@ -216,6 +224,14 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
         candles.length - 1,
         chocoMintoStore.startingTimeStamp);
 
+    currentFutureSumbol.value!.conditionMet = candles[candles.length - 1].candleData?.conditionMet!;
+    currentFutureSumbol.value!.usdtValue = candles[candles.length - 1].volume * candles[candles.length - 1].close;
+    currentFutureSumbol.value!.trend = candles[candles.length - 1].zoneAnalysis?.pastTrend!
+    currentFutureSumbol.value!.lookbackTrend = candles[candles.length - 1].candleData?.lookbackTrend!;
+    currentFutureSumbol.value!.change = candles[candles.length - 1].candleData?.change_percentage_v!;
+    currentFutureSumbol.value!.candlesAboveCount = candles[candles.length - 1].candleData?.candlesAboveCount!
+    currentFutureSumbol.value!.candlesBelowCount = candles[candles.length - 1].candleData?.candlesBelowCount!
+
     if(chocoMintoStore.isManualSimulation){
         updateStoreFutureSymbolSimulationStats(symbol,candles);
 
@@ -225,7 +241,7 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
         }
     }
 
-    klineDbUtility.initializeKlineData(symbol,candles.slice(0, -1));
+    klineDbUtility.initializeKlineData(symbol,candles);
 }
 
 function updateStoreFutureSymbolSimulationStats(symbol:string, candle:CandleEntry[]){
@@ -287,9 +303,10 @@ async function onNewCandleSpawed(){
         f.status = "resetting..."
     });
 
-    setTimeout(() => {
-        initializeFutureSymbolData()
-    }, 30000);
+    setTimeout(async () => {
+        await initializeFutureSymbolData();
+        emit("onCompleted")
+    }, 500);
 }
 
 async function updateCandleEntryWithLastCandle(symbol:string){
@@ -435,6 +452,14 @@ async function updateCandleEntryWithLastCandle(symbol:string){
     const pastVolumeAnalysis = candleAnalyzer.analyzePastVolumes(pastKlineCandles, pastKlineCandles.length - 1, 6);
 
     var isPrevCandleTriggeredOpen = prevKlineEntry.status == "OPEN"
+    currentFutureSumbol.value!.conditionMet = prevKlineEntry.candleData?.conditionMet!;
+    currentFutureSumbol.value!.usdtValue = prevKlineEntry.volume * prevKlineEntry.close;
+    currentFutureSumbol.value!.trend = prevKlineEntry.zoneAnalysis?.pastTrend!
+    currentFutureSumbol.value!.lookbackTrend = prevKlineEntry.candleData?.lookbackTrend!
+    currentFutureSumbol.value!.change = prevKlineEntry.candleData?.change_percentage_v!;
+    currentFutureSumbol.value!.candlesAboveCount = prevKlineEntry.candleData?.candlesAboveCount!
+    currentFutureSumbol.value!.candlesBelowCount = prevKlineEntry.candleData?.candlesBelowCount!
+
     if(isPrevCandleTriggeredOpen){
         //indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: isPrevCandleTriggeredOpen==true, prevKlineEntry.side=${prevKlineEntry.side}`);
 

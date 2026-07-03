@@ -378,75 +378,32 @@ export class SimulationUtility {
 
                         //start
 
-                        if(candle.low < candle.priceZone.upper
-                            && candle.high > candle.priceZone.upper
-                        ){
-                            candle.candleData.conditionMet = "UPPER_TOUCH"
-                        }
-                            
-                        if(
-                            candle.close > candle.priceZone.upper
-                            && candle.open < candle.priceZone.upper
-                            && candle.high > candle.priceZone.upper
-                        ){
-                            candle.candleData.conditionMet = "UPPER_BREAK"
-                        }
+                        var pastcandles = movingCandles.filter(c => c.openTime < candle.openTime);
+                        var candlesAboveCount =  pastcandles.filter(c => c.close > candle.close).length;
+                        var candlesBelowCount = pastcandles.filter(c => c.close < candle.close).length;
 
-                        if(candle.close > candle.priceZone.upper
-                            && candle.open > candle.priceZone.upper
-                            && candle.low > candle.priceZone.upper
-                            && candle.high > candle.priceZone.upper
+                        candle.candleData.candlesAboveCount = candlesAboveCount;
+                        candle.candleData.candlesBelowCount = candlesBelowCount;
+
+                        if(supportCandle.candleData.side == "bear"
+                            && prevCandle.candleData.side == "bear"
+                            && candle.candleData.side == "bear"
                         ){
-                            candle.candleData.conditionMet = "UPPER_FLOAT"
+                            var pastBears = movingCandles.slice(-3).filter(c => c.candleData && c.candleData.side == "bear" && c.candleData.change_percentage_v <= -0.1);
+                            if(pastBears.length == 3){
+                                candle.candleData.conditionMet = "BEARISH"
+                            }
                         }
 
-                        if(candle.high > candle.priceZone.upper
-                            && candle.low < candle.priceZone.lower
+                        if(supportCandle.candleData.side == "bull"
+                            && prevCandle.candleData.side == "bull"
+                            && candle.candleData.side == "bull"
                         ){
-                            candle.candleData.conditionMet = "ZONE_SNAPPER"
+                            var pastBears = movingCandles.slice(-3).filter(c => c.candleData && c.candleData.side == "bull" && c.candleData.change_percentage_v >= 0.1);
+                            if(pastBears.length == 3){
+                                candle.candleData.conditionMet = "BULLISH"
+                            }
                         }
-
-                        //good
-                        //for 24 hours testing
-                        // if(supportCandle.candleData.side == "bull"
-                        //     && prevCandle.candleData.side == "bull"
-                        //     && candle.candleData.side == "bull"
-                        //     && (
-                        //         (candle.priceZoneInteraction?.breakoutStartScore?.recommendation == "moderate_buy" && candle.pastVolumeAnalysis.dominantDirection == "bull")
-                        //         || (!candle.breakthrough_resistance && candle.priceZoneInteraction?.breakoutStartScore?.recommendation == "moderate_buy")
-                        //         || (candle.zoneAnalysis.pastTrend == "bearish" && candle.priceZoneInteraction?.breakoutStartScore?.recommendation == "moderate_buy")
-                        //     )
-                        // ){
-                        //     candle.side = "LONG"
-                        //     candle.tpPrice = candle.close + (atr * 3)
-                        //     candle.slPrice = candle.open - (atr)
-                        // }
-
-
-                        //this is promising 2
-                        //good for 24 hours testing
-                        // if(supportCandle.candleData.side == "bear"
-                        //     && prevCandle.candleData.side == "bear"
-                        //     && candle.candleData.side == "bear"
-                        //     && (
-                        //         (candle.candleData.pastZoneOverStatePriceReaction == "up" && candle.isWeakening)
-                        //         || (candle.candleData.pastZoneOverStatePriceReaction == "down" && candle.isWeakening)
-                        //         || (candle.priceZoneInteraction?.breakoutStartScore?.recommendation == "moderate_buy" && candle.candleData.lookbackTrend == "strong_uptrend")
-                        //         || (candle.candleData.priceMove == "dragged_down" && candle.isWeakening)
-                        //         || (candle.isWeakening && candle.overboughSoldAnalysis.extremeLevel == "oversold")
-                        //     )
-                        // ){
-                        //     candle.side = "SHORT"
-                        //     if(candle.close_atr_abs_change < 1){
-                        //         candle.tpPrice = candle.close - (atr * 5)
-                        //     }else{
-                        //         candle.tpPrice = candle.close - (atr * 3)
-                        //     }
-
-                        //     candle.slPrice = candle.open + (atr * 1.5)
-                        // }
-
-                        
                         
                         //end
                     }
