@@ -369,7 +369,8 @@ async function initializeFutureSymbols(){
                     lookbackTrend: "",
                     change: 0,
                     candlesAboveCount: 0,
-                    candlesBelowCount: 0
+                    candlesBelowCount: 0,
+                    crossedMa: false
                 })
             }
         }

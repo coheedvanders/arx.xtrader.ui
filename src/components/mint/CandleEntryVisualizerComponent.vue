@@ -9,12 +9,83 @@
         <span>Connect volume spikes</span>
       </label>
 
+      <!-- ── Preview controls ─────────────────────────────────────────── -->
+      <div class="preview-controls">
+        <label class="margin-label">
+          Margin
+          <input
+            v-model.number="previewMargin"
+            type="number"
+            min="0"
+            step="1"
+            class="margin-input"
+            :disabled="previewLoading"
+          />
+        </label>
+
+        <label class="margin-label">
+          TP ROI %
+          <input
+            v-model.number="targetTpRoi"
+            type="number"
+            step="1"
+            class="margin-input small"
+            :disabled="previewLoading"
+          />
+        </label>
+
+        <label class="margin-label">
+          SL ROI %
+          <input
+            v-model.number="targetSlRoi"
+            type="number"
+            step="1"
+            class="margin-input small"
+            :disabled="previewLoading"
+          />
+        </label>
+
+        <button
+          class="preview-btn buy"
+          :disabled="previewLoading"
+          @click="previewBuy"
+        >
+          {{ previewLoading && pendingSide === 'LONG' ? 'Loading…' : 'Preview Buy' }}
+        </button>
+
+        <button
+          class="preview-btn sell"
+          :disabled="previewLoading"
+          @click="previewSell"
+        >
+          {{ previewLoading && pendingSide === 'SHORT' ? 'Loading…' : 'Preview Sell' }}
+        </button>
+
+        <button
+          class="preview-btn clear"
+          :disabled="!previewPosition || previewLoading"
+          @click="clearPreview"
+        >
+          Clear Preview
+        </button>
+      </div>
+
       <!-- Live status indicator -->
       <div class="live-indicator" :class="wsStatus">
         <span class="live-dot" />
         <span class="live-label">{{ wsStatusLabel }}</span>
       </div>
     </div>
+
+    <!-- Preview summary panel -->
+    <div v-if="previewPosition" class="preview-panel" :class="previewPosition.side.toLowerCase()">
+      <span class="preview-side-badge" :class="previewPosition.side.toLowerCase()">{{ previewPosition.side }}</span>
+      <span class="preview-stat"><label>Entry</label><span>{{ previewPosition.entryPrice.toFixed(4) }}</span></span>
+      <span class="preview-stat tp"><label>TP</label><span>{{ previewPosition.tpPrice.toFixed(4) }}</span></span>
+      <span class="preview-stat sl"><label>SL</label><span>{{ previewPosition.slPrice.toFixed(4) }}</span></span>
+      <button class="preview-panel-close" @click="clearPreview">×</button>
+    </div>
+    <div v-if="previewError" class="preview-error">{{ previewError }}</div>
 
     <div class="chart-container" ref="chartContainer" @wheel="handleZoom" @mousemove="handleMouseMove" @mouseleave="handleMouseLeave" @mousedown="startChartDrag">
       <svg :width="svgWidth" :height="svgHeight" class="candles-svg">
@@ -87,6 +158,27 @@
             :width="box.width"
             :height="box.height"
             :class="['tp-sl-rect', `box-${box.type}`, `status-${box.status}`]"
+          />
+
+          <!-- Preview TP/SL Boxes -->
+          <rect
+            v-for="(box, i) in previewTpSlBoxes"
+            :key="`preview-tp-sl-${i}`"
+            :x="box.x"
+            :y="box.y"
+            :width="box.width"
+            :height="box.height"
+            :class="['tp-sl-rect', 'preview-rect', `box-${box.type}`]"
+          />
+
+          <!-- Preview entry line -->
+          <line
+            v-if="previewPosition"
+            :x1="candleX(displayCandles.length - 1) - candleWidth / 2"
+            :x2="svgWidth"
+            :y1="priceToY(previewPosition.entryPrice)"
+            :y2="priceToY(previewPosition.entryPrice)"
+            class="preview-entry-line"
           />
         </g>
 
@@ -248,7 +340,8 @@
               bull: candle.close! >= candle.open!, 
               bear: candle.close! < candle.open!,
               indecisive: candle.candleData?.isIndecisive,
-              live: i === displayCandles.length - 1 && liveCandle !== null
+              live: i === displayCandles.length - 1 && liveCandle !== null,
+              muted: isCandleMuted(i)
             }"
             @click="openCandleModal(i)"
             @mouseenter="hoveredCandleIndex = i"
@@ -537,6 +630,8 @@
 <script setup lang="ts">
 import type { CandleEntry } from '@/core/interfaces';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+// NOTE: adjust this import path to wherever OrderMakerUtility actually lives in your project
+import { OrderMakerUtility } from '@/utility/OrderMakerUtility';
 
 // ─── Binance kline stream message shape ───────────────────────────────────────
 interface BinanceKline {
@@ -699,6 +794,113 @@ const displayCandles = computed<CandleEntry[]>(() => {
     ...props.candles.slice(0, props.candles.length),
     liveCandle.value,
   ]
+})
+
+// ─── Preview Buy / Sell / Clear ────────────────────────────────────────────────
+interface PreviewPosition {
+  side: 'LONG' | 'SHORT'
+  entryPrice: number
+  tpPrice: number
+  slPrice: number
+  margin: number
+}
+
+const previewMargin = ref<number>(100)
+const targetTpRoi = ref<number>(2)
+const targetSlRoi = ref<number>(2)
+const previewLoading = ref(false)
+const previewError = ref<string | null>(null)
+const pendingSide = ref<'LONG' | 'SHORT' | null>(null)
+const previewPosition = ref<PreviewPosition | null>(null)
+
+/**
+ * Runs the shared preview flow for both Buy and Sell.
+ * `side` drives the UI/internal side label; `apiSide` is what
+ * OrderMakerUtility.calculateTpSl expects ('BUY' | 'SELL').
+ */
+async function runPreview(side: 'LONG' | 'SHORT', apiSide: 'BUY' | 'SELL') {
+  const referenceCandle = displayCandles.value[displayCandles.value.length - 1]
+  if (!referenceCandle || referenceCandle.close == null) {
+    previewError.value = 'No live candle to preview against yet.'
+    return
+  }
+
+  previewError.value = null
+  previewLoading.value = true
+  pendingSide.value = side
+
+  try {
+    const tpSl = await OrderMakerUtility.calculateTpSl(
+      previewMargin.value,
+      props.symbol,
+      apiSide,
+      referenceCandle.close.toString(),
+      targetTpRoi.value,
+      targetSlRoi.value
+    )
+
+    previewPosition.value = {
+      side,
+      entryPrice: referenceCandle.close,
+      tpPrice: tpSl.tp_price,
+      slPrice: tpSl.sl_price,
+      margin: previewMargin.value,
+    }
+  } catch (error) {
+    console.error('Preview TP/SL calculation failed:', error)
+    previewError.value = 'Failed to calculate TP/SL. Please try again.'
+  } finally {
+    previewLoading.value = false
+    pendingSide.value = null
+  }
+}
+
+const previewBuy = () => runPreview('LONG', 'BUY')
+const previewSell = () => runPreview('SHORT', 'SELL')
+
+const clearPreview = () => {
+  previewPosition.value = null
+  previewError.value = null
+}
+
+/**
+ * TP/SL boxes for the active preview, drawn the same way as `tpSlBoxes`
+ * but anchored to the right edge of the chart (no historical span since
+ * this hasn't been placed as a real position yet).
+ */
+const previewTpSlBoxes = computed(() => {
+  if (!previewPosition.value) return []
+
+  const pos = previewPosition.value
+  const isLong = pos.side === 'LONG'
+  const startIndex = displayCandles.value.length - 1
+  const boxLeftX = candleX(startIndex) - candleWidth.value / 2
+  const boxRightX = svgWidth.value
+  const boxWidth = boxRightX - boxLeftX
+
+  const boxes = []
+
+  const tpUpper = isLong ? pos.tpPrice : pos.entryPrice
+  const tpLower = isLong ? pos.entryPrice : pos.tpPrice
+  boxes.push({
+    x: boxLeftX,
+    y: priceToY(tpUpper),
+    width: boxWidth,
+    height: priceToY(tpLower) - priceToY(tpUpper),
+    type: 'tp',
+  })
+
+  const slUpper = isLong ? pos.entryPrice : pos.slPrice
+  const slLower = isLong ? pos.slPrice : pos.entryPrice
+  boxes.push({
+    x: boxLeftX,
+    y: priceToY(slUpper),
+    width: boxWidth,
+    height: priceToY(slLower) - priceToY(slUpper),
+    type: 'sl',
+  })
+
+  return boxes
 })
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
@@ -981,6 +1183,19 @@ const candleX = (index: number): number => {
   return index * (candleWidth.value + candleGap) + candleWidth.value / 2 + 10
 }
 
+/**
+ * True when `index` should be dimmed because its volume is lower than the
+ * currently-hovered candle's volume. No-op (never muted) when nothing is
+ * hovered, or for the hovered candle itself.
+ */
+const isCandleMuted = (index: number): boolean => {
+  if (hoveredCandleIndex.value === null || index === hoveredCandleIndex.value) return false
+  const hoveredVolume = displayCandles.value[hoveredCandleIndex.value]?.volume
+  const thisVolume = displayCandles.value[index]?.volume
+  if (hoveredVolume == null || thisVolume == null) return false
+  return thisVolume < hoveredVolume
+}
+
 const handleZoom = (event: WheelEvent) => {
   event.preventDefault()
   const direction = event.deltaY > 0 ? -1 : 1
@@ -1097,6 +1312,7 @@ const formatValue = (value: any): string => {
   align-items: center;
   gap: 1rem;
   padding: 0.5rem;
+  flex-wrap: wrap;
 }
 
 .checkbox-label {
@@ -1113,6 +1329,173 @@ const formatValue = (value: any): string => {
   cursor: pointer;
   width: 16px;
   height: 16px;
+}
+
+/* ── Preview controls ──────────────────────────────────────────────────── */
+.preview-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.margin-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: #999;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.margin-input {
+  width: 80px;
+  padding: 4px 8px;
+  background: #0d0d0d;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 13px;
+  font-family: monospace;
+}
+
+.margin-input.small {
+  width: 64px;
+}
+
+.margin-input:focus {
+  outline: none;
+  border-color: #64b5f6;
+}
+
+.preview-btn {
+  padding: 6px 14px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.1s ease;
+  white-space: nowrap;
+}
+
+.preview-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.preview-btn:not(:disabled):hover {
+  transform: translateY(-1px);
+}
+
+.preview-btn.buy {
+  background: rgba(38,166,154,0.2);
+  border-color: #26a69a;
+  color: #26a69a;
+}
+
+.preview-btn.buy:not(:disabled):hover {
+  background: rgba(38,166,154,0.35);
+}
+
+.preview-btn.sell {
+  background: rgba(239,83,80,0.2);
+  border-color: #ef5350;
+  color: #ef5350;
+}
+
+.preview-btn.sell:not(:disabled):hover {
+  background: rgba(239,83,80,0.35);
+}
+
+.preview-btn.clear {
+  background: rgba(255,255,255,0.06);
+  border-color: #555;
+  color: #ccc;
+}
+
+.preview-btn.clear:not(:disabled):hover {
+  background: rgba(255,255,255,0.12);
+}
+
+/* ── Preview summary panel ─────────────────────────────────────────────── */
+.preview-panel {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.04);
+  border-left: 3px solid #555;
+  position: relative;
+}
+
+.preview-panel.long { border-left-color: #26a69a; }
+.preview-panel.short { border-left-color: #ef5350; }
+
+.preview-side-badge {
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: bold;
+  letter-spacing: 0.4px;
+}
+
+.preview-side-badge.long { background: rgba(38,166,154,0.3); color: #26a69a; }
+.preview-side-badge.short { background: rgba(239,83,80,0.3); color: #ef5350; }
+
+.preview-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-family: monospace;
+  color: #fff;
+}
+
+.preview-stat label {
+  color: #999;
+  font-family: inherit;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+}
+
+.preview-stat.tp span:last-child { color: #26a69a; }
+.preview-stat.sl span:last-child { color: #ef5350; }
+
+.preview-panel-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #999;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.preview-panel-close:hover { color: #fff; }
+
+.preview-error {
+  color: #ef5350;
+  font-size: 13px;
+  padding: 0 0.5rem;
+}
+
+/* ── Preview TP/SL rendering on chart ─────────────────────────────────── */
+.tp-sl-rect.preview-rect {
+  stroke-dasharray: 5,3;
+  opacity: 0.85;
+}
+
+.preview-entry-line {
+  stroke: #fff;
+  stroke-width: 1;
+  stroke-dasharray: 4,4;
+  opacity: 0.6;
+  pointer-events: none;
 }
 
 /* ── Live indicator ───────────────────────────────────────────────────── */
@@ -1228,9 +1611,13 @@ const formatValue = (value: any): string => {
 
 .zone-label-text { fill: rgba(255,255,255,0.4); font-size: 10px; pointer-events: none; }
 
-.candle { cursor: pointer; transition: opacity 0.2s; }
+.candle { cursor: pointer; transition: opacity 0.15s ease; }
 .candle:hover { opacity: 0.8; }
 .candle.indecisive { opacity: 0.5; }
+
+/* ── Volume-relative muting ───────────────────────────────────────────── */
+.candle.muted { opacity: 0.15; }
+
 .wick { stroke-width: 1; }
 .candle.bull .wick { stroke: #26a69a; }
 .candle.bear .wick { stroke: #ef5350; }

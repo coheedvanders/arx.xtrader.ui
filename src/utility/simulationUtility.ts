@@ -404,6 +404,15 @@ export class SimulationUtility {
                                 candle.candleData.conditionMet = "BULLISH"
                             }
                         }
+
+                        var crossedEma = movingCandles.slice(-3).filter(c => c.candleData
+                            && (
+                                (c.open < c.candleData.ema200 && candle.close > c.candleData.ema200) 
+                                || (c.open > c.candleData.ema200 && candle.close < c.candleData.ema200)
+                            )
+                        ).length > 0;
+
+                        candle.candleData.crossedEma = crossedEma;
                         
                         //end
                     }

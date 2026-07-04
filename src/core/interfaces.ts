@@ -85,7 +85,8 @@ export interface FuturesSymbol{
   lookbackTrend: string;
   change: number;
   candlesAboveCount: number,
-  candlesBelowCount: number
+  candlesBelowCount: number,
+  crossedMa: boolean
 }
 
 export interface PastVolumeAnalysis{

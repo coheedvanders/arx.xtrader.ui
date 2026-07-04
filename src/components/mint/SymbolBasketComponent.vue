@@ -231,6 +231,7 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
     currentFutureSumbol.value!.change = candles[candles.length - 1].candleData?.change_percentage_v!;
     currentFutureSumbol.value!.candlesAboveCount = candles[candles.length - 1].candleData?.candlesAboveCount!
     currentFutureSumbol.value!.candlesBelowCount = candles[candles.length - 1].candleData?.candlesBelowCount!
+    currentFutureSumbol.value!.crossedMa = candles[candles.length - 1].candleData?.crossedEma!
 
     if(chocoMintoStore.isManualSimulation){
         updateStoreFutureSymbolSimulationStats(symbol,candles);

@@ -52,11 +52,12 @@ function updateTimeRemaining() {
   const timeLeft = (lastCandle.closeTime - now) / 1000;
   timeRemainingInCandle.value = Math.max(Math.round(timeLeft), 0);
 
+  console.log("timeRemainingInCandle.value",timeRemainingInCandle.value, timeLeft,preCloseEmitted.value);
+
   if (
     !preCloseEmitted.value &&
-    !lastCandle.closed &&
-    timeLeft <= PRE_CLOSE_THRESHOLD_SECONDS &&
-    timeLeft > 0
+    timeRemainingInCandle.value <= PRE_CLOSE_THRESHOLD_SECONDS &&
+    timeRemainingInCandle.value > 0
   ) {
     preCloseEmitted.value = true;
     emits("on-pre-close", lastCandle);
