@@ -370,7 +370,11 @@ async function initializeFutureSymbols(){
                     change: 0,
                     candlesAboveCount: 0,
                     candlesBelowCount: 0,
-                    crossedMa: false
+                    crossedMa: false,
+                    changeZScore: 0,
+                    bidWall: 0,
+                    askWall: 0,
+                    g1CandleCount: 0
                 })
             }
         }

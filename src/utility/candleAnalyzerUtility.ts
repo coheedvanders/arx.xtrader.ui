@@ -1,4 +1,4 @@
-import type { Candle, CandleData, CandleEntry, OverboughtOversoldAnalysis, PastVolumeAnalysis, PriceZone, PriceZoneEvaluation, ReactionData, VolumeAnalysis, ZoneAnalysis } from "@/core/interfaces";
+import type { BidAskWallResult, BinanceDepthSnapshot, BookLevel, Candle, CandleData, CandleEntry, OverboughtOversoldAnalysis, PastVolumeAnalysis, PriceZone, PriceZoneEvaluation, ReactionData, VolumeAnalysis, ZoneAnalysis } from "@/core/interfaces";
 
 class CandlestickAnalyzer {
 
@@ -50,6 +50,63 @@ class CandlestickAnalyzer {
             }
             }
         }
+    }
+
+    
+
+    /**
+     * Fetches the current order book for `symbol` and returns the largest
+     * "wall" bid and ask — the price level furthest into the book whose
+     * notional (price × qty) exceeds the book's average notional × `multiplier`.
+     *
+     * Mirrors the largestBidWall / lowestAskWall logic from CandleVisualizer,
+     * but as a one-shot REST call instead of a live diff-stream subscription.
+     */
+    static async getBidAskWall(
+        symbol: string,
+        options: { limit?: number; multiplier?: number } = {}
+    ): Promise<BidAskWallResult> {
+    const limit = options.limit ?? 1000
+    const multiplier = options.multiplier ?? 3
+
+    const url = `https://fapi.binance.com/fapi/v1/depth?symbol=${symbol.toUpperCase()}&limit=${limit}`
+    const res = await fetch(url)
+    if (!res.ok) {
+        throw new Error(`Depth request failed: ${res.status}`)
+    }
+    const snapshot: BinanceDepthSnapshot = await res.json()
+
+    const parseLevels = (raw: string[][]): BookLevel[] =>
+        raw
+        .map(([p, q]) => ({ price: parseFloat(p), qty: parseFloat(q) }))
+        .filter((l) => !isNaN(l.price) && !isNaN(l.qty) && l.qty > 0)
+
+    // Highest bid first, lowest ask first — matches the original sort order.
+    const bids = parseLevels(snapshot.bids).sort((a, b) => b.price - a.price)
+    const asks = parseLevels(snapshot.asks).sort((a, b) => a.price - b.price)
+
+    const largestBidWall = this.findWall(bids, multiplier, 'bid')
+    const lowestAskWall = this.findWall(asks, multiplier, 'ask')
+
+    return { largestBidWall, lowestAskWall, bids, asks }
+    }
+
+    /**
+     * `bid`  → nearest-to-mid large buy wall (highest qualifying price).
+     * `ask`  → nearest-to-mid large sell wall (lowest qualifying price).
+     */
+    static findWall(levels: BookLevel[], multiplier: number, side: 'bid' | 'ask'): BookLevel | null {
+    if (levels.length === 0) return null
+
+    const avgNotional = levels.reduce((s, l) => s + l.price * l.qty, 0) / levels.length
+    if (avgNotional <= 0) return null
+
+    const large = levels.filter((l) => l.price * l.qty > avgNotional * multiplier)
+    if (large.length === 0) return null
+
+    return side === 'bid'
+        ? large.reduce((best, l) => (l.price > best.price ? l : best))
+        : large.reduce((best, l) => (l.price < best.price ? l : best))
     }
 
     static getCandleChangeZScore(candles: CandleEntry[], length: number): number {
@@ -293,7 +350,9 @@ static buyerInterestScore(
         isBuyingExhaustion: false,
         isSellingExhaustion: false,
         candlesAboveCount: 0,
-        candlesBelowCount: 0
+        candlesBelowCount: 0,
+        bidWall: 0,
+        askWall: 0
     };
   }
 

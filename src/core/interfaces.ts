@@ -74,6 +74,26 @@ export interface TradeLog {
   candleOpenTime: number;
 }
 
+export interface BookLevel {
+  price: number
+  qty: number
+}
+
+export interface BidAskWallResult {
+  largestBidWall: BookLevel | null
+  lowestAskWall: BookLevel | null
+  bids: BookLevel[]
+  asks: BookLevel[]
+}
+
+export interface BinanceDepthSnapshot {
+  lastUpdateId: number
+  E?: number
+  T?: number
+  bids: string[][]
+  asks: string[][]
+}
+
 export interface FuturesSymbol{
   symbol: string;
   maxLeverage: number;
@@ -86,7 +106,11 @@ export interface FuturesSymbol{
   change: number;
   candlesAboveCount: number,
   candlesBelowCount: number,
-  crossedMa: boolean
+  crossedMa: boolean,
+  changeZScore: number,
+  bidWall: number,
+  askWall: number,
+  g1CandleCount: number
 }
 
 export interface PastVolumeAnalysis{
@@ -296,6 +320,8 @@ export interface CandleData {
   isSellingExhaustion: boolean;
   candlesAboveCount: number;
   candlesBelowCount: number;
+  bidWall: number;
+  askWall: number;
 }
 
 

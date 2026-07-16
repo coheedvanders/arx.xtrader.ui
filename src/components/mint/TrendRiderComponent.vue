@@ -58,39 +58,82 @@
       </div>
     </div>
 
-    <!-- Market Structure Section -->
+    <!-- Z-score spike summary -->
     <div class="summary-row">
       <div class="summary-col summary-col-wide">
-        <div class="summary-title">market structure — candles above reference (last 100)</div>
+        <div class="summary-title">z-score spikes (|z| ≥ 3, last candle)</div>
         <div
-          v-for="row in structureRangeCounts"
+          v-for="row in zScoreGroupCounts"
           :key="row.label"
-          class="summary-line"
+          class="summary-line summary-line-clickable"
+          @click="selectZScoreGroup(row.label)"
         >
           <span class="summary-label" :class="row.colorClass">{{ row.label }}</span>
           <div class="summary-bar-track">
             <div
               class="summary-bar-fill"
               :class="row.colorClass"
-              :style="{ width: summaryBarWidth(row.count, structureRangeCounts) + '%' }"
+              :style="{ width: summaryBarWidth(row.count, zScoreGroupCounts) + '%' }"
             ></div>
           </div>
           <span class="summary-count">{{ row.count }}</span>
         </div>
+      </div>
+    </div>
 
-        <!-- Market-wide aggregate above/below bar -->
-        <div class="structure-aggregate">
-          <div class="structure-aggregate-track">
-            <div
-              class="structure-aggregate-fill bull"
-              :style="{ width: aggregateAbovePct + '%' }"
-            ></div>
+    <!-- Symbols sorted by g1CandleCount, descending -->
+    <div class="summary-row">
+      <div class="summary-col summary-col-wide">
+        <div class="summary-title">symbols by g1CandleCount (desc)</div>
+        <div class="range-symbol-list">
+          <div
+            v-for="symbol in symbolsByG1CandleCount"
+            :key="symbol.symbol"
+            class="symbol-card"
+            @click="showEntryHistoryModal(symbol.symbol)"
+          >
+            <div class="symbol-main">
+              <span class="symbol-name">{{ symbol.symbol }}</span>
+              <span class="usdt-value">${{ formatUsdt(symbol.usdtValue) }}</span>
+            </div>
+
+            <div class="symbol-meta">
+              <span class="trend-badge" :class="trendClass(symbol.trend)">
+                {{ symbol.trend }}
+              </span>
+              <span class="g1-count-value">g1: {{ (symbol as any).g1CandleCount }}</span>
+            </div>
           </div>
-          <span class="structure-aggregate-label">
-            avg {{ aggregateAbovePct.toFixed(0) }}% above · {{ (100 - aggregateAbovePct).toFixed(0) }}% below
-          </span>
+
+          <div v-if="!symbolsByG1CandleCount.length" class="range-empty">No symbols.</div>
         </div>
       </div>
+    </div>
+
+    <!-- ── Wall range fetch trigger + progress ─────────────────────────── -->
+    <div class="wall-fetch-bar">
+      <button
+        class="wall-fetch-btn"
+        :disabled="wallFetchInProgress"
+        @click="fetchWallRanges"
+      >
+        {{ wallFetchInProgress ? 'Fetching walls…' : 'Get Wall Ranges' }}
+      </button>
+
+      <div v-if="wallFetchInProgress" class="wall-progress">
+        <div class="wall-progress-track">
+          <div class="wall-progress-fill" :style="{ width: wallFetchPercent + '%' }"></div>
+        </div>
+        <span class="wall-progress-label">{{ wallFetchProgress }} / {{ wallFetchTotal }}</span>
+      </div>
+
+      <button
+        class="wall-sort-btn"
+        :class="{ active: sortByWallRange }"
+        @click="toggleSortByWallRange"
+      >
+        {{ sortByWallRange ? 'Sorted by wall range ✓' : 'Sort by wall range' }}
+      </button>
     </div>
 
     <div class="row">
@@ -121,7 +164,9 @@
 
             <div class="symbol-meta">
               <span class="trend-badge" :class="trendClass(symbol.trend)">
-                {{ symbol.trend }}
+                <template v-if="wallThicknessPct(symbol) !== null">({{ wallThicknessPct(symbol)!.toFixed(2) }}%)</template>
+                <template v-else>(—)</template>
+                {{ symbol.trend }} - {{ symbol.g1CandleCount }}
               </span>
 
               <div class="lookback-row" v-if="symbol.lookbackTrend?.length">
@@ -159,6 +204,23 @@
                   </div>
                   <span class="structure-mini-count">{{ (symbol as any).candlesBelowCount }}</span>
                 </div>
+              </div>
+
+              <!-- Z-score spike badge -->
+              <div
+                v-if="hasZScoreSpike(symbol)"
+                class="zscore-spike-badge"
+                :class="zScoreSpikeClass(symbol)"
+                :title="`change ${zScoreChangePct(symbol)?.toFixed(2)}% · z-score ${zScoreValue(symbol)?.toFixed(2)}`"
+                @click.stop="showEntryHistoryModal(symbol.symbol)"
+              >
+                <span class="zscore-spike-icon">
+                  {{ zScoreSpikeClass(symbol) === 'is-strong-bull' ? '▲' : '▼' }}
+                </span>
+                <span class="zscore-spike-text">
+                  {{ (zScoreChangePct(symbol) ?? 0) >= 0 ? '+' : '' }}{{ zScoreChangePct(symbol)?.toFixed(2) }}%
+                </span>
+                <span class="zscore-spike-z">z{{ zScoreValue(symbol)?.toFixed(1) }}</span>
               </div>
             </div>
           </div>
@@ -192,7 +254,9 @@
 
             <div class="symbol-meta">
               <span class="trend-badge" :class="trendClass(symbol.trend)">
-                {{ symbol.trend }}
+                <template v-if="wallThicknessPct(symbol) !== null">({{ wallThicknessPct(symbol)!.toFixed(2) }}%)</template>
+                <template v-else>(—)</template>
+                {{ symbol.trend }} - {{ symbol.g1CandleCount }}
               </span>
 
               <div class="lookback-row" v-if="symbol.lookbackTrend?.length">
@@ -205,31 +269,21 @@
                 ></span>
               </div>
 
-              <!-- Structure mini bars -->
+              <!-- Z-score spike badge -->
               <div
-                class="structure-mini"
-                :title="`${(symbol as any).candlesAboveCount} above / ${(symbol as any).candlesBelowCount} below`"
+                v-if="hasZScoreSpike(symbol)"
+                class="zscore-spike-badge"
+                :class="zScoreSpikeClass(symbol)"
+                :title="`change ${zScoreChangePct(symbol)?.toFixed(2)}% · z-score ${zScoreValue(symbol)?.toFixed(2)}`"
+                @click.stop="showEntryHistoryModal(symbol.symbol)"
               >
-                <div class="structure-mini-row">
-                  <span class="structure-mini-label-text">↑</span>
-                  <div class="structure-mini-track">
-                    <div
-                      class="structure-mini-fill is-strong-bull"
-                      :style="{ width: (symbol as any).candlesAboveCount + '%' }"
-                    ></div>
-                  </div>
-                  <span class="structure-mini-count">{{ (symbol as any).candlesAboveCount }}</span>
-                </div>
-                <div class="structure-mini-row">
-                  <span class="structure-mini-label-text">↓</span>
-                  <div class="structure-mini-track">
-                    <div
-                      class="structure-mini-fill is-strong-bear"
-                      :style="{ width: (symbol as any).candlesBelowCount + '%' }"
-                    ></div>
-                  </div>
-                  <span class="structure-mini-count">{{ (symbol as any).candlesBelowCount }}</span>
-                </div>
+                <span class="zscore-spike-icon">
+                  {{ zScoreSpikeClass(symbol) === 'is-strong-bull' ? '▲' : '▼' }}
+                </span>
+                <span class="zscore-spike-text">
+                  {{ (zScoreChangePct(symbol) ?? 0) >= 0 ? '+' : '' }}{{ zScoreChangePct(symbol)?.toFixed(2) }}%
+                </span>
+                <span class="zscore-spike-z">z{{ zScoreValue(symbol)?.toFixed(1) }}</span>
               </div>
             </div>
           </div>
@@ -266,7 +320,7 @@
             {{ symbol.trend }}
           </span>
           <span class="change-value" :class="(symbol as any).change >= 0 ? 'is-strong-bull' : 'is-strong-bear'">
-            {{ (symbol as any).change >= 0 ? '+' : '' }}{{ (symbol as any).change?.toFixed(2) }}%
+            {{ (symbol as any).change >= 0 ? '+' : '' }}{{ (symbol as any).change?.toFixed(2) }}% - {{ symbol.g1CandleCount }}
           </span>
         </div>
       </div>
@@ -274,10 +328,41 @@
       <div v-if="!rangeSymbols.length" class="range-empty">No symbols in this range.</div>
     </div>
   </DialogComponent>
+
+  <DialogComponent v-model="showZScoreModal" :width="'95vw'">
+    <DialogHeaderComponent>
+      z-score spikes — {{ selectedZScoreGroup }} ({{ zScoreGroupSymbols.length }})
+    </DialogHeaderComponent>
+    <div class="range-symbol-list">
+      <div
+        v-for="symbol in zScoreGroupSymbols"
+        :key="symbol.symbol"
+        class="symbol-card"
+        @click="showEntryHistoryModal(symbol.symbol)"
+      >
+        <div class="symbol-main">
+          <span class="symbol-name">{{ symbol.symbol }}</span>
+          <span class="usdt-value">${{ formatUsdt(symbol.usdtValue) }}</span>
+        </div>
+
+        <div class="symbol-meta">
+          <span class="trend-badge" :class="trendClass(symbol.trend)">
+            {{ symbol.trend }}
+          </span>
+          <span class="change-value" :class="zScoreSpikeClass(symbol)">
+            {{ (zScoreChangePct(symbol) ?? 0) >= 0 ? '+' : '' }}{{ zScoreChangePct(symbol)?.toFixed(2) }}%
+          </span>
+          <span class="zscore-spike-z">z{{ zScoreValue(symbol)?.toFixed(2) }}</span>
+        </div>
+      </div>
+
+      <div v-if="!zScoreGroupSymbols.length" class="range-empty">No symbols in this group.</div>
+    </div>
+  </DialogComponent>
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onUnmounted, ref } from 'vue';
 import { useChocoMintoStore } from '@/stores/chocoMintoStore';
 import DialogComponent from '../shared/dialog/DialogComponent.vue';
 import DialogHeaderComponent from '../shared/dialog/DialogHeaderComponent.vue';
@@ -286,6 +371,8 @@ import type { CandleEntry } from '@/core/interfaces.ts';
 import { klineDbUtility } from '@/utility/klineDbUtility';
 import { OrderMakerUtility } from '@/utility/OrderMakerUtility.ts';
 import { useNotificationStore } from '@/stores/notificationStore.ts';
+// NOTE: adjust this import path to wherever candleAnalyzer actually lives in your project
+import { candleAnalyzer } from '@/utility/candleAnalyzerUtility.ts';
 
 const chocoMintoStore = useChocoMintoStore();
 const notificationStore = useNotificationStore();
@@ -296,16 +383,39 @@ const selectedSymbol = ref('');
 
 // ── Symbol lists ──────────────────────────────────────────────────────────────
 
-const bearishSymbols = computed(() =>
-  chocoMintoStore.futureSymbols
-    .filter(s => s.conditionMet === 'BEARISH')
-    .sort((a, b) => (a as any).candlesAboveCount - (b as any).candlesAboveCount) // lowest above = most structurally bearish
-);
+const sortByWallRange = ref(false);
 
-const bullishSymbols = computed(() =>
-  chocoMintoStore.futureSymbols
-    .filter(s => s.conditionMet === 'BULLISH')
-    .sort((a, b) => (b as any).candlesAboveCount - (a as any).candlesAboveCount) // highest above = most structurally bullish
+function toggleSortByWallRange() {
+  sortByWallRange.value = !sortByWallRange.value;
+}
+
+/** Nulls (no wall data fetched yet) always sort to the bottom, widest range first. */
+function byWallRangeDesc(a: any, b: any) {
+  const aVal = wallThicknessPct(a);
+  const bVal = wallThicknessPct(b);
+  if (aVal === null && bVal === null) return 0;
+  if (aVal === null) return 1;
+  if (bVal === null) return -1;
+  return bVal - aVal;
+}
+
+const bearishSymbols = computed(() => {
+  const symbols = chocoMintoStore.futureSymbols.filter(s => s.conditionMet === 'BEARISH');
+  if (sortByWallRange.value) return symbols.sort(byWallRangeDesc);
+  return symbols.sort((a, b) => (a as any).candlesAboveCount - (b as any).candlesAboveCount); // lowest above = most structurally bearish
+});
+
+const bullishSymbols = computed(() => {
+  const symbols = chocoMintoStore.futureSymbols.filter(s => s.conditionMet === 'BULLISH');
+  if (sortByWallRange.value) return symbols.sort(byWallRangeDesc);
+  return symbols.sort((a, b) => (b as any).candlesAboveCount - (a as any).candlesAboveCount); // highest above = most structurally bullish
+});
+
+// Symbols sorted by g1CandleCount, descending (all symbols, not just bearish/bullish)
+const symbolsByG1CandleCount = computed(() =>
+  [...chocoMintoStore.futureSymbols].sort(
+    (a, b) => ((b as any).g1CandleCount ?? 0) - ((a as any).g1CandleCount ?? 0)
+  )
 );
 
 // ── Ride trend ────────────────────────────────────────────────────────────────
@@ -321,6 +431,79 @@ async function rideTrend(side: string, position: string) {
       await OrderMakerUtility.openOrder(s.symbol, chocoMintoStore.orderCost, position, 0, 0);
     } catch (e) {}
   }
+}
+
+// ── Wall range fetching (bearish + bullish symbols only, rate-limited) ────────
+
+const WALL_FETCH_INTERVAL_MS = 2000;
+
+const wallFetchInProgress = ref(false);
+const wallFetchProgress = ref(0);
+const wallFetchTotal = ref(0);
+
+const wallFetchPercent = computed(() => {
+  if (!wallFetchTotal.value) return 0;
+  return Math.round((wallFetchProgress.value / wallFetchTotal.value) * 100);
+});
+
+let wallFetchCancelled = false;
+
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchWallRanges() {
+  if (wallFetchInProgress.value) return;
+
+  // Only symbols currently classified bearish or bullish — skip neutral.
+  const targets = [...bearishSymbols.value, ...bullishSymbols.value];
+  if (!targets.length) return;
+
+  wallFetchCancelled = false;
+  wallFetchInProgress.value = true;
+  wallFetchProgress.value = 0;
+  wallFetchTotal.value = targets.length;
+
+  try {
+    for (const symbol of targets) {
+      if (wallFetchCancelled) break;
+
+      try {
+        const { largestBidWall, lowestAskWall } = await candleAnalyzer.getBidAskWall(symbol.symbol);
+        (symbol as any).bidWall = largestBidWall?.price ?? null;
+        (symbol as any).askWall = lowestAskWall?.price ?? null;
+      } catch (e) {
+        console.error(`Failed to fetch wall range for ${symbol.symbol}:`, e);
+      }
+
+      wallFetchProgress.value++;
+
+      // Rate-limit to 1 call / 2s, skip the wait after the final symbol.
+      if (!wallFetchCancelled && wallFetchProgress.value < wallFetchTotal.value) {
+        await sleep(WALL_FETCH_INTERVAL_MS);
+      }
+    }
+  } finally {
+    wallFetchInProgress.value = false;
+  }
+}
+
+onUnmounted(() => {
+  wallFetchCancelled = true;
+});
+
+/**
+ * "Thickness" of the wall gap as a percentage of the bid/ask midpoint.
+ * Using the midpoint (rather than bidWall alone) keeps the % symmetric
+ * regardless of which side happens to be the smaller number.
+ */
+function wallThicknessPct(symbol: any): number | null {
+  const bid = symbol?.bidWall;
+  const ask = symbol?.askWall;
+  if (typeof bid !== 'number' || typeof ask !== 'number' || bid <= 0 || ask <= 0) return null;
+  const mid = (ask + bid) / 2;
+  if (!mid) return null;
+  return Math.abs((ask - bid) / mid) * 100;
 }
 
 // ── Generic distinct counter ──────────────────────────────────────────────────
@@ -483,6 +666,65 @@ function structureMiniClass(candlesAbove: number) {
   if (candlesAbove >= 20) return 'is-mild-bear';
   return 'is-strong-bear';
 }
+
+// ── Z-score spike detection (lastCandle.candleData.changePercentageZScore) ────
+// Flags symbols whose most recent candle has an unusually large change
+// (|z| >= 3), grouped into bull/bear based on the sign of the change %.
+
+function hasZScoreSpike(symbol: any): boolean {
+  const z = symbol?.changeZScore;
+  return typeof z === 'number' && !Number.isNaN(z) && z >= 3;
+}
+
+function zScoreValue(symbol: any): number | undefined {
+  const z = symbol?.changeZScore;
+  return typeof z === 'number' && !Number.isNaN(z) ? z : undefined;
+}
+
+function zScoreChangePct(symbol: any): number | undefined {
+  const change = symbol?.changeZScore;
+  return typeof change === 'number' && !Number.isNaN(change) ? change : undefined;
+}
+
+function zScoreSpikeClass(symbol: any): string {
+  const change = zScoreChangePct(symbol);
+  return typeof change === 'number' && change >= 0 ? 'is-strong-bull' : 'is-strong-bear';
+}
+
+const zScoreSpikeSymbols = computed(() =>
+  chocoMintoStore.futureSymbols.filter(s => hasZScoreSpike(s))
+);
+
+const zScoreBullSymbols = computed(() =>
+  zScoreSpikeSymbols.value
+    .filter(s => (zScoreChangePct(s) ?? 0) >= 0)
+    .sort((a, b) => (zScoreChangePct(b) ?? 0) - (zScoreChangePct(a) ?? 0))
+);
+
+const zScoreBearSymbols = computed(() =>
+  zScoreSpikeSymbols.value
+    .filter(s => (zScoreChangePct(s) ?? 0) < 0)
+    .sort((a, b) => (zScoreChangePct(a) ?? 0) - (zScoreChangePct(b) ?? 0))
+);
+
+const zScoreGroupCounts = computed(() => [
+  { label: 'Bull spikes', count: zScoreBullSymbols.value.length, colorClass: 'is-strong-bull' },
+  { label: 'Bear spikes', count: zScoreBearSymbols.value.length, colorClass: 'is-strong-bear' },
+]);
+
+const showZScoreModal = ref(false);
+const selectedZScoreGroup = ref<'Bull spikes' | 'Bear spikes' | ''>('');
+
+function selectZScoreGroup(label: string) {
+  selectedZScoreGroup.value = label as 'Bull spikes' | 'Bear spikes';
+  showZScoreModal.value = true;
+}
+
+const zScoreGroupSymbols = computed(() => {
+  if (selectedZScoreGroup.value === 'Bull spikes') return zScoreBullSymbols.value;
+  if (selectedZScoreGroup.value === 'Bear spikes') return zScoreBearSymbols.value;
+  return [];
+});
 
 // ── Market sentiment ──────────────────────────────────────────────────────────
 
@@ -729,6 +971,82 @@ defineExpose({ shoutMarketSentiment });
   font-variant-numeric: tabular-nums;
 }
 
+/* ── Wall range fetch trigger + progress ──────────────────────── */
+.wall-fetch-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.wall-fetch-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: none;
+  background: #64b5f6;
+  color: #0d0d0d;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.wall-fetch-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.wall-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  max-width: 280px;
+}
+
+.wall-progress-track {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.15);
+  overflow: hidden;
+}
+
+.wall-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #64b5f6;
+  transition: width 0.2s ease;
+}
+
+.wall-progress-label {
+  font-size: 0.75rem;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.wall-sort-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: transparent;
+  color: inherit;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.wall-sort-btn:hover {
+  background: rgba(127, 127, 127, 0.1);
+}
+
+.wall-sort-btn.active {
+  background: rgba(100, 181, 246, 0.15);
+  border-color: #64b5f6;
+  color: #64b5f6;
+}
+
 /* ── Market structure aggregate bar ───────────────────────────── */
 .structure-aggregate {
   margin-top: 10px;
@@ -803,6 +1121,42 @@ defineExpose({ shoutMarketSentiment });
   width: 22px;
   text-align: right;
   line-height: 1;
+}
+
+/* ── Z-score spike badge (per symbol card) ────────────────────── */
+.zscore-spike-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+}
+
+.zscore-spike-badge.is-strong-bull {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+.zscore-spike-badge.is-strong-bear {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.zscore-spike-icon { line-height: 1; }
+.zscore-spike-z { opacity: 0.7; font-weight: 600; }
+
+/* ── g1CandleCount value tag (per symbol card) ────────────────── */
+.g1-count-value {
+  font-size: 0.78rem;
+  font-weight: 700;
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
 }
 
 /* ── Semantic colour scale ────────────────────────────────────── */

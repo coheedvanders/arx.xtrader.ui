@@ -18,6 +18,12 @@ const routes: RouteRecordRaw[] = [
         name: 'mint',
         component: () => import('@/pages/trading/MintPage.vue'),
       },
+
+      {
+        path: 'alerto',
+        name: 'alerto',
+        component: () => import('@/pages/trading/AlertoPage.vue'),
+      },
     ]
   },
   {

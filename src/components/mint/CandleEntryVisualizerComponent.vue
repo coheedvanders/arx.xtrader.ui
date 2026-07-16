@@ -9,6 +9,8 @@
         <span>Connect volume spikes</span>
       </label>
 
+      <button @click="showKeyLevels = true">show key levels</button>
+
       <!-- ── Preview controls ─────────────────────────────────────────── -->
       <div class="preview-controls">
         <label class="margin-label">
@@ -70,10 +72,31 @@
         </button>
       </div>
 
-      <!-- Live status indicator -->
+      <!-- Order book wall readout -->
+      <div class="wall-readout">
+        <span v-if="largestBidWall" class="wall-stat bid">
+          Bid Wall {{ largestBidWall.price.toFixed(4) }} ({{ formatNotional(largestBidWall.price * largestBidWall.qty) }})
+        </span>
+        <span v-if="lowestAskWall" class="wall-stat ask">
+          Ask Wall {{ lowestAskWall.price.toFixed(4) }} ({{ formatNotional(lowestAskWall.price * lowestAskWall.qty) }})
+        </span>
+        <span class="wall-stat depth-count">
+          Book: {{ bidsRaw.length }} bids / {{ asksRaw.length }} asks
+        </span>
+      </div>
+
+      <!-- Live status indicators -->
       <div class="live-indicator" :class="wsStatus">
         <span class="live-dot" />
-        <span class="live-label">{{ wsStatusLabel }}</span>
+        <span class="live-label">Kline: {{ wsStatusLabel }}</span>
+      </div>
+      <div class="live-indicator" :class="depthWsStatus">
+        <span class="live-dot" />
+        <span class="live-label">Depth: {{ depthWsStatusLabel }}</span>
+      </div>
+      <div class="live-indicator" :class="tradeWsStatus">
+        <span class="live-dot" />
+        <span class="live-label">Trades: {{ tradeWsStatusLabel }}</span>
       </div>
     </div>
 
@@ -146,6 +169,40 @@
             :y2="line.y"
             :class="['sr-line', `sr-${line.type}`]"
           />
+
+          <!-- Order book large-order walls -->
+          <line
+            v-if="largestBidWall"
+            :x1="0" :x2="svgWidth"
+            :y1="priceToY(largestBidWall.price)" :y2="priceToY(largestBidWall.price)"
+            class="sr-line sr-bid-wall"
+          />
+          <line
+            v-if="lowestAskWall"
+            :x1="0" :x2="svgWidth"
+            :y1="priceToY(lowestAskWall.price)" :y2="priceToY(lowestAskWall.price)"
+            class="sr-line sr-ask-wall"
+          />
+        </g>
+
+        <!-- Order book wall price labels -->
+        <g class="wall-price-labels">
+          <text
+            v-if="largestBidWall"
+            :x="6"
+            :y="priceToY(largestBidWall.price) - 4"
+            class="wall-price-label bid"
+          >
+            Bid {{ largestBidWall.price.toFixed(4) }} · {{ formatNotional(largestBidWall.price * largestBidWall.qty) }}
+          </text>
+          <text
+            v-if="lowestAskWall"
+            :x="6"
+            :y="priceToY(lowestAskWall.price) - 4"
+            class="wall-price-label ask"
+          >
+            Ask {{ lowestAskWall.price.toFixed(4) }} · {{ formatNotional(lowestAskWall.price * lowestAskWall.qty) }}
+          </text>
         </g>
 
         <!-- TP/SL Boxes -->
@@ -438,6 +495,22 @@
           </g>
         </g>
 
+        <!-- Large Trade Markers (real-time aggTrade, notional above rolling average) -->
+        <g class="large-trade-markers">
+          <g v-for="marker in largeTradeMarkers" :key="`trade-${marker.id}`">
+            <circle
+              :cx="marker.x" :cy="marker.y" :r="marker.radius"
+              :class="['large-trade-dot', marker.side === 'BUY' ? 'buy' : 'sell']"
+            />
+            <text
+              :x="marker.x" :y="marker.y - marker.radius - 4"
+              :class="['large-trade-label', marker.side === 'BUY' ? 'buy' : 'sell']"
+            >
+              {{ marker.label }}
+            </text>
+          </g>
+        </g>
+
         <!-- Price Axis Labels (Interactive) -->
         <text
           v-for="(price, i) in gridPrices"
@@ -625,6 +698,19 @@
       </div>
     </div>
   </div>
+  <DialogComponent v-model="showKeyLevels" :width="'95vw'">
+        <DialogHeaderComponent>
+            {{ symbol }}
+        </DialogHeaderComponent>
+        <KeyLevelVisualizerComponent 
+          :symbol="symbol"
+          :bid-wall="largestBidWall?.price"
+          :ask-wall="lowestAskWall?.price"
+          :side="pendingSide"
+          :tp-price="previewPosition?.tpPrice"
+          :sl-price="previewPosition?.slPrice"
+          />
+    </DialogComponent>
 </template>
 
 <script setup lang="ts">
@@ -632,6 +718,9 @@ import type { CandleEntry } from '@/core/interfaces';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 // NOTE: adjust this import path to wherever OrderMakerUtility actually lives in your project
 import { OrderMakerUtility } from '@/utility/OrderMakerUtility';
+import DialogComponent from '../shared/dialog/DialogComponent.vue';
+import KeyLevelVisualizerComponent from './KeyLevelVisualizerComponent.vue';
+import DialogHeaderComponent from '../shared/dialog/DialogHeaderComponent.vue';
 
 // ─── Binance kline stream message shape ───────────────────────────────────────
 interface BinanceKline {
@@ -650,6 +739,46 @@ interface BinanceKlineMessage {
   E: number
   s: string
   k: BinanceKline
+}
+
+// ─── Binance diff depth stream message shape ──────────────────────────────────
+// wss://fstream.binance.com/ws/<symbol>@depth  (or @depth@100ms for faster updates)
+// Full order book management protocol (futures):
+// https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Diff-Book-Depth-Streams
+interface BinanceDepthMessage {
+  e?: string      // "depthUpdate"
+  E?: number      // Event time
+  T?: number      // Transaction time
+  s?: string      // Symbol
+  U?: number      // First update ID in event
+  u?: number      // Final update ID in event
+  pu?: number     // Previous event's final update ID (futures only) — used for gap detection
+  b: string[][]   // bids to be updated: [price, qty][]
+  a: string[][]   // asks to be updated: [price, qty][]
+}
+
+// REST snapshot shape: GET https://fapi.binance.com/fapi/v1/depth?symbol=...&limit=1000
+interface BinanceDepthSnapshot {
+  lastUpdateId: number
+  E?: number
+  T?: number
+  bids: string[][]
+  asks: string[][]
+}
+
+// ─── Binance aggTrade stream message shape ────────────────────────────────────
+// wss://fstream.binance.com/ws/<symbol>@aggTrade
+interface BinanceAggTradeMessage {
+  e: 'aggTrade'
+  E: number
+  a: number   // aggregate trade id
+  s: string
+  p: string   // price
+  q: string   // quantity
+  f: number
+  l: number
+  T: number   // trade time
+  m: boolean  // true => buyer is maker (i.e. taker was a seller)
 }
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -687,7 +816,11 @@ const priceRangeMax = ref(0)
 let isAdjustingHeight = false
 let isDraggingChart = false
 
-// ─── WebSocket / live candle ──────────────────────────────────────────────────
+const showKeyLevels = ref(false);
+
+const MAX_RECONNECT_DELAY_MS = 30_000
+
+// ─── WebSocket / live candle (kline stream) ────────────────────────────────────
 type WsStatus = 'connecting' | 'connected' | 'disconnected' | 'error'
 const wsStatus = ref<WsStatus>('connecting')
 const wsStatusLabel = computed(() => ({
@@ -705,7 +838,6 @@ const liveCandle = ref<CandleEntry | null>(null)
 
 let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-const MAX_RECONNECT_DELAY_MS = 30_000
 let reconnectDelay = 2_000
 
 function connectWebSocket() {
@@ -728,6 +860,7 @@ function connectWebSocket() {
   ws.onmessage = (event: MessageEvent) => {
     try {
       const msg: BinanceKlineMessage = JSON.parse(event.data as string)
+      
       if (msg.e !== 'kline') return
  
       const k = msg.k
@@ -736,6 +869,7 @@ function connectWebSocket() {
       const l = parseFloat(k.l)
       const c = parseFloat(k.c)
  
+      
       // Guard: skip malformed frames — any NaN would collapse priceDelta to NaN
       if (isNaN(o) || isNaN(h) || isNaN(l) || isNaN(c)) return
  
@@ -781,6 +915,387 @@ function disconnectWebSocket() {
     ws.close()
     ws = null
   }
+}
+
+// ─── Order book (full depth via diff stream + REST snapshot sync) ─────────────
+//
+// Binance's partial-depth stream (`@depth20@500ms`) only ever gives you the
+// top 20 levels. To get the *entire* book locally, in real time, with minimal
+// bandwidth, we follow Binance's official order-book management protocol:
+//
+//   1. Open the diff-depth stream (`@depth`) and buffer every event.
+//   2. Fetch a REST snapshot (`GET /fapi/v1/depth?limit=1000`) — 1000 is the
+//      max for USDⓈ-M futures (spot allows up to 5000, but this component
+//      talks to fstream.binance.com, i.e. futures).
+//   3. Drop buffered events older than the snapshot, find the first event
+//      that straddles the snapshot's lastUpdateId, and apply everything
+//      from there onward.
+//   4. Keep applying subsequent diff events, verifying each one's `pu`
+//      (previous final update ID) matches the last applied `u`. Any gap
+//      means we've missed an update, so we resync from a fresh snapshot.
+//
+// The local book is kept in plain (non-reactive) Maps for O(1) updates on a
+// high-frequency stream; `bidsRaw` / `asksRaw` are refreshed (sorted arrays)
+// after each applied event for the rest of the component to consume exactly
+// as before.
+
+interface BookLevel { price: number; qty: number }
+
+const REST_BASE = 'https://fapi.binance.com'
+const DEPTH_SNAPSHOT_LIMIT = 1000 // USDⓈ-M futures max for /fapi/v1/depth
+
+const bidsMap = new Map<number, number>()
+const asksMap = new Map<number, number>()
+const bidsRaw = ref<BookLevel[]>([])
+const asksRaw = ref<BookLevel[]>([])
+
+/** Notional (price × qty) must exceed the book's average notional × this to count as "large" */
+const largeOrderMultiplier = ref<number>(3)
+
+const depthWsStatus = ref<WsStatus>('connecting')
+const depthWsStatusLabel = computed(() => ({
+  connecting:   'Connecting…',
+  connected:    'Live',
+  disconnected: 'Disconnected',
+  error:        'Error',
+}[depthWsStatus.value]))
+
+let depthWs: WebSocket | null = null
+let depthReconnectTimer: ReturnType<typeof setTimeout> | null = null
+let depthReconnectDelay = 2_000
+
+let bookSynced = false
+let eventBuffer: BinanceDepthMessage[] = []
+let lastAppliedFinalId = 0
+let snapshotInFlight = false
+
+function applyLevels(map: Map<number, number>, levels: string[][]) {
+  for (const lvl of levels) {
+    const price = parseFloat(lvl[0])
+    const qty = parseFloat(lvl[1])
+    if (isNaN(price) || isNaN(qty)) continue
+    if (qty === 0) {
+      map.delete(price)
+    } else {
+      map.set(price, qty)
+    }
+  }
+}
+
+/** Rebuild the sorted arrays the rest of the component reads from. */
+function refreshBookRefs() {
+  bidsRaw.value = Array.from(bidsMap.entries())
+    .map(([price, qty]) => ({ price, qty }))
+    .sort((a, b) => b.price - a.price) // highest bid first
+
+  asksRaw.value = Array.from(asksMap.entries())
+    .map(([price, qty]) => ({ price, qty }))
+    .sort((a, b) => a.price - b.price) // lowest ask first
+}
+
+async function fetchDepthSnapshot(): Promise<BinanceDepthSnapshot> {
+  const url = `${REST_BASE}/fapi/v1/depth?symbol=${props.symbol.toUpperCase()}&limit=${DEPTH_SNAPSHOT_LIMIT}`
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`Depth snapshot request failed: ${res.status}`)
+  return res.json()
+}
+
+/**
+ * Fetches a fresh snapshot and replays any buffered/queued diff events on
+ * top of it per Binance's sync protocol. Called on initial connect and
+ * whenever a gap is detected in the live diff stream.
+ */
+async function syncOrderBook() {
+  if (snapshotInFlight) return
+  snapshotInFlight = true
+  bookSynced = false
+
+  try {
+    const snapshot = await fetchDepthSnapshot()
+    bidsMap.clear()
+    asksMap.clear()
+    applyLevels(bidsMap, snapshot.bids)
+    applyLevels(asksMap, snapshot.asks)
+
+    // Discard buffered events entirely older than the snapshot.
+    eventBuffer = eventBuffer.filter(evt => (evt.u ?? 0) > snapshot.lastUpdateId)
+
+    let started = false
+    for (const evt of eventBuffer) {
+      if (!started) {
+        // First applied event must straddle the snapshot's lastUpdateId.
+        if ((evt.U ?? 0) <= snapshot.lastUpdateId + 1 && (evt.u ?? 0) >= snapshot.lastUpdateId + 1) {
+          started = true
+        } else {
+          continue
+        }
+      }
+      applyLevels(bidsMap, evt.b)
+      applyLevels(asksMap, evt.a)
+      lastAppliedFinalId = evt.u ?? lastAppliedFinalId
+    }
+
+    if (!started) {
+      // No buffered event straddled the snapshot yet (fresh connection) —
+      // treat the snapshot itself as the current state and wait for the
+      // next live event to continue from lastUpdateId.
+      lastAppliedFinalId = snapshot.lastUpdateId
+    }
+
+    eventBuffer = []
+    bookSynced = true
+    depthWsStatus.value = depthWs?.readyState === WebSocket.OPEN ? 'connected' : depthWsStatus.value
+    refreshBookRefs()
+  } catch (err) {
+    console.error('Order book snapshot sync failed, retrying…', err)
+    depthWsStatus.value = 'error'
+    setTimeout(syncOrderBook, 3_000)
+  } finally {
+    snapshotInFlight = false
+  }
+}
+
+function connectDepthWebSocket() {
+  if (depthWs) {
+    depthWs.onclose = null
+    depthWs.close()
+  }
+
+  bookSynced = false
+  eventBuffer = []
+
+  const streamName = `${props.symbol.toLowerCase()}@depth` // full diff stream, not @depth20
+  const url = `wss://fstream.binance.com/ws/${streamName}`
+
+  depthWsStatus.value = 'connecting'
+  depthWs = new WebSocket(url)
+
+  depthWs.onopen = () => {
+    depthWsStatus.value = 'connected'
+    depthReconnectDelay = 2_000
+    // Kick off (or re-kick) the REST snapshot now that we're buffering live events.
+    syncOrderBook()
+  }
+
+  depthWs.onmessage = (event: MessageEvent) => {
+    try {
+      const msg: BinanceDepthMessage = JSON.parse(event.data as string)
+      if (!msg.b || !msg.a) return
+
+      if (!bookSynced) {
+        eventBuffer.push(msg)
+        return
+      }
+
+      // Gap check: this event's `pu` should equal the last update ID we applied.
+      if (msg.pu !== undefined && msg.pu !== lastAppliedFinalId) {
+        console.warn('Order book gap detected (pu mismatch) — resyncing…')
+        eventBuffer = [msg]
+        syncOrderBook()
+        return
+      }
+
+      applyLevels(bidsMap, msg.b)
+      applyLevels(asksMap, msg.a)
+      lastAppliedFinalId = msg.u ?? lastAppliedFinalId
+      refreshBookRefs()
+    } catch {
+      // malformed frame — ignore
+    }
+  }
+
+  depthWs.onerror = () => {
+    depthWsStatus.value = 'error'
+  }
+
+  depthWs.onclose = () => {
+    depthWsStatus.value = 'disconnected'
+    bookSynced = false
+    depthReconnectTimer = setTimeout(() => {
+      depthReconnectDelay = Math.min(depthReconnectDelay * 2, MAX_RECONNECT_DELAY_MS)
+      connectDepthWebSocket()
+    }, depthReconnectDelay)
+  }
+}
+
+function disconnectDepthWebSocket() {
+  if (depthReconnectTimer !== null) {
+    clearTimeout(depthReconnectTimer)
+    depthReconnectTimer = null
+  }
+  if (depthWs) {
+    depthWs.onclose = null
+    depthWs.close()
+    depthWs = null
+  }
+  bookSynced = false
+  eventBuffer = []
+  bidsMap.clear()
+  asksMap.clear()
+  bidsRaw.value = []
+  asksRaw.value = []
+}
+
+/** Highest-priced bid among those flagged "large" — the nearest big buy wall to mid. */
+const largestBidWall = computed<BookLevel | null>(() => {
+  if (bidsRaw.value.length === 0) return null
+  const avgNotional = bidsRaw.value.reduce((s, l) => s + l.price * l.qty, 0) / bidsRaw.value.length
+  if (avgNotional <= 0) return null
+  const large = bidsRaw.value.filter(l => l.price * l.qty > avgNotional * largeOrderMultiplier.value)
+  if (large.length === 0) return null
+  return large.reduce((best, l) => (l.price > best.price ? l : best))
+})
+
+/** Lowest-priced ask among those flagged "large" — the nearest big sell wall to mid. */
+const lowestAskWall = computed<BookLevel | null>(() => {
+  if (asksRaw.value.length === 0) return null
+  const avgNotional = asksRaw.value.reduce((s, l) => s + l.price * l.qty, 0) / asksRaw.value.length
+  if (avgNotional <= 0) return null
+  const large = asksRaw.value.filter(l => l.price * l.qty > avgNotional * largeOrderMultiplier.value)
+  if (large.length === 0) return null
+  return large.reduce((best, l) => (l.price < best.price ? l : best))
+})
+
+// ─── Trades (aggTrade) ────────────────────────────────────────────────────────
+interface LargeTrade {
+  id: number
+  price: number
+  notional: number
+  side: 'BUY' | 'SELL'
+  time: number
+}
+
+const TRADE_HISTORY_SIZE = 200
+const MAX_LARGE_TRADES_DISPLAYED = 30
+/** Trade notional must exceed the rolling average notional × this to be plotted */
+const largeTradeMultiplier = ref<number>(3)
+const tradeNotionalHistory: number[] = [] // plain array, not reactive — perf on high-frequency stream
+const largeTrades = ref<LargeTrade[]>([])
+
+const tradeWsStatus = ref<WsStatus>('connecting')
+const tradeWsStatusLabel = computed(() => ({
+  connecting:   'Connecting…',
+  connected:    'Live',
+  disconnected: 'Disconnected',
+  error:        'Error',
+}[tradeWsStatus.value]))
+
+let tradeWs: WebSocket | null = null
+let tradeReconnectTimer: ReturnType<typeof setTimeout> | null = null
+let tradeReconnectDelay = 2_000
+
+function connectTradeWebSocket() {
+  if (tradeWs) {
+    tradeWs.onclose = null
+    tradeWs.close()
+  }
+
+  const streamName = `${props.symbol.toLowerCase()}@aggTrade`
+  const url = `wss://fstream.binance.com/market/ws/${streamName}`
+
+  tradeWsStatus.value = 'connecting'
+  tradeWs = new WebSocket(url)
+
+  tradeWs.onopen = () => {
+    tradeWsStatus.value = 'connected'
+    tradeReconnectDelay = 2_000
+  }
+
+  tradeWs.onmessage = (event: MessageEvent) => {
+    try {
+      const msg: BinanceAggTradeMessage = JSON.parse(event.data as string)
+      if (msg.e !== 'aggTrade') return
+
+      const price = parseFloat(msg.p)
+      const qty = parseFloat(msg.q)
+      if (isNaN(price) || isNaN(qty)) return
+
+      const notional = price * qty
+      const avgNotional = tradeNotionalHistory.length > 0
+        ? tradeNotionalHistory.reduce((a, b) => a + b, 0) / tradeNotionalHistory.length
+        : notional
+
+      // Push to history AFTER computing avg so this trade doesn't skew its own comparison.
+      tradeNotionalHistory.push(notional)
+      if (tradeNotionalHistory.length > TRADE_HISTORY_SIZE) tradeNotionalHistory.shift()
+
+      if (notional > avgNotional * largeTradeMultiplier.value) {
+        largeTrades.value.push({
+          id: msg.a,
+          price,
+          notional,
+          side: msg.m ? 'SELL' : 'BUY', // m === true => buyer is maker => taker was the seller
+          time: msg.T,
+        })
+        if (largeTrades.value.length > MAX_LARGE_TRADES_DISPLAYED) largeTrades.value.shift()
+      }
+    } catch {
+      // malformed frame — ignore
+    }
+  }
+
+  tradeWs.onerror = () => {
+    tradeWsStatus.value = 'error'
+  }
+
+  tradeWs.onclose = () => {
+    tradeWsStatus.value = 'disconnected'
+    tradeReconnectTimer = setTimeout(() => {
+      tradeReconnectDelay = Math.min(tradeReconnectDelay * 2, MAX_RECONNECT_DELAY_MS)
+      connectTradeWebSocket()
+    }, tradeReconnectDelay)
+  }
+}
+
+function disconnectTradeWebSocket() {
+  if (tradeReconnectTimer !== null) {
+    clearTimeout(tradeReconnectTimer)
+    tradeReconnectTimer = null
+  }
+  if (tradeWs) {
+    tradeWs.onclose = null
+    tradeWs.close()
+    tradeWs = null
+  }
+}
+
+function intervalToMs(interval: string): number {
+  const unit = interval.slice(-1)
+  const value = parseInt(interval.slice(0, -1), 10)
+  const unitMs: Record<string, number> = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 }
+  return (isNaN(value) ? 1 : value) * (unitMs[unit] ?? 60_000)
+}
+
+/**
+ * Large trades rendered as dots positioned at (time-within-live-candle, price).
+ * Radius scales gently with notional size (log scale) so very large trades
+ * stand out without dominating the chart.
+ */
+const largeTradeMarkers = computed(() => {
+  if (!liveCandle.value || displayCandles.value.length === 0) return []
+  const lastIndex = displayCandles.value.length - 1
+  const leftX = candleX(lastIndex) - candleWidth.value / 2
+  const cellWidth = candleWidth.value + candleGap
+  const intervalMs = intervalToMs(props.interval)
+  const openTime = (liveCandle.value.openTime as number) ?? Date.now()
+
+  return largeTrades.value.map(t => {
+    const frac = Math.min(1, Math.max(0, (t.time - openTime) / intervalMs))
+    return {
+      ...t,
+      x: leftX + frac * cellWidth,
+      y: priceToY(t.price),
+      radius: Math.min(14, 4 + Math.log10(t.notional / 1000 + 1) * 4),
+      label: formatNotional(t.notional),
+    }
+  })
+})
+
+/** Formats a raw USDT notional as e.g. 1.2k, 3.45M for compact display. */
+function formatNotional(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return n.toFixed(0)
 }
 
 // ─── displayCandles: replace last item with live data when available ──────────
@@ -907,10 +1422,14 @@ const previewTpSlBoxes = computed(() => {
 onMounted(() => {
   scrollToRight()
   connectWebSocket()
+  connectDepthWebSocket()
+  connectTradeWebSocket()
 })
 
 onUnmounted(() => {
   disconnectWebSocket()
+  disconnectDepthWebSocket()
+  disconnectTradeWebSocket()
 })
 
 // ─── Existing computed / helpers (unchanged, but now use displayCandles) ──────
@@ -1498,6 +2017,34 @@ const formatValue = (value: any): string => {
   pointer-events: none;
 }
 
+/* ── Order book wall readout / labels ─────────────────────────────────── */
+.wall-readout {
+  display: flex;
+  gap: 1rem;
+  font-size: 12px;
+  font-family: monospace;
+}
+.wall-stat.bid { color: #26a69a; }
+.wall-stat.ask { color: #ef5350; }
+.wall-stat.depth-count { color: #888; }
+
+.sr-line.sr-bid-wall { stroke: #26a69a; stroke-width: 2; stroke-dasharray: 10,4; opacity: 0.9; }
+.sr-line.sr-ask-wall { stroke: #ef5350; stroke-width: 2; stroke-dasharray: 10,4; opacity: 0.9; }
+
+.wall-price-labels { pointer-events: none; }
+.wall-price-label { font-size: 10px; font-weight: bold; font-family: monospace; }
+.wall-price-label.bid { fill: #26a69a; }
+.wall-price-label.ask { fill: #ef5350; }
+
+/* ── Large trade markers (aggTrade) ───────────────────────────────────── */
+.large-trade-markers { pointer-events: none; }
+.large-trade-dot { opacity: 0.85; stroke: #0d0d0d; stroke-width: 1; }
+.large-trade-dot.buy  { fill: #26a69a; }
+.large-trade-dot.sell { fill: #ef5350; }
+.large-trade-label { font-size: 10px; font-weight: bold; text-anchor: middle; }
+.large-trade-label.buy  { fill: #26a69a; }
+.large-trade-label.sell { fill: #ef5350; }
+
 /* ── Live indicator ───────────────────────────────────────────────────── */
 .live-indicator {
   display: flex;
@@ -1508,8 +2055,11 @@ const formatValue = (value: any): string => {
   padding: 3px 10px;
   border-radius: 12px;
   background: rgba(255,255,255,0.06);
-  margin-left: auto;
   letter-spacing: 0.4px;
+}
+
+.live-indicator:last-child {
+  margin-left: auto;
 }
 
 .live-dot {

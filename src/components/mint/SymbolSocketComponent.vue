@@ -52,7 +52,7 @@ function updateTimeRemaining() {
   const timeLeft = (lastCandle.closeTime - now) / 1000;
   timeRemainingInCandle.value = Math.max(Math.round(timeLeft), 0);
 
-  console.log("timeRemainingInCandle.value",timeRemainingInCandle.value, timeLeft,preCloseEmitted.value);
+  //console.log("timeRemainingInCandle.value",timeRemainingInCandle.value, timeLeft,preCloseEmitted.value);
 
   if (
     !preCloseEmitted.value &&

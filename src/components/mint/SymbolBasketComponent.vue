@@ -112,7 +112,7 @@ async function initializeFutureSymbolData(){
             currentFutureSumbol.value = futureSymbol;
             currentFutureSumbol.value.status = "processing"
 
-            //if(futureSymbol.symbol != "BTCUSDT") continue;
+            //if(futureSymbol.symbol != "LQTYUSDT") continue;
 
             await runPositionEntry(futureSymbol.symbol, futureSymbol.maxLeverage, true);
             
@@ -224,14 +224,17 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
         candles.length - 1,
         chocoMintoStore.startingTimeStamp);
 
-    currentFutureSumbol.value!.conditionMet = candles[candles.length - 1].candleData?.conditionMet!;
-    currentFutureSumbol.value!.usdtValue = candles[candles.length - 1].volume * candles[candles.length - 1].close;
-    currentFutureSumbol.value!.trend = candles[candles.length - 1].zoneAnalysis?.pastTrend!
-    currentFutureSumbol.value!.lookbackTrend = candles[candles.length - 1].candleData?.lookbackTrend!;
-    currentFutureSumbol.value!.change = candles[candles.length - 1].candleData?.change_percentage_v!;
-    currentFutureSumbol.value!.candlesAboveCount = candles[candles.length - 1].candleData?.candlesAboveCount!
-    currentFutureSumbol.value!.candlesBelowCount = candles[candles.length - 1].candleData?.candlesBelowCount!
-    currentFutureSumbol.value!.crossedMa = candles[candles.length - 1].candleData?.crossedEma!
+        var currentCandle = candles[candles.length - 1];
+        currentFutureSumbol.value!.conditionMet = currentCandle.candleData?.conditionMet!;
+        currentFutureSumbol.value!.usdtValue = currentCandle.volume * currentCandle.close;
+        currentFutureSumbol.value!.trend = currentCandle.zoneAnalysis?.pastTrend!
+        currentFutureSumbol.value!.lookbackTrend = currentCandle.candleData?.lookbackTrend!;
+        currentFutureSumbol.value!.change = currentCandle.candleData?.change_percentage_v!;
+        currentFutureSumbol.value!.candlesAboveCount = currentCandle.candleData?.candlesAboveCount!
+        currentFutureSumbol.value!.candlesBelowCount = currentCandle.candleData?.candlesBelowCount!
+        currentFutureSumbol.value!.crossedMa = currentCandle.candleData?.crossedEma!
+        currentFutureSumbol.value!.changeZScore = currentCandle.candleData?.changePercentageZScore!
+        currentFutureSumbol.value!.g1CandleCount = candles.filter(c => c.candleData && Math.abs(c.candleData.change_percentage_v) >= 1).length
 
     if(chocoMintoStore.isManualSimulation){
         updateStoreFutureSymbolSimulationStats(symbol,candles);
