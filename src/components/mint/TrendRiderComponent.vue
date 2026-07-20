@@ -110,14 +110,22 @@
       </div>
     </div>
 
-    <!-- ── Wall range fetch trigger + progress ─────────────────────────── -->
+    <!-- ── Wall range fetch trigger + progress (bearish/bullish only) ────── -->
     <div class="wall-fetch-bar">
       <button
         class="wall-fetch-btn"
-        :disabled="wallFetchInProgress"
+        :disabled="wallFetchInProgress || wallFetchAllInProgress"
         @click="fetchWallRanges"
       >
         {{ wallFetchInProgress ? 'Fetching walls…' : 'Get Wall Ranges' }}
+      </button>
+
+      <button
+        class="wall-fetch-btn wall-fetch-btn-alt"
+        :disabled="wallFetchInProgress || wallFetchAllInProgress"
+        @click="fetchAllWallRanges"
+      >
+        {{ wallFetchAllInProgress ? 'Fetching all walls…' : 'Get All Wall Ranges' }}
       </button>
 
       <div v-if="wallFetchInProgress" class="wall-progress">
@@ -127,6 +135,13 @@
         <span class="wall-progress-label">{{ wallFetchProgress }} / {{ wallFetchTotal }}</span>
       </div>
 
+      <div v-if="wallFetchAllInProgress" class="wall-progress">
+        <div class="wall-progress-track">
+          <div class="wall-progress-fill" :style="{ width: wallFetchAllPercent + '%' }"></div>
+        </div>
+        <span class="wall-progress-label">{{ wallFetchAllProgress }} / {{ wallFetchAllTotal }}</span>
+      </div>
+
       <button
         class="wall-sort-btn"
         :class="{ active: sortByWallRange }"
@@ -134,6 +149,40 @@
       >
         {{ sortByWallRange ? 'Sorted by wall range ✓' : 'Sort by wall range' }}
       </button>
+    </div>
+
+    <!-- All symbols by wall range, auto-sorted desc -->
+    <div class="summary-row">
+      <div class="summary-col summary-col-wide">
+        <div class="summary-title">all symbols by wall range % (desc)</div>
+        <div class="range-symbol-list">
+          <div
+            v-for="symbol in allSymbolsByWallRange"
+            :key="symbol.symbol"
+            class="symbol-card"
+            @click="showEntryHistoryModal(symbol.symbol)"
+          >
+            <div class="symbol-main">
+              <span class="symbol-name">{{ symbol.symbol }}</span>
+              <span class="usdt-value">${{ formatUsdt(symbol.usdtValue) }}</span>
+            </div>
+
+            <div class="symbol-meta">
+              <span class="trend-badge" :class="trendClass(symbol.trend)">
+                {{ symbol.trend }}
+              </span>
+              <span class="change-value" :class="summaryColorClass(symbol.trend)">
+                <template v-if="wallThicknessPct(symbol) !== null">
+                  {{ wallThicknessPct(symbol)!.toFixed(2) }}%
+                </template>
+                <template v-else>—</template>
+              </span>
+            </div>
+          </div>
+
+          <div v-if="!allSymbolsByWallRange.length" class="range-empty">No symbols.</div>
+        </div>
+      </div>
     </div>
 
     <div class="row">
@@ -418,6 +467,11 @@ const symbolsByG1CandleCount = computed(() =>
   )
 );
 
+// All symbols sorted by wall range %, descending (nulls last)
+const allSymbolsByWallRange = computed(() =>
+  [...chocoMintoStore.futureSymbols].sort(byWallRangeDesc)
+);
+
 // ── Ride trend ────────────────────────────────────────────────────────────────
 
 async function rideTrend(side: string, position: string) {
@@ -453,7 +507,7 @@ function sleep(ms: number) {
 }
 
 async function fetchWallRanges() {
-  if (wallFetchInProgress.value) return;
+  if (wallFetchInProgress.value || wallFetchAllInProgress.value) return;
 
   // Only symbols currently classified bearish or bullish — skip neutral.
   const targets = [...bearishSymbols.value, ...bullishSymbols.value];
@@ -488,8 +542,57 @@ async function fetchWallRanges() {
   }
 }
 
+// ── Wall range fetching (ALL symbols, rate-limited, 2s per call) ─────────────
+
+const wallFetchAllInProgress = ref(false);
+const wallFetchAllProgress = ref(0);
+const wallFetchAllTotal = ref(0);
+
+const wallFetchAllPercent = computed(() => {
+  if (!wallFetchAllTotal.value) return 0;
+  return Math.round((wallFetchAllProgress.value / wallFetchAllTotal.value) * 100);
+});
+
+let wallFetchAllCancelled = false;
+
+async function fetchAllWallRanges() {
+  if (wallFetchAllInProgress.value || wallFetchInProgress.value) return;
+
+  const targets = [...chocoMintoStore.futureSymbols];
+  if (!targets.length) return;
+
+  wallFetchAllCancelled = false;
+  wallFetchAllInProgress.value = true;
+  wallFetchAllProgress.value = 0;
+  wallFetchAllTotal.value = targets.length;
+
+  try {
+    for (const symbol of targets) {
+      if (wallFetchAllCancelled) break;
+
+      try {
+        const { largestBidWall, lowestAskWall } = await candleAnalyzer.getBidAskWall(symbol.symbol);
+        (symbol as any).bidWall = largestBidWall?.price ?? null;
+        (symbol as any).askWall = lowestAskWall?.price ?? null;
+      } catch (e) {
+        console.error(`Failed to fetch wall range for ${symbol.symbol}:`, e);
+      }
+
+      wallFetchAllProgress.value++;
+
+      // Rate-limit to 1 call / 2s, skip the wait after the final symbol.
+      if (!wallFetchAllCancelled && wallFetchAllProgress.value < wallFetchAllTotal.value) {
+        await sleep(WALL_FETCH_INTERVAL_MS);
+      }
+    }
+  } finally {
+    wallFetchAllInProgress.value = false;
+  }
+}
+
 onUnmounted(() => {
   wallFetchCancelled = true;
+  wallFetchAllCancelled = true;
 });
 
 /**
@@ -977,6 +1080,7 @@ defineExpose({ shoutMarketSentiment });
   align-items: center;
   gap: 12px;
   margin-bottom: 14px;
+  flex-wrap: wrap;
 }
 
 .wall-fetch-btn {
@@ -987,6 +1091,10 @@ defineExpose({ shoutMarketSentiment });
   color: #0d0d0d;
   font-weight: 600;
   cursor: pointer;
+}
+
+.wall-fetch-btn-alt {
+  background: #ba68c8;
 }
 
 .wall-fetch-btn:disabled {

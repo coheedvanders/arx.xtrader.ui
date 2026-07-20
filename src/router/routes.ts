@@ -24,6 +24,12 @@ const routes: RouteRecordRaw[] = [
         name: 'alerto',
         component: () => import('@/pages/trading/AlertoPage.vue'),
       },
+
+      {
+        path: 'black-swan-net-tester',
+        name: 'black-swan-net-tester',
+        component: () => import('@/pages/trading/BlackSwanNetTesterPage.vue'),
+      },
     ]
   },
   {

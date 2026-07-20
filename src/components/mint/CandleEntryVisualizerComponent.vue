@@ -9,6 +9,14 @@
         <span>Connect volume spikes</span>
       </label>
 
+      <label class="checkbox-label">
+        <input
+          v-model="showVolume"
+          type="checkbox"
+        />
+        <span>Show volume</span>
+      </label>
+
       <button @click="showKeyLevels = true">show key levels</button>
 
       <!-- ── Preview controls ─────────────────────────────────────────── -->
@@ -275,6 +283,29 @@
             class="grid-line"
           />
         </g>
+
+        <!-- Volume Bars (drawn behind candles/EMA, overlaid at the bottom of the chart) -->
+        <g v-if="showVolume" class="volume-bars">
+          <rect
+            v-for="(bar, i) in volumeBars"
+            :key="`volume-${i}`"
+            :x="bar.x"
+            :y="bar.y"
+            :width="bar.width"
+            :height="bar.height"
+            :class="['volume-bar', bar.isBull ? 'bull' : 'bear']"
+          />
+        </g>
+
+        <!-- Volume panel max label -->
+        <text
+          v-if="showVolume && maxVolumeInView > 0"
+          :x="6"
+          :y="svgHeight - volumePanelUsableHeight - 6"
+          class="volume-panel-label"
+        >
+          Vol max {{ formatNotional(maxVolumeInView) }}
+        </text>
 
         <!-- EMA9 Line -->
         <polyline
@@ -574,6 +605,10 @@
                 <span>{{ selectedCandle.close!.toFixed(4) }}</span>
               </div>
               <div class="detail-item">
+                <label>Volume</label>
+                <span>{{ selectedCandle.volume }}</span>
+              </div>
+              <div class="detail-item">
                 <label>Status</label>
                 <span>{{ selectedCandle.status }}</span>
               </div>
@@ -801,6 +836,7 @@ const showModal = ref(false)
 const hoveredCandleIndex = ref<number | null>(null)
 const candleWidth = ref(8)
 const connectVolumeSpikesvSpikes = ref(false)
+const showVolume = ref(true)
 const candleGap = 5
 const svgHeight = 600
 const CANDLES_PER_ZONE = 24
@@ -868,6 +904,7 @@ function connectWebSocket() {
       const h = parseFloat(k.h)
       const l = parseFloat(k.l)
       const c = parseFloat(k.c)
+      const v = parseFloat(k.v)
  
       
       // Guard: skip malformed frames — any NaN would collapse priceDelta to NaN
@@ -885,6 +922,7 @@ function connectWebSocket() {
         high:  h,
         low:   l,
         close: c,
+        volume: isNaN(v) ? lastPropCandle.volume : v,
       }
     } catch {
       // malformed frame — ignore
@@ -1693,6 +1731,40 @@ const tpSlBoxes = computed(() => {
   return boxes
 })
 
+// ─── Volume panel (bottom-of-chart overlay, does not affect price scale) ──────
+/** Reserved pixel height, at the bottom of the SVG, for volume bars. */
+const VOLUME_PANEL_HEIGHT = 100
+/** Tallest bar uses at most this fraction of the reserved panel height. */
+const VOLUME_PANEL_MAX_RATIO = 0.9
+/** Height actually usable by the tallest bar (for label positioning). */
+const volumePanelUsableHeight = VOLUME_PANEL_HEIGHT * VOLUME_PANEL_MAX_RATIO
+
+/** Highest `candle.volume` currently in view — used to scale bar heights. */
+const maxVolumeInView = computed(() => {
+  let max = 0
+  for (const c of displayCandles.value) {
+    const v = c.volume ?? 0
+    if (v > max) max = v
+  }
+  return max
+})
+
+/** One bar per candle, anchored to the bottom of the chart, scaled by volume. */
+const volumeBars = computed(() => {
+  if (maxVolumeInView.value <= 0) return []
+  return displayCandles.value.map((candle, i) => {
+    const vol = candle.volume ?? 0
+    const barHeight = (vol / maxVolumeInView.value) * volumePanelUsableHeight
+    return {
+      x: candleX(i) - candleWidth.value / 2,
+      y: svgHeight - barHeight,
+      width: candleWidth.value,
+      height: barHeight,
+      isBull: candle.close! >= candle.open!,
+    }
+  })
+})
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const priceToY = (price: number): number => {
   return ((maxPrice.value - price) / priceDelta.value) * svgHeight
@@ -2044,6 +2116,13 @@ const formatValue = (value: any): string => {
 .large-trade-label { font-size: 10px; font-weight: bold; text-anchor: middle; }
 .large-trade-label.buy  { fill: #26a69a; }
 .large-trade-label.sell { fill: #ef5350; }
+
+/* ── Volume bars (bottom-of-chart overlay) ────────────────────────────── */
+.volume-bars { pointer-events: none; }
+.volume-bar { opacity: 0.35; }
+.volume-bar.bull { fill: #26a69a; }
+.volume-bar.bear { fill: #ef5350; }
+.volume-panel-label { fill: rgba(255,255,255,0.35); font-size: 10px; font-family: monospace; pointer-events: none; }
 
 /* ── Live indicator ───────────────────────────────────────────────────── */
 .live-indicator {
