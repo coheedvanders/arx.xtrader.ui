@@ -30,6 +30,24 @@ const routes: RouteRecordRaw[] = [
         name: 'black-swan-net-tester',
         component: () => import('@/pages/trading/BlackSwanNetTesterPage.vue'),
       },
+
+      {
+        path: 'seed-planter',
+        name: 'seed-planter',
+        component: () => import('@/pages/trading/SeedPlanterPage.vue'),
+      },
+
+      {
+        path: 'angel-fish-scanner',
+        name: 'angel-fish-scanner',
+        component: () => import('@/pages/trading/AngelFishScannerPage.vue'),
+      },
+
+      {
+        path: 'ma-crossing',
+        name: 'ma-crossing',
+        component: () => import('@/pages/trading/BestMACrossingScannerPage.vue'),
+      },
     ]
   },
   {

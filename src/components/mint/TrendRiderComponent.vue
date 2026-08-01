@@ -645,7 +645,7 @@ const lookbackTrendCounts = computed(() =>
 // ── Color helpers ─────────────────────────────────────────────────────────────
 
 function summaryColorClass(label: string) {
-  const key = label.toLowerCase();
+  const key = label;
   if (key === 'bullish' || key === 'strong_uptrend') return 'is-strong-bull';
   if (key === 'mild_uptrend') return 'is-mild-bull';
   if (key === 'bearish' || key === 'strong_downtrend') return 'is-strong-bear';

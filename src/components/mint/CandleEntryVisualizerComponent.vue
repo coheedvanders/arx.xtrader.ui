@@ -55,6 +55,17 @@
           />
         </label>
 
+        <label class="margin-label">
+          Max Leverage
+          <input
+            v-model.number="maxLeverage"
+            type="number"
+            min="1"
+            step="1"
+            class="margin-input small"
+          />
+        </label>
+
         <button
           class="preview-btn buy"
           :disabled="previewLoading"
@@ -90,6 +101,23 @@
         </span>
         <span class="wall-stat depth-count">
           Book: {{ bidsRaw.length }} bids / {{ asksRaw.length }} asks
+        </span>
+      </div>
+
+      <!-- Real-time order-book impact estimate (walks the book for the current margin × leverage notional) -->
+      <div class="wall-readout impact-readout">
+        <span class="wall-stat depth-count">
+          Order size: {{ formatNotional(orderNotional) }}{{ maxLeverage > 1 ? ` (${maxLeverage}x)` : '' }}
+        </span>
+        <span v-if="bookImpact.long" class="wall-stat impact-long">
+          Long {{ bookImpact.long.priceChange >= 0 ? '+' : '' }}{{ bookImpact.long.priceChange.toFixed(4) }}
+          ({{ bookImpact.long.priceChangePercent >= 0 ? '+' : '' }}{{ bookImpact.long.priceChangePercent.toFixed(3) }}%)
+          avg {{ bookImpact.long.vwapPrice.toFixed(4) }}{{ !bookImpact.long.fullyFilled ? ' · thin book' : '' }}
+        </span>
+        <span v-if="bookImpact.short" class="wall-stat impact-short">
+          Short {{ bookImpact.short.priceChange.toFixed(4) }}
+          ({{ bookImpact.short.priceChangePercent.toFixed(3) }}%)
+          avg {{ bookImpact.short.vwapPrice.toFixed(4) }}{{ !bookImpact.short.fullyFilled ? ' · thin book' : '' }}
         </span>
       </div>
 
@@ -749,14 +777,17 @@
 </template>
 
 <script setup lang="ts">
-import type { CandleEntry } from '@/core/interfaces';
+import type { CandleEntry, FuturesSymbol } from '@/core/interfaces';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 // NOTE: adjust this import path to wherever OrderMakerUtility actually lives in your project
 import { OrderMakerUtility } from '@/utility/OrderMakerUtility';
 import DialogComponent from '../shared/dialog/DialogComponent.vue';
 import KeyLevelVisualizerComponent from './KeyLevelVisualizerComponent.vue';
 import DialogHeaderComponent from '../shared/dialog/DialogHeaderComponent.vue';
+import { useChocoMintoStore } from '@/stores/chocoMintoStore.ts';
+import { isElementAccessExpression } from 'typescript';
 
+var chocomintoStore = useChocoMintoStore();
 // ─── Binance kline stream message shape ───────────────────────────────────────
 interface BinanceKline {
   t: number   // Kline open time (ms)
@@ -1358,14 +1389,24 @@ interface PreviewPosition {
   margin: number
 }
 
-const previewMargin = ref<number>(100)
+const previewMargin = ref<number>(5)
 const targetTpRoi = ref<number>(2)
 const targetSlRoi = ref<number>(2)
+/** Leverage applied to `previewMargin` when sizing the order-book impact estimate below. Fill in as needed. */
 const previewLoading = ref(false)
 const previewError = ref<string | null>(null)
 const pendingSide = ref<'LONG' | 'SHORT' | null>(null)
 const previewPosition = ref<PreviewPosition | null>(null)
 
+
+const maxLeverage = computed(() => {
+  var s = chocomintoStore.futureSymbols.find(f => f.symbol == props.symbol);
+  if(s){
+    return s.maxLeverage
+  }else{
+    return 0
+  }
+})
 /**
  * Runs the shared preview flow for both Buy and Sell.
  * `side` drives the UI/internal side label; `apiSide` is what
@@ -1415,6 +1456,72 @@ const clearPreview = () => {
   previewPosition.value = null
   previewError.value = null
 }
+
+// ─── Order-book impact estimate (real-time, walks bidsRaw/asksRaw) ────────────
+/** Notional (quote asset) of the previewed order: margin × leverage. */
+const orderNotional = computed(() => (previewMargin.value || 0) * (maxLeverage.value || 1))
+
+interface BookWalkResult {
+  /** Volume-weighted average price you'd actually fill at, consuming levels top-down. */
+  vwapPrice: number
+  /** vwapPrice - topOfBookPrice. Positive = price moved against a buyer; for shorts this is negative (you receive less). */
+  priceChange: number
+  priceChangePercent: number
+  /** Whether the book had enough resting size to fully fill the requested notional. */
+  fullyFilled: boolean
+}
+
+/**
+ * Walks a sorted list of book levels (asks ascending for a buy, bids descending
+ * for a sell) accumulating notional until `targetNotional` is filled, returning
+ * the volume-weighted average fill price and how far it has moved from the
+ * best (top-of-book) price.
+ */
+function walkBook(levels: BookLevel[], targetNotional: number, topPrice: number): BookWalkResult | null {
+  if (!levels.length || !topPrice || targetNotional <= 0) return null
+
+  let remainingNotional = targetNotional
+  let filledQty = 0
+  let filledNotional = 0
+
+  for (const lvl of levels) {
+    if (remainingNotional <= 0) break
+    const levelNotional = lvl.price * lvl.qty
+    const takeNotional = Math.min(remainingNotional, levelNotional)
+    filledQty += takeNotional / lvl.price
+    filledNotional += takeNotional
+    remainingNotional -= takeNotional
+  }
+
+  if (filledQty <= 0) return null
+
+  const vwapPrice = filledNotional / filledQty
+  const priceChange = vwapPrice - topPrice
+
+  return {
+    vwapPrice,
+    priceChange,
+    priceChangePercent: (priceChange / topPrice) * 100,
+    fullyFilled: remainingNotional <= 0,
+  }
+}
+
+/**
+ * Real-time estimated price impact of consuming the book right now for the
+ * current preview order size (margin × leverage): `long` walks the asks
+ * (what you'd pay going long), `short` walks the bids (what you'd receive
+ * going short). Recomputes automatically as the live depth stream updates.
+ */
+const bookImpact = computed(() => {
+  const notional = orderNotional.value
+  const bestAsk = asksRaw.value[0]?.price
+  const bestBid = bidsRaw.value[0]?.price
+
+  return {
+    long: bestAsk ? walkBook(asksRaw.value, notional, bestAsk) : null,
+    short: bestBid ? walkBook(bidsRaw.value, notional, bestBid) : null,
+  }
+})
 
 /**
  * TP/SL boxes for the active preview, drawn the same way as `tpSlBoxes`
@@ -2099,6 +2206,10 @@ const formatValue = (value: any): string => {
 .wall-stat.bid { color: #26a69a; }
 .wall-stat.ask { color: #ef5350; }
 .wall-stat.depth-count { color: #888; }
+
+.impact-readout { margin-top: -0.25rem; }
+.wall-stat.impact-long { color: #26a69a; }
+.wall-stat.impact-short { color: #ef5350; }
 
 .sr-line.sr-bid-wall { stroke: #26a69a; stroke-width: 2; stroke-dasharray: 10,4; opacity: 0.9; }
 .sr-line.sr-ask-wall { stroke: #ef5350; stroke-width: 2; stroke-dasharray: 10,4; opacity: 0.9; }

@@ -162,6 +162,15 @@ const symbols = computed<string[]>(() => {
 const targetPct = ref<number>(500);
 const resetDays = ref<number>(5);
 const symbolFilter = ref<string>('USDT');
+const interval = ref<string>('1d');
+const INTERVAL_OPTIONS: string[] = ['3m', '15m', '1h', '4h', '1d'];
+const INTERVAL_MINUTES: Record<string, number> = {
+  '3m': 3,
+  '15m': 15,
+  '1h': 60,
+  '4h': 240,
+  '1d': 1440,
+};
 
 const isRunning = ref<boolean>(false);
 const cancelRequested = ref<boolean>(false);
@@ -286,13 +295,13 @@ const KLINE_LIMIT = 1500;
 // raw Binance kline row: [openTime, open, high, low, close, volume, closeTime, ...]
 type RawKline = [number, string, string, string, string, string, number, ...unknown[]];
 
-async function fetchAllDailyKlines(symbol: string): Promise<Candle[]> {
+async function fetchAllKlines(symbol: string, klineInterval: string): Promise<Candle[]> {
   const candles: Candle[] = [];
   let startTime = 1500000000000; // ~2017-07, before any futures symbol existed
   const now = Date.now();
 
   while (true) {
-    const url = `${FAPI_BASE}/fapi/v1/klines?symbol=${symbol}&interval=1d&startTime=${startTime}&limit=${KLINE_LIMIT}`;
+    const url = `${FAPI_BASE}/fapi/v1/klines?symbol=${symbol}&interval=${klineInterval}&startTime=${startTime}&limit=${KLINE_LIMIT}`;
     const res = await fetch(url);
     if (!res.ok) {
       if (res.status === 429 || res.status === 418) {
@@ -401,7 +410,19 @@ async function runBacktest(): Promise<void> {
   cancelRequested.value = false;
   symbolIndex.value = 0;
   statusLog.value = [];
-  log(`starting backtest: target +${targetPct.value}%, reset every ${resetDays.value}d, ${symbols.value.length} symbols`);
+
+  const minutesPerCandle = INTERVAL_MINUTES[interval.value] ?? 1440;
+  const resetCandles = Math.max(1, Math.round((resetDays.value * 1440) / minutesPerCandle));
+
+  log(
+    `starting backtest: target +${targetPct.value}%, interval ${interval.value}, reset every ${resetDays.value}d (${resetCandles} candles), ${symbols.value.length} symbols`
+  );
+  if (interval.value !== '1d') {
+    log(
+      `heads up: sub-daily intervals fetch a lot more candles per symbol across full history — this run will be slower and use more requests`,
+      'warn'
+    );
+  }
 
   for (const symbol of symbols.value) {
     if (cancelRequested.value) {
@@ -411,12 +432,12 @@ async function runBacktest(): Promise<void> {
     symbolIndex.value += 1;
     currentSymbol.value = symbol;
     try {
-      const candles = await fetchAllDailyKlines(symbol);
+      const candles = await fetchAllKlines(symbol, interval.value);
       if (!candles.length) {
         log(`${symbol}: no candle data, skipping`, 'warn');
         continue;
       }
-      const hits = backtestSymbol(symbol, candles, targetPct.value, resetDays.value);
+      const hits = backtestSymbol(symbol, candles, targetPct.value, resetCandles);
       if (hits.length) {
         await saveHits(hits);
         await refreshCount();
