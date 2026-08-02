@@ -19,6 +19,8 @@
 
       <button @click="showKeyLevels = true">show key levels</button>
 
+      <button @click="showMaCrossing = true">See MA</button>
+
       <!-- ── Preview controls ─────────────────────────────────────────── -->
       <div class="preview-controls">
         <label class="margin-label">
@@ -774,6 +776,14 @@
           :sl-price="previewPosition?.slPrice"
           />
     </DialogComponent>
+
+  <!-- MA structure / crossing analysis dialog -->
+  <DialogComponent v-model="showMaCrossing" :width="'95vw'">
+        <DialogHeaderComponent>
+            {{ props.symbol.toUpperCase() }} · MA Structure
+        </DialogHeaderComponent>
+        <MACrossingVisualizerComponent :symbol="props.symbol" />
+    </DialogComponent>
 </template>
 
 <script setup lang="ts">
@@ -783,6 +793,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { OrderMakerUtility } from '@/utility/OrderMakerUtility';
 import DialogComponent from '../shared/dialog/DialogComponent.vue';
 import KeyLevelVisualizerComponent from './KeyLevelVisualizerComponent.vue';
+import MACrossingVisualizerComponent from './MACrossingVisualizerComponent.vue';
 import DialogHeaderComponent from '../shared/dialog/DialogHeaderComponent.vue';
 import { useChocoMintoStore } from '@/stores/chocoMintoStore.ts';
 import { isElementAccessExpression } from 'typescript';
@@ -884,6 +895,7 @@ let isAdjustingHeight = false
 let isDraggingChart = false
 
 const showKeyLevels = ref(false);
+const showMaCrossing = ref(false);
 
 const MAX_RECONNECT_DELAY_MS = 30_000
 

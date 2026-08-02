@@ -1,3 +1,4 @@
+<!-- BestMACrossingScanComponent.vue -->
 <template>
   <div class="ma200-cross-scanner">
     <div class="scanner-controls">
@@ -84,10 +85,17 @@
               <th>Open</th>
               <th>Close</th>
               <th>Candle Time</th>
+              <th class="actions-col"></th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in dailyCrossResults" :key="r.symbol" class="result-row" @click="openEntryHistory(r)">
+            <tr
+              v-for="r in dailyCrossResults"
+              :key="r.symbol"
+              class="result-row"
+              :class="{ 'is-reviewed': isReviewed(r.symbol) }"
+              @click="openEntryHistory(r)"
+            >
               <td class="symbol-cell">{{ r.symbol }}</td>
               <td>
                 <span :class="['direction-tag', `direction-${r.direction}`]">
@@ -98,6 +106,9 @@
               <td>{{ r.latestCandle.open }}</td>
               <td>{{ r.latestCandle.close }}</td>
               <td>{{ new Date(r.latestCandle.openTime).toLocaleString() }}</td>
+              <td class="actions-col">
+                <button class="see-ma-btn" @click.stop="openMaVisualizer(r.symbol)">See MA</button>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -117,10 +128,17 @@
               <th>Open</th>
               <th>Close</th>
               <th>Candle Time</th>
+              <th class="actions-col"></th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in intradayCrossResults" :key="r.symbol" class="result-row" @click="openEntryHistory(r)">
+            <tr
+              v-for="r in intradayCrossResults"
+              :key="r.symbol"
+              class="result-row"
+              :class="{ 'is-reviewed': isReviewed(r.symbol) }"
+              @click="openEntryHistory(r)"
+            >
               <td class="symbol-cell">{{ r.symbol }}</td>
               <td>
                 <span :class="['direction-tag', `direction-${r.direction}`]">
@@ -131,6 +149,9 @@
               <td>{{ r.latestCandle.open }}</td>
               <td>{{ r.latestCandle.close }}</td>
               <td>{{ new Date(r.latestCandle.openTime).toLocaleString() }}</td>
+              <td class="actions-col">
+                <button class="see-ma-btn" @click.stop="openMaVisualizer(r.symbol)">See MA</button>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -142,6 +163,13 @@
         {{ selectedSymbol }}
       </DialogHeaderComponent>
       <CandleEntryHistoryComponent :symbol="selectedSymbol" :candle-entries="selectedSymbolCandleEntries" />
+    </DialogComponent>
+
+    <DialogComponent v-model="showMACrossing" :width="'95vw'">
+      <DialogHeaderComponent>
+        {{ selectedSymbol }}
+      </DialogHeaderComponent>
+      <MACrosingVisualizer v-if="showMACrossing" :symbol="selectedSymbol" />
     </DialogComponent>
   </div>
 </template>
@@ -156,6 +184,7 @@ import type { FuturesSymbol, Candle, CandleEntry } from '@/core/interfaces.ts';
 import DialogComponent from '../shared/dialog/DialogComponent.vue';
 import DialogHeaderComponent from '../shared/dialog/DialogHeaderComponent.vue';
 import CandleEntryHistoryComponent from './CandleEntryHistoryComponent.vue';
+import MACrosingVisualizer from './MACrossingVisualizerComponent.vue';
 // ---------------------------------------------------------------------
 
 const props = withDefaults(
@@ -220,8 +249,21 @@ let scheduleTimer: ReturnType<typeof setInterval> | null = null
 let countdownTimer: ReturnType<typeof setInterval> | null = null
 
 const showEntryHistory = ref(false)
+const showMACrossing = ref(false)
 const selectedSymbol = ref('')
 const selectedSymbolCandleEntries = ref<CandleEntry[]>([])
+
+// Symbols the user has already opened (via row click or "See MA") — rendered
+// with an orange highlight so it's obvious at a glance what's been reviewed.
+const reviewedSymbols = ref<Set<string>>(new Set())
+
+function isReviewed(symbol: string): boolean {
+  return reviewedSymbols.value.has(symbol)
+}
+
+function markReviewed(symbol: string) {
+  reviewedSymbols.value.add(symbol)
+}
 
 const symbols = computed<string[]>(() => chocoMintoStore.futureSymbols?.map((c: FuturesSymbol) => c.symbol) || [])
 
@@ -309,6 +351,7 @@ async function startScan() {
   intradayCrossResults.value = []
   errorSymbols.value = []
   allScanned.value = []
+  reviewedSymbols.value = new Set()
   scanProgress.value = { done: 0, total: symbolList.length }
 
   const REQUEST_DELAY_MS = 400
@@ -401,6 +444,7 @@ onUnmounted(() => {
 })
 
 function openEntryHistory(result: MaCrossResult) {
+  markReviewed(result.symbol)
   selectedSymbol.value = result.symbol
   selectedSymbolCandleEntries.value = []
   selectedSymbolCandleEntries.value = result.candles.map(c => ({
@@ -432,6 +476,14 @@ function openEntryHistory(result: MaCrossResult) {
             isWeakening: false
         }));
   showEntryHistory.value = true
+}
+
+// opens the MA Crossing Visualizer dialog for a given symbol without
+// triggering the row's own click handler (openEntryHistory)
+function openMaVisualizer(symbol: string) {
+  markReviewed(symbol)
+  selectedSymbol.value = symbol
+  showMACrossing.value = true
 }
 </script>
 
@@ -604,10 +656,25 @@ function openEntryHistory(result: MaCrossResult) {
 
 .result-row {
   cursor: pointer;
+  transition: background 0.15s ease;
 }
 
+/* Hover: clearer than the previous barely-visible tint */
 .result-row:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Clicked / reviewed (row click or "See MA"): persistent orange highlight */
+.result-row.is-reviewed {
+  background: rgba(255, 152, 0, 0.14);
+}
+
+.result-row.is-reviewed:hover {
+  background: rgba(255, 152, 0, 0.22);
+}
+
+.result-row.is-reviewed td:first-child {
+  box-shadow: inset 3px 0 0 0 #ff9800;
 }
 
 .symbol-cell {
@@ -627,5 +694,34 @@ function openEntryHistory(result: MaCrossResult) {
 .direction-crossed-down {
   background: rgba(220, 80, 80, 0.15);
   color: #f87171;
+}
+
+/* ── "See MA" hover action ────────────────────────────────────────────── */
+.actions-col {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.see-ma-btn {
+  opacity: 0;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(100, 181, 246, 0.4);
+  background: rgba(100, 181, 246, 0.12);
+  color: #64b5f6;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.result-row:hover .see-ma-btn,
+.see-ma-btn:focus-visible {
+  opacity: 1;
+}
+
+.see-ma-btn:hover {
+  background: rgba(100, 181, 246, 0.22);
 }
 </style>
