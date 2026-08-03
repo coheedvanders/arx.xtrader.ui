@@ -1,4 +1,3 @@
-<!-- MAStructureAnalysisComponent.vue -->
 <template>
   <div class="ma-structure-analysis">
     <div class="header-row">

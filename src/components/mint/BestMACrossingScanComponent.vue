@@ -6,6 +6,14 @@
         {{ scanning ? `Scanning ${scanProgress.done}/${scanProgress.total}...` : 'Start' }}
       </button>
 
+      <div v-if="convictionAnalyzing" class="schedule-status">
+        Analyzing conviction {{ convictionProgress.done }}/{{ convictionProgress.total }}…
+      </div>
+
+      <div v-if="positionsLoading" class="schedule-status">
+        Checking open positions…
+      </div>
+
       <label class="interval-input-label">
         Every
         <input
@@ -85,6 +93,8 @@
               <th>Open</th>
               <th>Close</th>
               <th>Candle Time</th>
+              <th>Long</th>
+              <th>Short</th>
               <th class="actions-col"></th>
             </tr>
           </thead>
@@ -96,7 +106,10 @@
               :class="{ 'is-reviewed': isReviewed(r.symbol) }"
               @click="openEntryHistory(r)"
             >
-              <td class="symbol-cell">{{ r.symbol }}</td>
+              <td class="symbol-cell">
+                {{ r.symbol }}
+                <span v-if="isOpenPosition(r.symbol)" class="open-position-tag">(open)</span>
+              </td>
               <td>
                 <span :class="['direction-tag', `direction-${r.direction}`]">
                   {{ r.direction === 'crossed-up' ? 'Crossed Up' : 'Crossed Down' }}
@@ -106,6 +119,22 @@
               <td>{{ r.latestCandle.open }}</td>
               <td>{{ r.latestCandle.close }}</td>
               <td>{{ new Date(r.latestCandle.openTime).toLocaleString() }}</td>
+              <td>
+                <span v-if="convictionFor(r.symbol) === 'pending'" class="conviction-cell pending">—</span>
+                <span v-else-if="convictionFor(r.symbol) === 'loading'" class="conviction-cell loading">…</span>
+                <span v-else-if="convictionFor(r.symbol) === 'error'" class="conviction-cell error">err</span>
+                <span v-else :class="['conviction-tag', convictionClass((convictionFor(r.symbol) as any).long)]">
+                  {{ (convictionFor(r.symbol) as any).long }}
+                </span>
+              </td>
+              <td>
+                <span v-if="convictionFor(r.symbol) === 'pending'" class="conviction-cell pending">—</span>
+                <span v-else-if="convictionFor(r.symbol) === 'loading'" class="conviction-cell loading">…</span>
+                <span v-else-if="convictionFor(r.symbol) === 'error'" class="conviction-cell error">err</span>
+                <span v-else :class="['conviction-tag', convictionClass((convictionFor(r.symbol) as any).short)]">
+                  {{ (convictionFor(r.symbol) as any).short }}
+                </span>
+              </td>
               <td class="actions-col">
                 <button class="see-ma-btn" @click.stop="openMaVisualizer(r.symbol)">See MA</button>
               </td>
@@ -128,6 +157,8 @@
               <th>Open</th>
               <th>Close</th>
               <th>Candle Time</th>
+              <th>Long</th>
+              <th>Short</th>
               <th class="actions-col"></th>
             </tr>
           </thead>
@@ -139,7 +170,10 @@
               :class="{ 'is-reviewed': isReviewed(r.symbol) }"
               @click="openEntryHistory(r)"
             >
-              <td class="symbol-cell">{{ r.symbol }}</td>
+              <td class="symbol-cell">
+                {{ r.symbol }}
+                <span v-if="isOpenPosition(r.symbol)" class="open-position-tag">(open)</span>
+              </td>
               <td>
                 <span :class="['direction-tag', `direction-${r.direction}`]">
                   {{ r.direction === 'crossed-up' ? 'Crossed Up' : 'Crossed Down' }}
@@ -149,6 +183,22 @@
               <td>{{ r.latestCandle.open }}</td>
               <td>{{ r.latestCandle.close }}</td>
               <td>{{ new Date(r.latestCandle.openTime).toLocaleString() }}</td>
+              <td>
+                <span v-if="convictionFor(r.symbol) === 'pending'" class="conviction-cell pending">—</span>
+                <span v-else-if="convictionFor(r.symbol) === 'loading'" class="conviction-cell loading">…</span>
+                <span v-else-if="convictionFor(r.symbol) === 'error'" class="conviction-cell error">err</span>
+                <span v-else :class="['conviction-tag', convictionClass((convictionFor(r.symbol) as any).long)]">
+                  {{ (convictionFor(r.symbol) as any).long }}
+                </span>
+              </td>
+              <td>
+                <span v-if="convictionFor(r.symbol) === 'pending'" class="conviction-cell pending">—</span>
+                <span v-else-if="convictionFor(r.symbol) === 'loading'" class="conviction-cell loading">…</span>
+                <span v-else-if="convictionFor(r.symbol) === 'error'" class="conviction-cell error">err</span>
+                <span v-else :class="['conviction-tag', convictionClass((convictionFor(r.symbol) as any).short)]">
+                  {{ (convictionFor(r.symbol) as any).short }}
+                </span>
+              </td>
               <td class="actions-col">
                 <button class="see-ma-btn" @click.stop="openMaVisualizer(r.symbol)">See MA</button>
               </td>
@@ -179,13 +229,93 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 
 // ---- adjust these import paths to match your project structure ----
 import { KlineUtility } from '@/utility/klineUtility'
+import { OrderMakerUtility } from '@/utility/OrderMakerUtility.ts';
 import { useChocoMintoStore } from '@/stores/chocoMintoStore'
-import type { FuturesSymbol, Candle, CandleEntry } from '@/core/interfaces.ts';
+import type { FuturesSymbol, Candle, CandleEntry, Position } from '@/core/interfaces.ts';
 import DialogComponent from '../shared/dialog/DialogComponent.vue';
 import DialogHeaderComponent from '../shared/dialog/DialogHeaderComponent.vue';
 import CandleEntryHistoryComponent from './CandleEntryHistoryComponent.vue';
 import MACrosingVisualizer from './MACrossingVisualizerComponent.vue';
 // ---------------------------------------------------------------------
+
+import { buildMaCapturePayload } from '@/utility/maCapturePayload'
+import { analyzeMaStructure } from '@/utility/maStructureAnalysis'
+import type { ConvictionLevel } from '@/utility/maStructureAnalysis'
+
+// how many 15m candles to pull per symbol for the conviction pass —
+// matches the "3D" preset in the MA visualizer's capture panel
+const CONVICTION_CAPTURE_CANDLES = 288
+const CONVICTION_DELAY_MS = 400
+
+type ConvictionCell = 'pending' | 'loading' | 'error' | { long: ConvictionLevel; short: ConvictionLevel }
+
+const convictionAnalyzing = ref(false)
+const convictionProgress = ref({ done: 0, total: 0 })
+const convictionResults = ref<Record<string, ConvictionCell>>({})
+
+function convictionFor(symbol: string): ConvictionCell {
+  return convictionResults.value[symbol] ?? 'pending'
+}
+
+function convictionClass(level: ConvictionLevel): string {
+  return level === 'High' ? 'bullish' : level === 'Moderate' ? 'neutral' : 'bearish'
+}
+
+// sequential, one symbol at a time — only over symbols that actually crossed,
+// so it never touches the full watchlist
+async function runConvictionAnalysis() {
+  const uniqueSymbols = Array.from(new Set([
+    ...dailyCrossResults.value.map(r => r.symbol),
+    ...intradayCrossResults.value.map(r => r.symbol),
+  ]))
+  if (!uniqueSymbols.length) return
+
+  convictionAnalyzing.value = true
+  convictionProgress.value = { done: 0, total: uniqueSymbols.length }
+  uniqueSymbols.forEach(s => { convictionResults.value[s] = 'pending' })
+
+  for (const symbol of uniqueSymbols) {
+    convictionResults.value[symbol] = 'loading'
+    try {
+      const payload = await buildMaCapturePayload(symbol, CONVICTION_CAPTURE_CANDLES)
+      const analysis = analyzeMaStructure(payload)
+      const result = { long: analysis.conviction.long, short: analysis.conviction.short }
+      convictionResults.value[symbol] = result
+
+      if (result.long === 'High') speakHighConviction(symbol, 'long')
+      if (result.short === 'High') speakHighConviction(symbol, 'short')
+    } catch (err) {
+      console.error(`Conviction analysis failed for ${symbol}:`, err)
+      convictionResults.value[symbol] = 'error'
+    } finally {
+      convictionProgress.value.done++
+    }
+    await sleep(CONVICTION_DELAY_MS)
+  }
+
+  convictionAnalyzing.value = false
+}
+
+// ── Open positions (fetched once per scan, so "(open)" stays fresh) ────────
+const positionsLoading = ref(false)
+const openPositionSymbols = ref<Set<string>>(new Set())
+
+function isOpenPosition(symbol: string): boolean {
+  return openPositionSymbols.value.has(symbol)
+}
+
+async function loadOpenPositions() {
+  positionsLoading.value = true
+  try {
+    const positions: Position[] = await OrderMakerUtility.getPositions()
+    openPositionSymbols.value = new Set(positions.map(p => p.symbol))
+  } catch (err) {
+    console.error('Failed to fetch open positions:', err)
+    // leave whatever set we already had rather than wiping the "(open)" tags on a transient failure
+  } finally {
+    positionsLoading.value = false
+  }
+}
 
 const props = withDefaults(
   defineProps<{
@@ -241,7 +371,7 @@ const showAllSymbols = ref(false)
 const allScanned = ref<ScannedSymbolDebug[]>([])
 
 // scheduled auto-run
-const scheduleMinutes = ref(15)
+const scheduleMinutes = ref(5)
 const isScheduleActive = ref(false)
 const nextRunAt = ref<number | null>(null)
 const nextRunLabel = ref('—')
@@ -354,7 +484,7 @@ async function startScan() {
   reviewedSymbols.value = new Set()
   scanProgress.value = { done: 0, total: symbolList.length }
 
-  const REQUEST_DELAY_MS = 400
+  const REQUEST_DELAY_MS = 200
 
   for (const symbol of symbolList) {
     try {
@@ -371,10 +501,24 @@ async function startScan() {
 
   scanning.value = false
 
+  // Refresh open positions right after every scan so "(open)" next to a
+  // symbol always reflects the latest state, not whatever was fetched
+  // hours ago.
+  await loadOpenPositions()
+
   const totalCrosses = dailyCrossResults.value.length + intradayCrossResults.value.length
   if (totalCrosses > 0) {
     speakAlert(totalCrosses)
+    await runConvictionAnalysis()
   }
+}
+
+function speakHighConviction(symbol: string, direction: 'long' | 'short') {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
+  const utterance = new SpeechSynthesisUtterance(`High ${direction} conviction on ${symbol}`)
+  utterance.rate = 1
+  utterance.volume = 1
+  window.speechSynthesis.speak(utterance)
 }
 
 // speaks "{count} crosses found" twice using the browser's built-in text-to-speech
@@ -382,13 +526,13 @@ function speakAlert(count: number) {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
 
   const message = `${count} ${count === 1 ? 'cross' : 'crosses'} found`
-  window.speechSynthesis.cancel() // clear any queued/stuck utterances before speaking
+  //window.speechSynthesis.cancel() // clear any queued/stuck utterances before speaking
 
   for (let i = 0; i < 2; i++) {
     const utterance = new SpeechSynthesisUtterance(message)
     utterance.rate = 1
     utterance.volume = 1
-    window.speechSynthesis.speak(utterance)
+    //window.speechSynthesis.speak(utterance)
   }
 }
 
@@ -681,6 +825,15 @@ function openMaVisualizer(symbol: string) {
   font-weight: 600;
 }
 
+/* Shown next to a symbol's name when OrderMakerUtility.getPositions() reports
+   a currently open position for it, e.g. "BTCUSDT (open)" */
+.open-position-tag {
+  margin-left: 4px;
+  font-weight: 700;
+  font-size: 11px;
+  color: #4ade80;
+}
+
 .direction-tag {
   padding: 2px 8px;
   border-radius: 999px;
@@ -724,4 +877,18 @@ function openMaVisualizer(symbol: string) {
 .see-ma-btn:hover {
   background: rgba(100, 181, 246, 0.22);
 }
+
+.conviction-tag {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.conviction-tag.bullish { background: rgba(80, 200, 120, 0.18); color: #4ade80; }
+.conviction-tag.bearish { background: rgba(239, 83, 80, 0.18); color: #ef5350; }
+.conviction-tag.neutral { background: rgba(255, 183, 77, 0.18); color: #ffb74d; }
+
+.conviction-cell.pending { opacity: 0.35; }
+.conviction-cell.loading { opacity: 0.6; }
+.conviction-cell.error { color: #f87171; font-size: 11px; }
 </style>
