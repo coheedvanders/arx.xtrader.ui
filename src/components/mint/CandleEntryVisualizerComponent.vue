@@ -17,9 +17,95 @@
         <span>Show volume</span>
       </label>
 
+      <label class="checkbox-label">
+        <input
+          v-model="showEma"
+          type="checkbox"
+        />
+        <span>Show EMA</span>
+      </label>
+
+      <label class="checkbox-label">
+        <input
+          v-model="showMa"
+          type="checkbox"
+        />
+        <span>Show MA</span>
+      </label>
+
       <button @click="showKeyLevels = true">show key levels</button>
 
       <button @click="showMaCrossing = true">See MA</button>
+
+      <!-- ── Volume Profile Fixed Range tool ─────────────────────────── -->
+      <button
+        class="tool-btn"
+        :class="{ 'tool-btn-active': vpModeActive }"
+        @click="toggleVpMode"
+        title="Click to enable, then click-drag from one candle to another on the chart"
+      >
+        {{ vpModeActive ? 'Volume Profile: ON' : 'Volume Profile' }}
+      </button>
+
+      <button
+        v-if="volumeProfiles.length > 0"
+        class="tool-btn"
+        @click="volumeProfiles = []"
+      >
+        Clear VP ({{ volumeProfiles.length }})
+      </button>
+
+      <!-- ── Freeform rectangle draw tool ──────────────────────────────── -->
+      <button
+        class="tool-btn"
+        :class="{ 'tool-btn-active': rectModeActive }"
+        @click="toggleRectMode"
+        title="Click to enable, then click-drag anywhere on the chart to draw a rectangle"
+      >
+        {{ rectModeActive ? 'Rectangle: ON' : 'Rectangle' }}
+      </button>
+
+      <button
+        v-if="drawnRectangles.length > 0"
+        class="tool-btn"
+        @click="drawnRectangles = []"
+      >
+        Clear Rectangles ({{ drawnRectangles.length }})
+      </button>
+
+      <!-- ── Backtest playback controls ────────────────────────────────── -->
+      <div class="backtest-controls">
+        <button
+          v-if="!backtestActive"
+          class="tool-btn"
+          @click="startBacktest"
+        >
+          ▶ Start Backtest
+        </button>
+
+        <template v-else>
+          <button
+            class="backtest-nav-btn"
+            :disabled="backtestIndex === 0"
+            @click="backtestPrev"
+          >
+            &lt; Prev
+          </button>
+          <span class="backtest-index-label">
+            Candle {{ backtestIndex + 1 }} / {{ props.candles.length }}
+          </span>
+          <button
+            class="backtest-nav-btn"
+            :disabled="backtestIndex >= props.candles.length - 1"
+            @click="backtestNext"
+          >
+            Next &gt;
+          </button>
+          <button class="backtest-stop-btn" @click="stopBacktest">
+            Stop Backtest
+          </button>
+        </template>
+      </div>
 
       <!-- ── Preview controls ─────────────────────────────────────────── -->
       <div class="preview-controls">
@@ -70,7 +156,7 @@
 
         <button
           class="preview-btn buy"
-          :disabled="previewLoading"
+          :disabled="previewLoading || backtestActive"
           @click="previewBuy"
         >
           {{ previewLoading && pendingSide === 'LONG' ? 'Loading…' : 'Preview Buy' }}
@@ -78,7 +164,7 @@
 
         <button
           class="preview-btn sell"
-          :disabled="previewLoading"
+          :disabled="previewLoading || backtestActive"
           @click="previewSell"
         >
           {{ previewLoading && pendingSide === 'SHORT' ? 'Loading…' : 'Preview Sell' }}
@@ -148,7 +234,7 @@
     </div>
     <div v-if="previewError" class="preview-error">{{ previewError }}</div>
 
-    <div class="chart-container" ref="chartContainer" @wheel="handleZoom" @mousemove="handleMouseMove" @mouseleave="handleMouseLeave" @mousedown="startChartDrag">
+    <div class="chart-container" ref="chartContainer" @wheel="handleZoom" @mousemove="handleMouseMove" @mouseleave="handleMouseLeave" @mousedown="handleChartMouseDown">
       <svg :width="svgWidth" :height="svgHeight" class="candles-svg">
         <!-- Crosshair Lines -->
         <g v-show="true" ref="crosshairGroup" class="crosshair">
@@ -339,9 +425,31 @@
 
         <!-- EMA9 Line -->
         <polyline
-          v-if="emaPoints.length > 0"
+          v-if="showEma && emaPoints.length > 0"
           :points="emaPoints"
           class="ema-line"
+          fill="none"
+          stroke-width="2"
+          stroke-linejoin="round"
+          stroke-linecap="round"
+        />
+
+        <!-- MA200 Line -->
+        <polyline
+          v-if="showMa && ma200Points.length > 0"
+          :points="ma200Points"
+          class="ma200-line"
+          fill="none"
+          stroke-width="2"
+          stroke-linejoin="round"
+          stroke-linecap="round"
+        />
+
+        <!-- MA100 Line -->
+        <polyline
+          v-if="showMa && ma100Points.length > 0"
+          :points="ma100Points"
+          class="ma100-line"
           fill="none"
           stroke-width="2"
           stroke-linejoin="round"
@@ -459,9 +567,11 @@
               bear: candle.close! < candle.open!,
               indecisive: candle.candleData?.isIndecisive,
               live: i === displayCandles.length - 1 && liveCandle !== null,
-              muted: isCandleMuted(i)
+              muted: isCandleMuted(i),
+              'vp-target': vpModeActive
             }"
-            @click="openCandleModal(i)"
+            @click="handleCandleClick(i)"
+            @mousedown="handleCandleMouseDownForVp(i, $event)"
             @mouseenter="hoveredCandleIndex = i"
             @mouseleave="hoveredCandleIndex = null"
           >
@@ -572,11 +682,139 @@
           </g>
         </g>
 
+        <!-- Volume Profile Fixed Range overlays -->
+        <g class="volume-profiles">
+          <g
+            v-for="(profile, pIdx) in renderedVolumeProfiles"
+            :key="`vp-${pIdx}`"
+            class="volume-profile"
+          >
+            <!-- range selection box -->
+            <rect
+              :x="profile.leftX"
+              :y="profile.rangeTop"
+              :width="(candleX(profile.endIndex) + candleWidth / 2) - profile.leftX"
+              :height="profile.rangeBottom - profile.rangeTop"
+              class="vp-range-rect"
+            />
+
+            <!-- histogram rows: buy (left segment) + sell (right segment), stacked per row -->
+            <g v-for="(row, rIdx) in profile.rows" :key="`vp-${pIdx}-row-${rIdx}`">
+              <rect
+                :x="row.x"
+                :y="row.y"
+                :width="row.buyWidth"
+                :height="row.height"
+                class="vp-row vp-buy"
+              />
+              <rect
+                :x="row.x + row.buyWidth"
+                :y="row.y"
+                :width="row.sellWidth"
+                :height="row.height"
+                class="vp-row vp-sell"
+              />
+            </g>
+
+            <!-- POC / mid line -->
+            <line
+              :x1="profile.leftX"
+              :x2="profile.rightX"
+              :y1="profile.pocY"
+              :y2="profile.pocY"
+              class="vp-poc-line"
+            />
+            <text
+              :x="profile.rightX + 4"
+              :y="profile.pocY + 3"
+              class="vp-poc-label"
+            >
+              POC {{ profile.pocPrice.toFixed(4) }}
+            </text>
+
+            <!-- summary + remove control -->
+            <text
+              :x="profile.leftX + 4"
+              :y="profile.rangeTop - 6"
+              class="vp-summary-label"
+            >
+              Vol {{ formatNotional(profile.totalVolume) }}
+            </text>
+            <text
+              :x="(candleX(profile.endIndex) + candleWidth / 2) - 4"
+              :y="profile.rangeTop - 6"
+              class="vp-close-btn"
+              text-anchor="end"
+              @click="removeVolumeProfile(pIdx)"
+            >
+              ✕ remove
+            </text>
+          </g>
+
+          <!-- live drag preview -->
+          <g v-if="draggingVolumeProfilePreview" class="volume-profile vp-preview">
+            <rect
+              :x="draggingVolumeProfilePreview.leftX"
+              :y="draggingVolumeProfilePreview.rangeTop"
+              :width="(candleX(draggingVolumeProfilePreview.endIndex) + candleWidth / 2) - draggingVolumeProfilePreview.leftX"
+              :height="draggingVolumeProfilePreview.rangeBottom - draggingVolumeProfilePreview.rangeTop"
+              class="vp-range-rect vp-range-rect-preview"
+            />
+            <g v-for="(row, rIdx) in draggingVolumeProfilePreview.rows" :key="`vp-preview-row-${rIdx}`">
+              <rect :x="row.x" :y="row.y" :width="row.buyWidth" :height="row.height" class="vp-row vp-buy vp-preview-row" />
+              <rect :x="row.x + row.buyWidth" :y="row.y" :width="row.sellWidth" :height="row.height" class="vp-row vp-sell vp-preview-row" />
+            </g>
+            <line
+              :x1="draggingVolumeProfilePreview.leftX"
+              :x2="draggingVolumeProfilePreview.rightX"
+              :y1="draggingVolumeProfilePreview.pocY"
+              :y2="draggingVolumeProfilePreview.pocY"
+              class="vp-poc-line vp-preview-row"
+            />
+          </g>
+        </g>
+
+        <!-- Freeform rectangle draw tool overlay -->
+        <g class="draw-rectangles">
+          <g
+            v-for="rect in drawnRectangles"
+            :key="`rect-${rect.id}`"
+            class="draw-rect-group"
+          >
+            <rect
+              :x="rect.x"
+              :y="rect.y"
+              :width="rect.width"
+              :height="rect.height"
+              class="draw-rect"
+            />
+            <text
+              :x="rect.x + rect.width - 4"
+              :y="rect.y - 6"
+              class="draw-rect-close"
+              text-anchor="end"
+              @click="removeRectangle(rect.id)"
+            >
+              ✕ remove
+            </text>
+          </g>
+
+          <!-- live drag preview -->
+          <rect
+            v-if="rectPreview"
+            :x="rectPreview.x"
+            :y="rectPreview.y"
+            :width="rectPreview.width"
+            :height="rectPreview.height"
+            class="draw-rect draw-rect-preview"
+          />
+        </g>
+
         <!-- Price Axis Labels (Interactive) -->
         <text
           v-for="(price, i) in gridPrices"
           :key="`price-${i}`"
-          :x="svgWidth - 5"
+          :x="svgWidth"
           :y="priceToY(price) + 4"
           class="price-label"
           @mousedown="startPriceAdjust(price, i, $event)"
@@ -879,6 +1117,8 @@ const hoveredCandleIndex = ref<number | null>(null)
 const candleWidth = ref(8)
 const connectVolumeSpikesvSpikes = ref(false)
 const showVolume = ref(true)
+const showEma = ref(false)
+const showMa = ref(true)
 const candleGap = 5
 const svgHeight = 600
 const CANDLES_PER_ZONE = 24
@@ -896,6 +1136,309 @@ let isDraggingChart = false
 
 const showKeyLevels = ref(false);
 const showMaCrossing = ref(false);
+
+// ─── Freeform rectangle draw tool ──────────────────────────────────────────
+//
+// Click "Rectangle" to arm the tool, then click-drag anywhere on the chart
+// to draw a highlight box. Unlike the Volume Profile tool, this is NOT
+// snapped to candle index/price — it's stored in raw SVG pixel coordinates,
+// so it behaves as a free annotation layer over the chart.
+interface DrawnRectangle {
+  id: number
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+let rectIdCounter = 0
+const rectModeActive = ref(false)
+const rectDrawing = ref(false)
+const rectPreview = ref<DrawnRectangle | null>(null)
+const drawnRectangles = ref<DrawnRectangle[]>([])
+
+function toggleRectMode() {
+  rectModeActive.value = !rectModeActive.value
+}
+
+function removeRectangle(id: number) {
+  drawnRectangles.value = drawnRectangles.value.filter(r => r.id !== id)
+}
+
+/** Converts a mouse event's client coordinates into position relative to the chart's <svg>. */
+function getSvgPoint(event: MouseEvent): { x: number; y: number } | null {
+  if (!chartContainer.value) return null
+  const rect = chartContainer.value.querySelector('svg')?.getBoundingClientRect()
+  if (!rect) return null
+  return { x: event.clientX - rect.left, y: event.clientY - rect.top }
+}
+
+function startRectDraw(event: MouseEvent) {
+  if (!rectModeActive.value) return
+  event.preventDefault()
+  event.stopPropagation()
+  const start = getSvgPoint(event)
+  if (!start) return
+
+  rectDrawing.value = true
+  rectPreview.value = { id: -1, x: start.x, y: start.y, width: 0, height: 0 }
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    if (!rectDrawing.value) return
+    const current = getSvgPoint(moveEvent)
+    if (!current) return
+    rectPreview.value = {
+      id: -1,
+      x: Math.min(start.x, current.x),
+      y: Math.min(start.y, current.y),
+      width: Math.abs(current.x - start.x),
+      height: Math.abs(current.y - start.y),
+    }
+  }
+
+  const handleUp = () => {
+    if (rectPreview.value && rectPreview.value.width > 2 && rectPreview.value.height > 2) {
+      drawnRectangles.value.push({ ...rectPreview.value, id: ++rectIdCounter })
+    }
+    rectDrawing.value = false
+    rectPreview.value = null
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/**
+ * Chart container's single mousedown entry point. Routes to the rectangle
+ * tool when it's armed, otherwise falls through to the existing chart-pan
+ * behavior (which itself already yields to the Volume Profile tool).
+ */
+function handleChartMouseDown(event: MouseEvent) {
+  if (rectModeActive.value) {
+    startRectDraw(event)
+    return
+  }
+  startChartDrag(event)
+}
+
+// ─── Backtest / playback controls ──────────────────────────────────────────
+//
+// "Start Backtest" freezes the chart at candle index 0 and disconnects all
+// live streams (kline/depth/trade) so nothing updates behind the scenes.
+// Prev/Next step through props.candles one at a time; displayCandles below
+// is sliced down to [0, backtestIndex] while backtestActive is true, so
+// future candles are fully hidden rather than just dimmed.
+const backtestActive = ref(false)
+const backtestIndex = ref(0)
+
+function startBacktest() {
+  backtestActive.value = true
+  backtestIndex.value = 0
+  clearPreview()
+  disconnectWebSocket()
+  disconnectDepthWebSocket()
+  disconnectTradeWebSocket()
+}
+
+function stopBacktest() {
+  backtestActive.value = false
+  connectWebSocket()
+  connectDepthWebSocket()
+  connectTradeWebSocket()
+}
+
+function backtestPrev() {
+  if (backtestIndex.value > 0) backtestIndex.value -= 1
+}
+
+function backtestNext() {
+  if (backtestIndex.value < props.candles.length - 1) backtestIndex.value += 1
+}
+
+// ─── Volume Profile Fixed Range tool ───────────────────────────────────────
+//
+// Click "Volume Profile" to arm the tool, then mousedown on a candle and
+// drag to another candle to draw a fixed-range volume profile over that
+// span. The profile buckets price into rows and, for every candle in the
+// range, spreads that candle's volume across the rows its high↔low wick
+// touches (proportional to overlap). Volume from bullish candles is tagged
+// "buy", from bearish candles "sell" — an approximation since OHLCV alone
+// has no real buy/sell tape, but it's the same method most charting
+// platforms use for this kind of profile. The row with the largest total
+// volume is the POC (point of control), drawn as the profile's mid line.
+interface VolumeProfileRange {
+  startIndex: number
+  endIndex: number
+}
+
+const VP_NUM_BUCKETS = 24
+const VP_MAX_BAR_WIDTH = 140
+
+const vpModeActive = ref(false)
+const vpDragging = ref(false)
+const vpStartIndex = ref<number | null>(null)
+const vpEndIndex = ref<number | null>(null)
+const volumeProfiles = ref<VolumeProfileRange[]>([])
+
+function toggleVpMode() {
+  vpModeActive.value = !vpModeActive.value
+}
+
+/** Wraps openCandleModal so the modal doesn't pop open mid-drag while the VP tool is armed. */
+function handleCandleClick(index: number) {
+  if (vpModeActive.value) return
+  openCandleModal(index)
+}
+
+function removeVolumeProfile(index: number) {
+  volumeProfiles.value.splice(index, 1)
+}
+
+function handleCandleMouseDownForVp(index: number, event: MouseEvent) {
+  if (!vpModeActive.value) return
+  // Stop this from bubbling into startChartDrag (panning) on the container.
+  event.preventDefault()
+  event.stopPropagation()
+
+  vpDragging.value = true
+  vpStartIndex.value = index
+  vpEndIndex.value = index
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    if (!vpDragging.value || !chartContainer.value) return
+    const rect = chartContainer.value.querySelector('svg')?.getBoundingClientRect()
+    if (!rect) return
+    const x = moveEvent.clientX - rect.left
+    const rawIndex = Math.round((x - 10 - candleWidth.value / 2) / (candleWidth.value + candleGap))
+    vpEndIndex.value = Math.max(0, Math.min(displayCandles.value.length - 1, rawIndex))
+  }
+
+  const handleUp = () => {
+    if (vpStartIndex.value !== null && vpEndIndex.value !== null) {
+      const s = Math.min(vpStartIndex.value, vpEndIndex.value)
+      const e = Math.max(vpStartIndex.value, vpEndIndex.value)
+      if (e > s) {
+        volumeProfiles.value.push({ startIndex: s, endIndex: e })
+      }
+    }
+    vpDragging.value = false
+    vpStartIndex.value = null
+    vpEndIndex.value = null
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/**
+ * Builds a Fixed-Range Volume Profile for candles [startIndex, endIndex].
+ * Returns null if the range is empty or degenerate.
+ */
+function computeVolumeProfile(startIndex: number, endIndex: number) {
+  const candles = displayCandles.value.slice(startIndex, endIndex + 1)
+  if (candles.length === 0) return null
+
+  let rangeLow = Infinity
+  let rangeHigh = -Infinity
+  for (const c of candles) {
+    if (c.low == null || c.high == null) continue
+    if (c.low < rangeLow) rangeLow = c.low
+    if (c.high > rangeHigh) rangeHigh = c.high
+  }
+  if (!isFinite(rangeLow) || !isFinite(rangeHigh) || rangeHigh <= rangeLow) return null
+
+  const bucketHeight = (rangeHigh - rangeLow) / VP_NUM_BUCKETS
+  const buckets = Array.from({ length: VP_NUM_BUCKETS }, (_, i) => ({
+    priceLow: rangeLow + i * bucketHeight,
+    priceHigh: rangeLow + (i + 1) * bucketHeight,
+    buyVolume: 0,
+    sellVolume: 0,
+  }))
+
+  for (const c of candles) {
+    const low = c.low
+    const high = c.high
+    const vol = c.volume ?? 0
+    if (low == null || high == null || vol <= 0 || high <= low) continue
+    const isBull = (c.close ?? 0) >= (c.open ?? 0)
+    for (const b of buckets) {
+      const overlapLow = Math.max(low, b.priceLow)
+      const overlapHigh = Math.min(high, b.priceHigh)
+      if (overlapHigh > overlapLow) {
+        const frac = (overlapHigh - overlapLow) / (high - low)
+        const v = vol * frac
+        if (isBull) b.buyVolume += v
+        else b.sellVolume += v
+      }
+    }
+  }
+
+  let maxRowTotal = 0
+  let pocIndex = 0
+  buckets.forEach((b, i) => {
+    const total = b.buyVolume + b.sellVolume
+    if (total > maxRowTotal) {
+      maxRowTotal = total
+      pocIndex = i
+    }
+  })
+
+  // Profile is anchored just to the right of the selected range's last candle.
+  const rightEdgeX = candleX(endIndex) + candleWidth.value / 2 + 4
+
+  const rows = buckets.map(b => {
+    const total = b.buyVolume + b.sellVolume
+    const totalWidth = maxRowTotal > 0 ? (total / maxRowTotal) * VP_MAX_BAR_WIDTH : 0
+    const buyWidth = total > 0 ? totalWidth * (b.buyVolume / total) : 0
+    const sellWidth = totalWidth - buyWidth
+    return {
+      x: rightEdgeX,
+      y: priceToY(b.priceHigh),
+      height: Math.max(priceToY(b.priceLow) - priceToY(b.priceHigh), 0.5),
+      buyWidth,
+      sellWidth,
+      buyVolume: b.buyVolume,
+      sellVolume: b.sellVolume,
+    }
+  })
+
+  const pocBucket = buckets[pocIndex]
+  const pocPrice = (pocBucket.priceLow + pocBucket.priceHigh) / 2
+  const totalVolume = buckets.reduce((s, b) => s + b.buyVolume + b.sellVolume, 0)
+
+  return {
+    startIndex,
+    endIndex,
+    leftX: candleX(startIndex) - candleWidth.value / 2,
+    rightX: rightEdgeX + VP_MAX_BAR_WIDTH,
+    rangeTop: priceToY(rangeHigh),
+    rangeBottom: priceToY(rangeLow),
+    rows,
+    pocY: priceToY(pocPrice),
+    pocPrice,
+    totalVolume,
+  }
+}
+
+/** All finalized (click-drag-completed) volume profiles, recomputed reactively as price scale/zoom changes. */
+const renderedVolumeProfiles = computed(() => {
+  return volumeProfiles.value
+    .map(p => computeVolumeProfile(p.startIndex, p.endIndex))
+    .filter((p): p is NonNullable<typeof p> => p !== null)
+})
+
+/** Live preview of the profile while the user is still dragging. */
+const draggingVolumeProfilePreview = computed(() => {
+  if (!vpDragging.value || vpStartIndex.value === null || vpEndIndex.value === null) return null
+  const s = Math.min(vpStartIndex.value, vpEndIndex.value)
+  const e = Math.max(vpStartIndex.value, vpEndIndex.value)
+  if (e <= s) return null
+  return computeVolumeProfile(s, e)
+})
 
 const MAX_RECONNECT_DELAY_MS = 30_000
 
@@ -1385,11 +1928,14 @@ function formatNotional(n: number): string {
  * All indices stay the same — only the last candle's OHLC values change.
  */
 const displayCandles = computed<CandleEntry[]>(() => {
-  if (!liveCandle.value || props.candles.length === 0) return props.candles
-  return [
-    ...props.candles.slice(0, props.candles.length),
-    liveCandle.value,
-  ]
+  const base = (!liveCandle.value || props.candles.length === 0)
+    ? props.candles
+    : [...props.candles.slice(0, props.candles.length), liveCandle.value]
+
+  if (backtestActive.value) {
+    return base.slice(0, Math.min(backtestIndex.value + 1, base.length))
+  }
+  return base
 })
 
 // ─── Preview Buy / Sell / Clear ────────────────────────────────────────────────
@@ -1620,7 +2166,7 @@ const maxPrice = computed(() => {
 const priceDelta = computed(() => maxPrice.value - minPrice.value)
 
 const svgWidth = computed(() => {
-  return displayCandles.value.length * (candleWidth.value + candleGap) + 60
+  return displayCandles.value.length * (candleWidth.value + candleGap) + 200
 })
 
 const gridPrices = computed(() => {
@@ -1782,6 +2328,30 @@ const emaPoints = computed(() => {
   return points.join(' ')
 })
 
+/** MA200 line points — plotted orange when "Show MA" is enabled. */
+const ma200Points = computed(() => {
+  const points: string[] = []
+  for (let i = 0; i < displayCandles.value.length; i++) {
+    const ma200 = displayCandles.value[i].candleData?.ma200
+    if (ma200 !== undefined && ma200 !== null) {
+      points.push(`${candleX(i)},${priceToY(ma200)}`)
+    }
+  }
+  return points.join(' ')
+})
+
+/** MA100 line points — plotted blue when "Show MA" is enabled. */
+const ma100Points = computed(() => {
+  const points: string[] = []
+  for (let i = 0; i < displayCandles.value.length; i++) {
+    const ma100 = displayCandles.value[i].candleData?.ma100
+    if (ma100 !== undefined && ma100 !== null) {
+      points.push(`${candleX(i)},${priceToY(ma100)}`)
+    }
+  }
+  return points.join(' ')
+})
+
 const volumeSpikePoints = computed(() => {
   const points: string[] = []
   for (let i = 0; i < displayCandles.value.length; i++) {
@@ -1937,6 +2507,7 @@ const handleMouseLeave = () => {
 
 const startChartDrag = (event: MouseEvent) => {
   if ((event.target as SVGElement).classList?.contains('price-label')) return
+  if (vpModeActive.value) return // let handleCandleMouseDownForVp own dragging while the VP tool is armed
   isDraggingChart = true
   const startX = event.clientX
   const startY = event.clientY
@@ -2039,6 +2610,29 @@ const formatValue = (value: any): string => {
   cursor: pointer;
   width: 16px;
   height: 16px;
+}
+
+/* ── Generic tool button (Volume Profile, etc.) ───────────────────────── */
+.tool-btn {
+  padding: 6px 14px;
+  border-radius: 4px;
+  border: 1px solid #444;
+  background: rgba(255,255,255,0.06);
+  color: #ccc;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  white-space: nowrap;
+}
+
+.tool-btn:hover {
+  background: rgba(255,255,255,0.12);
+}
+
+.tool-btn-active {
+  background: rgba(100,149,237,0.25);
+  border-color: #6495ed;
+  color: #a9c2f7;
 }
 
 /* ── Preview controls ──────────────────────────────────────────────────── */
@@ -2240,6 +2834,124 @@ const formatValue = (value: any): string => {
 .large-trade-label.buy  { fill: #26a69a; }
 .large-trade-label.sell { fill: #ef5350; }
 
+/* ── Volume Profile Fixed Range tool ──────────────────────────────────── */
+.candle.vp-target {
+  cursor: crosshair;
+}
+
+.volume-profiles { pointer-events: none; }
+
+.vp-range-rect {
+  fill: rgba(100,149,237,0.06);
+  stroke: rgba(100,149,237,0.4);
+  stroke-width: 1;
+  stroke-dasharray: 4,3;
+}
+
+.vp-range-rect-preview {
+  fill: rgba(100,149,237,0.1);
+  stroke: rgba(100,149,237,0.6);
+}
+
+.vp-row {
+  opacity: 0.55;
+}
+
+.vp-row.vp-buy { fill: #26a69a; }
+.vp-row.vp-sell { fill: #ef5350; }
+.vp-preview-row { opacity: 0.35; }
+
+.vp-poc-line {
+  stroke: #fbbf24;
+  stroke-width: 1.5;
+  stroke-dasharray: 6,3;
+  opacity: 0.9;
+}
+
+.vp-poc-label {
+  fill: #fbbf24;
+  font-size: 10px;
+  font-weight: bold;
+  font-family: monospace;
+}
+
+.vp-summary-label {
+  fill: rgba(255,255,255,0.6);
+  font-size: 10px;
+  font-family: monospace;
+}
+
+.vp-close-btn {
+  fill: #ef5350;
+  font-size: 10px;
+  font-weight: bold;
+  cursor: pointer;
+  pointer-events: all;
+}
+
+.vp-close-btn:hover {
+  fill: #ff8a80;
+}
+
+/* ── Freeform rectangle draw tool ─────────────────────────────────────── */
+.draw-rect {
+  fill: rgba(255, 213, 79, 0.12);
+  stroke: #ffd54f;
+  stroke-width: 1.5;
+  pointer-events: all;
+}
+.draw-rect-preview {
+  stroke-dasharray: 4, 3;
+  pointer-events: none;
+}
+.draw-rect-close {
+  fill: rgba(255, 255, 255, 0.5);
+  font-size: 10px;
+  cursor: pointer;
+  pointer-events: all;
+}
+.draw-rect-close:hover {
+  fill: #ff8a80;
+}
+
+/* ── Backtest playback controls ───────────────────────────────────────── */
+.backtest-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.backtest-nav-btn,
+.backtest-stop-btn {
+  background: #1a1a1a;
+  border: 1px solid #444;
+  color: #ddd;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.backtest-nav-btn:hover:not(:disabled),
+.backtest-stop-btn:hover {
+  border-color: #26a69a;
+  color: #26a69a;
+}
+.backtest-nav-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.backtest-stop-btn {
+  border-color: #ef5350;
+  color: #ef5350;
+}
+.backtest-stop-btn:hover {
+  background: rgba(239, 83, 80, 0.15);
+}
+.backtest-index-label {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+  font-family: monospace;
+}
+
 /* ── Volume bars (bottom-of-chart overlay) ────────────────────────────── */
 .volume-bars { pointer-events: none; }
 .volume-bar { opacity: 0.35; }
@@ -2355,6 +3067,8 @@ const formatValue = (value: any): string => {
 .long-potential  { stroke: #42f12b; fill: #42f12b; opacity: 0.8; pointer-events: none; }
 .short-potential { stroke: #ff2323; fill: #ff2323; opacity: 0.8; pointer-events: none; }
 .ema-line { stroke: #ffffff; opacity: 0.7; pointer-events: none; }
+.ma200-line { stroke: orange; opacity: 0.85; pointer-events: none; }
+.ma100-line { stroke: dodgerblue; opacity: 0.85; pointer-events: none; }
 
 .grid-line { stroke: rgba(255,255,255,0.05); stroke-width: 1; }
 

@@ -110,7 +110,8 @@ export interface FuturesSymbol{
   changeZScore: number,
   bidWall: number,
   askWall: number,
-  g1CandleCount: number
+  g1CandleCount: number,
+  zoneSize: number
 }
 
 export interface PastVolumeAnalysis{
@@ -290,6 +291,8 @@ export interface CandleData {
   side: "bull" | "bear";
   previousCandleData: CandleData[] | null;
   ema200: number;
+  ma200: number;
+  ma100: number;
   pastBelowEma:number
   pastAboveEma:number
   emaLevel: "above" | "below",

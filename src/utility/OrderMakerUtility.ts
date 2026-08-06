@@ -104,7 +104,7 @@ export class OrderMakerUtility {
                 symbol: symbol,
                 side: side,
                 cost: margin.toString(),
-                tp_roi: "0.4",
+                tp_roi: "2",
                 sl_roi: "2",
                 tp: "0",
                 sl: "0"

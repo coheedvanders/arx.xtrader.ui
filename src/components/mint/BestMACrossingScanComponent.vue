@@ -6,6 +6,18 @@
         {{ scanning ? `Scanning ${scanProgress.done}/${scanProgress.total}...` : 'Start' }}
       </button>
 
+      <label class="interval-select-label">
+        Interval
+        <select
+          class="interval-select"
+          v-model="selectedInterval"
+          :disabled="scanning || isScheduleActive"
+          @change="onIntervalChange"
+        >
+          <option v-for="opt in intervalOptions" :key="opt" :value="opt">{{ opt }}</option>
+        </select>
+      </label>
+
       <div v-if="convictionAnalyzing" class="schedule-status">
         Analyzing conviction {{ convictionProgress.done }}/{{ convictionProgress.total }}…
       </div>
@@ -33,7 +45,7 @@
       <button class="test-alert-btn" @click="testAlert">Test Alert</button>
 
       <span class="result-count">
-        {{ dailyCrossResults.length }} 1D cross(es) / {{ intradayCrossResults.length }} 15M cross(es) / {{ ma100CrossResults.length }} 15M 100MA cross(es)
+        {{ dailyCrossResults.length }} 1D cross(es) / {{ intradayCrossResults.length }} {{ selectedInterval }} cross(es)
       </span>
       <span v-if="errorSymbols.length" class="error-count">{{ errorSymbols.length }} failed</span>
 
@@ -62,10 +74,10 @@
           <tr>
             <th>Symbol</th>
             <th>1D 200 MA</th>
-            <th>15M 200 MA</th>
+            <th>{{ selectedInterval }} 200 MA</th>
             <th>15M 100 MA</th>
             <th>Last Daily Close</th>
-            <th>Last 15M Close</th>
+            <th>Last {{ selectedInterval }} Close</th>
           </tr>
         </thead>
         <tbody>
@@ -84,19 +96,20 @@
 
     <template v-if="!showAllSymbols">
       <div class="results-section">
-        <div class="results-section-header">1D 200 MA crossing from {{ props.interval }}</div>
+        <div class="results-section-header">1D 200 MA crossing from {{ selectedInterval }}</div>
         <div v-if="!scanning && !dailyCrossResults.length" class="scanner-empty">
-          No {{ props.interval }} candle has crossed the 1D 200 MA yet.
+          No {{ selectedInterval }} candle has crossed the 1D 200 MA yet.
         </div>
         <table v-else-if="dailyCrossResults.length" class="results-table">
           <thead>
             <tr>
               <th>Symbol</th>
               <th>Direction</th>
-              <th>200 MA (1D)</th>
-              <th>Open</th>
-              <th>Close</th>
-              <th>Candle Time</th>
+              <th>% Gap</th>
+              <th>MA Stack</th>
+              <th>Above MA100</th>
+              <th>Below MA100</th>
+              <th>MA200 &Delta;%</th>
               <th>Long</th>
               <th>Short</th>
               <th class="actions-col"></th>
@@ -119,10 +132,22 @@
                   {{ r.direction === 'crossed-up' ? 'Crossed Up' : 'Crossed Down' }}
                 </span>
               </td>
-              <td>{{ r.ma200.toFixed(4) }}</td>
-              <td>{{ r.latestCandle.open }}</td>
-              <td>{{ r.latestCandle.close }}</td>
-              <td>{{ new Date(r.latestCandle.openTime).toLocaleString() }}</td>
+              <td class="gap-cell">{{ maGapPercent(r) }}</td>
+              <td>
+                <div class="ma-stack-cell">
+                  <div
+                    v-for="seg in maStackOrder(r)"
+                    :key="seg.key"
+                    class="ma-stack-segment"
+                    :class="seg.key"
+                  >
+                    {{ seg.label }}
+                  </div>
+                </div>
+              </td>
+              <td class="ma-count-cell above">{{ r.aboveMa100Count }}</td>
+              <td class="ma-count-cell below">{{ r.belowMa100Count }}</td>
+              <td class="ma-count-cell" :class="maChangeClass(r)">{{ maChangeLabel(r) }}</td>
               <td>
                 <span v-if="convictionFor(r.symbol) === 'pending'" class="conviction-cell pending">—</span>
                 <span v-else-if="convictionFor(r.symbol) === 'loading'" class="conviction-cell loading">…</span>
@@ -148,19 +173,20 @@
       </div>
 
       <div class="results-section">
-        <div class="results-section-header">{{ props.interval }} 200 MA crossing</div>
+        <div class="results-section-header">{{ selectedInterval }} 200 MA crossing (confirmed by prior 15m 100 MA cross)</div>
         <div v-if="!scanning && !intradayCrossResults.length" class="scanner-empty">
-          No {{ props.interval }} candle has crossed its own 200 MA yet.
+          No {{ selectedInterval }} candle has crossed its own 200 MA yet.
         </div>
         <table v-else-if="intradayCrossResults.length" class="results-table">
           <thead>
             <tr>
               <th>Symbol</th>
               <th>Direction</th>
-              <th>200 MA ({{ props.interval }})</th>
-              <th>Open</th>
-              <th>Close</th>
-              <th>Candle Time</th>
+              <th>% Gap</th>
+              <th>MA Stack</th>
+              <th>Above MA100</th>
+              <th>Below MA100</th>
+              <th>MA200 &Delta;%</th>
               <th>Long</th>
               <th>Short</th>
               <th class="actions-col"></th>
@@ -176,7 +202,6 @@
             >
               <td class="symbol-cell">
                 {{ r.symbol }}
-                <span v-if="hasBothCross(r.symbol)" class="dual-cross-star" title="Also crossed the 15m 100 MA in the same direction">★</span>
                 <span v-if="isOpenPosition(r.symbol)" class="open-position-tag">(open)</span>
               </td>
               <td>
@@ -184,75 +209,22 @@
                   {{ r.direction === 'crossed-up' ? 'Crossed Up' : 'Crossed Down' }}
                 </span>
               </td>
-              <td>{{ r.ma200.toFixed(4) }}</td>
-              <td>{{ r.latestCandle.open }}</td>
-              <td>{{ r.latestCandle.close }}</td>
-              <td>{{ new Date(r.latestCandle.openTime).toLocaleString() }}</td>
+              <td class="gap-cell">{{ maGapPercent(r) }}</td>
               <td>
-                <span v-if="convictionFor(r.symbol) === 'pending'" class="conviction-cell pending">—</span>
-                <span v-else-if="convictionFor(r.symbol) === 'loading'" class="conviction-cell loading">…</span>
-                <span v-else-if="convictionFor(r.symbol) === 'error'" class="conviction-cell error">err</span>
-                <span v-else :class="['conviction-tag', convictionClass((convictionFor(r.symbol) as any).long)]">
-                  {{ (convictionFor(r.symbol) as any).long }}
-                </span>
+                <div class="ma-stack-cell">
+                  <div
+                    v-for="seg in maStackOrder(r)"
+                    :key="seg.key"
+                    class="ma-stack-segment"
+                    :class="seg.key"
+                  >
+                    {{ seg.label }}
+                  </div>
+                </div>
               </td>
-              <td>
-                <span v-if="convictionFor(r.symbol) === 'pending'" class="conviction-cell pending">—</span>
-                <span v-else-if="convictionFor(r.symbol) === 'loading'" class="conviction-cell loading">…</span>
-                <span v-else-if="convictionFor(r.symbol) === 'error'" class="conviction-cell error">err</span>
-                <span v-else :class="['conviction-tag', convictionClass((convictionFor(r.symbol) as any).short)]">
-                  {{ (convictionFor(r.symbol) as any).short }}
-                </span>
-              </td>
-              <td class="actions-col">
-                <button class="see-ma-btn" @click.stop="openMaVisualizer(r.symbol)">See MA</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div class="results-section">
-        <div class="results-section-header">15m 100 MA crossing</div>
-        <div v-if="!scanning && !ma100CrossResults.length" class="scanner-empty">
-          No 15m candle has crossed its own 100 MA yet.
-        </div>
-        <table v-else-if="ma100CrossResults.length" class="results-table">
-          <thead>
-            <tr>
-              <th>Symbol</th>
-              <th>Direction</th>
-              <th>100 MA (15m)</th>
-              <th>Open</th>
-              <th>Close</th>
-              <th>Candle Time</th>
-              <th>Long</th>
-              <th>Short</th>
-              <th class="actions-col"></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="r in ma100CrossResults"
-              :key="r.symbol"
-              class="result-row"
-              :class="{ 'is-reviewed': isReviewed(r.symbol) }"
-              @click="openEntryHistory(r)"
-            >
-              <td class="symbol-cell">
-                {{ r.symbol }}
-                <span v-if="hasBothCross(r.symbol)" class="dual-cross-star" title="Also crossed the 15m 200 MA in the same direction">★</span>
-                <span v-if="isOpenPosition(r.symbol)" class="open-position-tag">(open)</span>
-              </td>
-              <td>
-                <span :class="['direction-tag', `direction-${r.direction}`]">
-                  {{ r.direction === 'crossed-up' ? 'Crossed Up' : 'Crossed Down' }}
-                </span>
-              </td>
-              <td>{{ r.ma200.toFixed(4) }}</td>
-              <td>{{ r.latestCandle.open }}</td>
-              <td>{{ r.latestCandle.close }}</td>
-              <td>{{ new Date(r.latestCandle.openTime).toLocaleString() }}</td>
+              <td class="ma-count-cell above">{{ r.aboveMa100Count }}</td>
+              <td class="ma-count-cell below">{{ r.belowMa100Count }}</td>
+              <td class="ma-count-cell" :class="maChangeClass(r)">{{ maChangeLabel(r) }}</td>
               <td>
                 <span v-if="convictionFor(r.symbol) === 'pending'" class="conviction-cell pending">—</span>
                 <span v-else-if="convictionFor(r.symbol) === 'loading'" class="conviction-cell loading">…</span>
@@ -311,6 +283,8 @@ import MACrosingVisualizer from './MACrossingVisualizerComponent.vue';
 import { buildMaCapturePayload } from '@/utility/maCapturePayload'
 import { analyzeMaStructure } from '@/utility/maStructureAnalysis'
 import type { ConvictionLevel } from '@/utility/maStructureAnalysis'
+import { candleAnalyzer } from '@/utility/candleAnalyzerUtility.ts';
+import { SimulationUtility } from '@/utility/simulationUtility.ts';
 
 // how many 15m candles to pull per symbol for the conviction pass —
 // matches the "3D" preset in the MA visualizer's capture panel
@@ -331,13 +305,42 @@ function convictionClass(level: ConvictionLevel): string {
   return level === 'High' ? 'bullish' : level === 'Moderate' ? 'neutral' : 'bearish'
 }
 
+// returns the two MA segments ordered top-to-bottom by value, so the higher
+// one always renders on top of the stacked bar (blue = MA100, orange = MA200)
+function maStackOrder(r: MaCrossResult): { key: 'ma100' | 'ma200'; label: string }[] {
+  const ma200Seg = { key: 'ma200' as const, label: 'MA200' }
+  if (r.ma100 === null) return [ma200Seg]
+  const ma100Seg = { key: 'ma100' as const, label: 'MA100' }
+  return r.ma100 > r.ma200 ? [ma100Seg, ma200Seg] : [ma200Seg, ma100Seg]
+}
+
+// % distance between the 200 MA and the 100 MA, relative to the lower of
+// the two — how "squeezed" or "stretched apart" the two lines currently are
+function maGapPercent(r: MaCrossResult): string {
+  if (r.ma100 === null || r.ma100 === 0 || r.ma200 === 0) return 'n/a'
+  const lower = Math.min(r.ma100, r.ma200)
+  const gap = (Math.abs(r.ma200 - r.ma100) / lower) * 100
+  return `${gap.toFixed(2)}%`
+}
+
+// formatted % change of the row's own 200 MA from the crossing point to now, e.g. "+3.42%"
+function maChangeLabel(r: MaCrossResult): string {
+  if (r.maChangePercent === null) return 'n/a'
+  const sign = r.maChangePercent > 0 ? '+' : ''
+  return `${sign}${r.maChangePercent.toFixed(2)}%`
+}
+
+function maChangeClass(r: MaCrossResult): string {
+  if (r.maChangePercent === null) return ''
+  return r.maChangePercent > 0 ? 'positive' : r.maChangePercent < 0 ? 'negative' : ''
+}
+
 // sequential, one symbol at a time — only over symbols that actually crossed,
 // so it never touches the full watchlist
 async function runConvictionAnalysis() {
   const uniqueSymbols = Array.from(new Set([
     ...dailyCrossResults.value.map(r => r.symbol),
     ...intradayCrossResults.value.map(r => r.symbol),
-    ...ma100CrossResults.value.map(r => r.symbol),
   ]))
   if (!uniqueSymbols.length) return
 
@@ -399,6 +402,28 @@ const props = withDefaults(
   }
 )
 
+// ── Dynamic interval selector ───────────────────────────────────────────
+// The scanner's main interval used to be a fixed prop. It's now switchable
+// from the UI; `props.interval` still seeds the initial value so existing
+// parent usage keeps working unchanged.
+const intervalOptions = ['15m', '1h', '4h', '1d'] as const
+type ScanInterval = typeof intervalOptions[number]
+
+const selectedInterval = ref<ScanInterval>(
+  (intervalOptions as readonly string[]).includes(props.interval) ? (props.interval as ScanInterval) : '15m'
+)
+
+// switching interval invalidates any results gathered under the old
+// timeframe, so clear everything rather than show mismatched rows
+function onIntervalChange() {
+  dailyCrossResults.value = []
+  intradayCrossResults.value = []
+  allScanned.value = []
+  errorSymbols.value = []
+  reviewedSymbols.value = new Set()
+  convictionResults.value = {}
+}
+
 const chocoMintoStore = useChocoMintoStore()
 
 const DAILY_MA_PERIOD = 200
@@ -406,13 +431,21 @@ const DAILY_MA_PERIOD = 200
 const DAILY_CANDLE_LIMIT = 210
 
 const INTRADAY_MA_PERIOD = 200
-// the 15m (or whatever props.interval is) series also needs >= 200 candles for its own MA
+// the selected-interval series also needs >= 200 candles for its own MA
 const INTRADAY_CANDLE_MIN = 210
 
-// dedicated 15m 100-period MA check — independent of props.interval so it
-// always looks at the 15m chart even if the scanner's main interval differs
+// how many candles to keep for the interval series overall — the entry
+// history dialog (opened when a row is clicked) displays this same series,
+// so it's fetched wide enough to give a full 1000-candle history there too
+const ENTRY_HISTORY_CANDLES = 1000
+
+// dedicated 15m 100-period MA — used purely as a confirming/filter line for
+// the selected-interval 200 MA cross below. It is never surfaced as its own
+// crossing result. The limit includes enough buffer beyond MA100_PERIOD so a
+// rolling MA100 value can still be computed back at the crossing point
+// (crossIdx can sit up to PRIOR_BREAK_LOOKBACK candles behind the latest one).
 const MA100_PERIOD = 100
-const MA100_CANDLE_LIMIT = 110
+const MA100_CANDLE_LIMIT = 140
 const MA100_INTERVAL = '15m'
 
 interface MaCrossResult {
@@ -420,13 +453,16 @@ interface MaCrossResult {
   ma200: number
   direction: 'crossed-up' | 'crossed-down'
   latestCandle: Candle
-  candles: Candle[] // the fetched interval candles, shown in the entry history dialog
+  candles: CandleEntry[] // the fetched interval candles, shown in the entry history dialog
+  ma100: number | null // 15m 100 MA value, used only for the MA-quality columns below
+  aboveMa100Count: number // 15m candles closing above ma100 since the last MA100 cross
+  belowMa100Count: number // 15m candles closing below ma100 since the last MA100 cross
+  maChangePercent: number | null // % change of this row's 200 MA from the crossing point to now
 }
 
 interface ScanSymbolOutcome {
   daily: MaCrossResult | null
   intraday: MaCrossResult | null
-  ma100_15m: MaCrossResult | null
 }
 
 interface ScannedSymbolDebug {
@@ -443,7 +479,6 @@ const scanning = ref(false)
 const scanProgress = ref({ done: 0, total: 0 })
 const dailyCrossResults = ref<MaCrossResult[]>([])
 const intradayCrossResults = ref<MaCrossResult[]>([])
-const ma100CrossResults = ref<MaCrossResult[]>([])
 const errorSymbols = ref<string[]>([])
 
 // debug / testing toggle: shows every scanned symbol + all captured MAs
@@ -483,23 +518,6 @@ const scanProgressPct = computed(() => {
   return Math.min(100, Math.round((scanProgress.value.done / scanProgress.value.total) * 100))
 })
 
-// symbols that crossed BOTH the 15m 200 MA and the 15m 100 MA in the same
-// direction on this scan — flagged with a star as a stronger confluence signal
-const dualCrossSymbols = computed<Set<string>>(() => {
-  const set = new Set<string>()
-  for (const ma100Result of ma100CrossResults.value) {
-    const matches200 = intradayCrossResults.value.some(
-      r => r.symbol === ma100Result.symbol && r.direction === ma100Result.direction
-    )
-    if (matches200) set.add(ma100Result.symbol)
-  }
-  return set
-})
-
-function hasBothCross(symbol: string): boolean {
-  return dualCrossSymbols.value.has(symbol)
-}
-
 onMounted(async () => {
   const localStorageFuturesMaxLeverage = localStorage.getItem('CACHED_FUTURES_SYMBOLS')
   if (localStorageFuturesMaxLeverage) {
@@ -514,6 +532,43 @@ function calculateSma(candles: Candle[], period: number): number | null {
   return sum / period
 }
 
+// same rolling SMA, but ending at a specific historical index instead of the
+// end of the array — used to reconstruct what a MA value was back at an
+// earlier point in time
+function calculateSmaAtIndex(candles: Candle[], period: number, endIndexInclusive: number): number | null {
+  const startIndex = endIndexInclusive - period + 1
+  if (startIndex < 0) return null
+  const relevant = candles.slice(startIndex, endIndexInclusive + 1)
+  const sum = relevant.reduce((s, c) => s + c.close, 0)
+  return sum / period
+}
+
+// highest index whose candle opened at or before the given timestamp — used
+// to locate the equivalent point in a different timeframe's candle series
+function findIndexAtOrBefore(candles: Candle[], timestamp: number): number {
+  for (let i = candles.length - 1; i >= 0; i--) {
+    if (candles[i].openTime <= timestamp) return i
+  }
+  return -1
+}
+
+// % change of a 200 MA series from where it stood at `crossTimestamp` to its
+// current value — reconstructs the historical MA at the matching candle in
+// this series, then compares it to the current MA
+function computeMa200ChangePercent(
+  candles: Candle[],
+  period: number,
+  currentMa: number | null,
+  crossTimestamp: number | null,
+): number | null {
+  if (currentMa === null || crossTimestamp === null) return null
+  const idx = findIndexAtOrBefore(candles, crossTimestamp)
+  if (idx === -1) return null
+  const maAtCross = calculateSmaAtIndex(candles, period, idx)
+  if (maAtCross === null || maAtCross === 0) return null
+  return ((currentMa - maAtCross) / maAtCross) * 100
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -524,41 +579,78 @@ function checkCross(latest: Candle, ma: number): 'crossed-up' | 'crossed-down' |
   return null
 }
 
-// how many candles back to look for a prior crossing of the *other* MA —
-// e.g. when a candle crosses the 100 MA, we look back this many candles for
-// a crossing of the 200 MA (and vice versa) to confirm both lines are in play
+// only surface a cross when the MA stack agrees with the direction:
+// crossed-up requires MA200 already above MA100, crossed-down requires
+// MA200 already below MA100 — filters out crosses against a misaligned stack
+function isAlignedWithMaStack(
+  direction: 'crossed-up' | 'crossed-down',
+  ma200: number,
+  ma100: number | null,
+): boolean {
+  if (ma100 === null) return false
+  if (direction === 'crossed-up') return ma200 > ma100
+  return ma200 < ma100
+}
+
+// how many candles back to look for a prior crossing of the 100 MA, used to
+// confirm a fresh 200 MA cross on the current candle
 const PRIOR_BREAK_LOOKBACK = 20
 
-// true if any candle in the `lookback` candles immediately preceding the
-// latest (already-excluded) candle crossed the given MA level
-function hasPriorCross(candles: Candle[], ma: number, lookback: number = PRIOR_BREAK_LOOKBACK): boolean {
-  if (candles.length < 2) return false
-  // exclude the most recent candle (that's the one already confirmed to have crossed)
-  const historical = candles.slice(0, -1).slice(-lookback)
-  return historical.some(c => checkCross(c, ma) !== null)
+// index (within `candles`) of the most recent candle, prior to the latest
+// one, that crossed the given MA level within the lookback window. Returns
+// -1 if no such crossing is found.
+function findLastCrossIndex(candles: Candle[], ma: number, lookback: number = PRIOR_BREAK_LOOKBACK): number {
+  if (candles.length < 2) return -1
+  const lastIdx = candles.length - 1 // exclude the most recent candle itself
+  const searchFloor = Math.max(0, lastIdx - lookback)
+  for (let i = lastIdx - 1; i >= searchFloor; i--) {
+    if (checkCross(candles[i], ma) !== null) return i
+  }
+  return -1
+}
+
+// counts how many candles, from the last MA100 cross point through the
+// latest candle (inclusive), closed above vs below the MA100 level — a
+// quality/consistency read on the move since that cross. Falls back to the
+// lookback window if no prior cross was found.
+function countAboveBelowMa(candles: Candle[], ma: number, crossIdx: number, lookback: number = PRIOR_BREAK_LOOKBACK) {
+  const startIdx = crossIdx !== -1 ? crossIdx : Math.max(0, candles.length - 1 - lookback)
+  let aboveCount = 0
+  let belowCount = 0
+  for (let i = startIdx; i < candles.length; i++) {
+    const close = candles[i].close
+    if (close > ma) aboveCount++
+    else if (close < ma) belowCount++
+  }
+  return { aboveCount, belowCount }
 }
 
 async function scanSymbol(symbol: string): Promise<ScanSymbolOutcome> {
+  const interval = selectedInterval.value
+
   // 1) 1D 200 SMA
   const dailyCandles = await KlineUtility.getRecentKlines(symbol, '1d', DAILY_CANDLE_LIMIT)
   const dailyMa200 = calculateSma(dailyCandles, DAILY_MA_PERIOD)
 
-  // 2) interval candles (default 15m) - used both for the interval's own 200 MA
-  // and to check the interval candle against the 1D 200 MA
+  // 2) selected-interval candles - used both for the interval's own 200 MA
+  // and to check the interval candle against the 1D 200 MA. Also fetched
+  // wide enough (1000) to double as the full history shown in the entry
+  // history dialog when the row is clicked.
   const intervalCandles = await KlineUtility.getRecentKlines(
     symbol,
-    props.interval,
-    Math.max(props.maxInitCandles, INTRADAY_CANDLE_MIN)
+    interval,
+    Math.max(props.maxInitCandles, INTRADAY_CANDLE_MIN, ENTRY_HISTORY_CANDLES)
   )
   const intradayMa200 = calculateSma(intervalCandles, INTRADAY_MA_PERIOD)
   const latest = intervalCandles.length ? intervalCandles[intervalCandles.length - 1] : null
 
-  // 3) dedicated 15m candles for the 100 MA check. If the scanner's main
+  // 3) dedicated 15m candles, solely to compute the 100 MA used as a
+  // confirming filter for the 200 MA cross below. If the scanner's selected
   // interval is already 15m and we've already pulled enough candles for the
   // 200 MA (which needs more history than the 100 MA does), reuse that fetch
   // instead of hitting the API again.
   let m15Candles: Candle[]
-  if (props.interval === MA100_INTERVAL && intervalCandles.length >= MA100_CANDLE_LIMIT) {
+  if (interval === MA100_INTERVAL && intervalCandles.length >= MA100_CANDLE_LIMIT) {
     m15Candles = intervalCandles
   } else {
     m15Candles = await KlineUtility.getRecentKlines(symbol, MA100_INTERVAL, MA100_CANDLE_LIMIT)
@@ -577,32 +669,116 @@ async function scanSymbol(symbol: string): Promise<ScanSymbolOutcome> {
     last15mClose: latest15m ? latest15m.close : null,
   })
 
-  const outcome: ScanSymbolOutcome = { daily: null, intraday: null, ma100_15m: null }
+  // where the 100 MA was last crossed, and the above/below tally since that
+  // point — computed once and reused for both the confirmation filter and
+  // the "MA Stack" / "Above MA100" / "Below MA100" display columns
+  const ma100CrossIdx = ma100_15m !== null ? findLastCrossIndex(m15Candles, ma100_15m) : -1
+  const { aboveCount, belowCount } = ma100_15m !== null
+    ? countAboveBelowMa(m15Candles, ma100_15m, ma100CrossIdx)
+    : { aboveCount: 0, belowCount: 0 }
+
+  // timestamp of the crossing candle — used to locate the equivalent point
+  // in the daily / selected-interval series so we can compare each row's own
+  // 200 MA then vs now
+  const crossTimestamp = ma100CrossIdx !== -1 ? m15Candles[ma100CrossIdx].openTime : null
+
+  // % change of the 200 MA itself, from where it stood at the crossing point
+  // to where it stands now — how much the trend line has moved since the
+  // cross, computed against each table's own 200 MA series
+  const dailyMaChangePercent = computeMa200ChangePercent(dailyCandles, DAILY_MA_PERIOD, dailyMa200, crossTimestamp)
+  const intradayMaChangePercent = computeMa200ChangePercent(intervalCandles, INTRADAY_MA_PERIOD, intradayMa200, crossTimestamp)
+
+  const outcome: ScanSymbolOutcome = { daily: null, intraday: null }
+
+  candleAnalyzer.initializePastCandlesSupportResistance(intervalCandles,1000 - 10,10);
+
+  selectedSymbolCandleEntries.value = []
+  selectedSymbolCandleEntries.value = intervalCandles.map(c => ({
+            ...c,
+            close_atr_abs_change: 0,
+            close_atr_adjusted: 0,
+            symbol: selectedSymbol.value,
+            status: '',
+            side: '',
+            tpPrice: 0,
+            duration: 0,
+            slPrice: 0,
+            zoneAnalysis: null,
+            volumeAnalysis: null,
+            overboughSoldAnalysis: null,
+            pastVolumeAnalysis: null,
+            candleData: null,
+            priceZone: null,
+            priceZoneInteraction: null,
+            pnl: 0,
+            leverage: 0,
+            margin: 0,
+            entryFee: 0,
+            zoneSizePercentage: 0,
+            closeAbsDistanceToZone: null,
+            priceZoneEvaluation: null,
+            patternTrack: "",
+            isPoint: false,
+            isWeakening: false
+        }));
+
+  candleAnalyzer.trackSwingPatterns(selectedSymbolCandleEntries.value);
+
+  await SimulationUtility.markPositionEntries(
+        1,
+        10,
+        1,
+        1,
+        symbol,
+        selectedSymbolCandleEntries.value,
+        50,
+        selectedSymbolCandleEntries.value.length - 1,
+        chocoMintoStore.startingTimeStamp);
 
   if (latest) {
     if (dailyMa200 !== null) {
       const direction = checkCross(latest, dailyMa200)
-      if (direction) {
-        outcome.daily = { symbol, ma200: dailyMa200, direction, latestCandle: latest, candles: intervalCandles }
+      // only surface it if the MA stack agrees: crossed-up needs MA200 above
+      // MA100, crossed-down needs MA200 below MA100
+      if (direction && isAlignedWithMaStack(direction, dailyMa200, ma100_15m)) {
+        outcome.daily = {
+          symbol,
+          ma200: dailyMa200,
+          direction,
+          latestCandle: latest,
+          candles: selectedSymbolCandleEntries.value,
+          ma100: ma100_15m,
+          aboveMa100Count: aboveCount,
+          belowMa100Count: belowCount,
+          maChangePercent: dailyMaChangePercent,
+        }
       }
     }
 
     if (intradayMa200 !== null) {
       const direction = checkCross(latest, intradayMa200)
-      // confirm with a PRIOR crossing of the 100 MA (the other line) within the lookback window
-      if (direction && ma100_15m !== null && hasPriorCross(m15Candles, ma100_15m)) {
-        outcome.intraday = { symbol, ma200: intradayMa200, direction, latestCandle: latest, candles: intervalCandles }
+      // the current candle crossed the 200 MA — confirm it with a PRIOR
+      // crossing of the 100 MA (the filter line) within the lookback window,
+      // and require the MA stack to agree with the direction, before
+      // surfacing it as a result
+      if (
+        direction &&
+        ma100_15m !== null &&
+        ma100CrossIdx !== -1 &&
+        isAlignedWithMaStack(direction, intradayMa200, ma100_15m)
+      ) {
+        outcome.intraday = {
+          symbol,
+          ma200: intradayMa200,
+          direction,
+          latestCandle: latest,
+          candles: selectedSymbolCandleEntries.value,
+          ma100: ma100_15m,
+          aboveMa100Count: aboveCount,
+          belowMa100Count: belowCount,
+          maChangePercent: intradayMaChangePercent,
+        }
       }
-    }
-  }
-
-  if (latest15m && ma100_15m !== null) {
-    const direction = checkCross(latest15m, ma100_15m)
-    // confirm with a PRIOR crossing of the 200 MA (the other line) within the lookback window
-    if (direction && intradayMa200 !== null && hasPriorCross(intervalCandles, intradayMa200)) {
-      // reuses the `ma200` field on MaCrossResult to carry the 100 MA value —
-      // the field name is a holdover but the table displays it correctly either way
-      outcome.ma100_15m = { symbol, ma200: ma100_15m, direction, latestCandle: latest15m, candles: m15Candles }
     }
   }
 
@@ -618,7 +794,6 @@ async function startScan() {
   scanning.value = true
   dailyCrossResults.value = []
   intradayCrossResults.value = []
-  ma100CrossResults.value = []
   errorSymbols.value = []
   allScanned.value = []
   reviewedSymbols.value = new Set()
@@ -631,7 +806,6 @@ async function startScan() {
       const outcome = await scanSymbol(symbol)
       if (outcome.daily) dailyCrossResults.value.push(outcome.daily)
       if (outcome.intraday) intradayCrossResults.value.push(outcome.intraday)
-      if (outcome.ma100_15m) ma100CrossResults.value.push(outcome.ma100_15m)
     } catch {
       errorSymbols.value.push(symbol)
     } finally {
@@ -647,7 +821,7 @@ async function startScan() {
   // hours ago.
   await loadOpenPositions()
 
-  const totalCrosses = dailyCrossResults.value.length + intradayCrossResults.value.length + ma100CrossResults.value.length
+  const totalCrosses = dailyCrossResults.value.length + intradayCrossResults.value.length
   if (totalCrosses > 0) {
     speakAlert(totalCrosses)
     await runConvictionAnalysis()
@@ -728,38 +902,13 @@ onUnmounted(() => {
   if (countdownTimer) clearInterval(countdownTimer)
 })
 
-function openEntryHistory(result: MaCrossResult) {
+async function openEntryHistory(result: MaCrossResult) {
   markReviewed(result.symbol)
   selectedSymbol.value = result.symbol
+
   selectedSymbolCandleEntries.value = []
-  selectedSymbolCandleEntries.value = result.candles.map(c => ({
-            ...c,
-            close_atr_abs_change: 0,
-            close_atr_adjusted: 0,
-            symbol: selectedSymbol.value,
-            status: '',
-            side: '',
-            tpPrice: 0,
-            duration: 0,
-            slPrice: 0,
-            zoneAnalysis: null,
-            volumeAnalysis: null,
-            overboughSoldAnalysis: null,
-            pastVolumeAnalysis: null,
-            candleData: null,
-            priceZone: null,
-            priceZoneInteraction: null,
-            pnl: 0,
-            leverage: 0,
-            margin: 0,
-            entryFee: 0,
-            zoneSizePercentage: 0,
-            closeAbsDistanceToZone: null,
-            priceZoneEvaluation: null,
-            patternTrack: "",
-            isPoint: false,
-            isWeakening: false
-        }));
+  selectedSymbolCandleEntries.value = result.candles
+
   showEntryHistory.value = true
 }
 
@@ -806,6 +955,28 @@ function openMaVisualizer(symbol: string) {
 .error-count {
   font-size: 13px;
   color: #f87171;
+}
+
+.interval-select-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.interval-select {
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.interval-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .interval-input-label {
@@ -975,12 +1146,56 @@ function openMaVisualizer(symbol: string) {
   color: #4ade80;
 }
 
-/* Shown next to a symbol when it crossed BOTH the 15m 200 MA and the
-   15m 100 MA in the same direction on this scan — a confluence signal */
-.dual-cross-star {
-  margin-left: 4px;
-  color: #ffd54f;
-  font-size: 12px;
+/* MA100-vs-MA200 stacked bar: whichever value is higher renders on top */
+.ma-stack-cell {
+  display: flex;
+  flex-direction: column;
+  width: 64px;
+  border-radius: 4px;
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.ma-stack-segment {
+  padding: 3px 0;
+  color: #0b0e14;
+}
+
+.ma-stack-segment.ma100 {
+  background: #42a5f5; /* blue */
+}
+
+.ma-stack-segment.ma200 {
+  background: #ffa726; /* orange */
+}
+
+.ma-count-cell {
+  text-align: center;
+  font-weight: 600;
+}
+
+.ma-count-cell.above {
+  color: #4ade80;
+}
+
+.ma-count-cell.below {
+  color: #f87171;
+}
+
+.ma-count-cell.positive {
+  color: #4ade80;
+}
+
+.ma-count-cell.negative {
+  color: #f87171;
+}
+
+.gap-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
 }
 
 .direction-tag {

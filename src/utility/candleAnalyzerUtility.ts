@@ -2,6 +2,18 @@ import type { BidAskWallResult, BinanceDepthSnapshot, BookLevel, Candle, CandleD
 
 class CandlestickAnalyzer {
 
+    static calculateMovingAverage(candleEntries: CandleEntry[], period: number): number | null {
+        if (!candleEntries || candleEntries.length < period) return null;
+
+        // Defensive sort: slice(-period) is only correct if entries are
+        // chronological oldest -> newest. Don't assume the caller guarantees this.
+        const sorted = [...candleEntries].sort((a, b) => a.openTime - b.openTime);
+        const relevant = sorted.slice(-period);
+
+        const sum = relevant.reduce((s, c) => s + c.close, 0);
+        return sum / period;
+    }
+
     static trackSwingPatterns(candles: CandleEntry[]): void {
         if (candles.length < 3) return;
 
@@ -319,6 +331,8 @@ static buyerInterestScore(
       side,
       previousCandleData,
       ema200: 0,
+      ma200: 0,
+      ma100: 0,
       pastAboveEma: 0,
       pastBelowEma: 0,
       emaLevel: "above",

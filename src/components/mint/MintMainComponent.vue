@@ -110,6 +110,7 @@
     <InputComponent type="numeric" v-model="chocoMintoStore.orderCost"/>
     
     <TrendRiderComponent ref="trendRiderRef"/>
+     <ConditionMetComponent/>
 
     <DialogComponent :model-value="UI_SHOW_REPLAY" width="95vw" @update:model-value="UI_SHOW_REPLAY = false">
         <DialogHeaderComponent>View Candle Entry Replay</DialogHeaderComponent>
@@ -207,6 +208,7 @@ import TableHeaderComponent from '../shared/table/TableHeaderComponent.vue';
 import TableComponent from '../shared/table/TableComponent.vue';
 import type { forEach } from 'jszip'
 import TrendRiderComponent from './TrendRiderComponent.vue';
+import ConditionMetComponent from './ConditionMetComponent.vue';
 
 const chocoMintoStore = useChocoMintoStore();
 const notificationStore = useNotificationStore();
@@ -215,7 +217,7 @@ const isBotEnabled = ref(false)
 
 const MASTER_SYMBOL = "BTCUSDT";
 const KLINE_INTERVAL = "15m"
-const MAX_INIT_CANDLES = 100;
+const MAX_INIT_CANDLES = 500;
 const SUPPORT_AND_RESISTANCE_PERIOD_LENGTH = 10;
 
 const MARGIN = 1.5;
@@ -374,7 +376,8 @@ async function initializeFutureSymbols(){
                     changeZScore: 0,
                     bidWall: 0,
                     askWall: 0,
-                    g1CandleCount: 0
+                    g1CandleCount: 0,
+                    zoneSize: 0
                 })
             }
         }

@@ -130,6 +130,8 @@ export class SimulationUtility {
                 candle.candleData.atr = atr;
                 candle.isWeakening = candleAnalyzer.isWeakening(movingCandles);
                 candle.candleData.ema200 = candleAnalyzer.calculateEMA(movingCandles, 40);
+                candle.candleData.ma200 = candleAnalyzer.calculateEMA(movingCandles, 200);
+                candle.candleData.ma100 = candleAnalyzer.calculateEMA(movingCandles, 100);
                 candle.candleData.crossedEma = (candle.open < candle.candleData.ema200 && candle.close > candle.candleData.ema200) || (candle.open > candle.candleData.ema200 && candle.close < candle.candleData.ema200);
                 candle.candleData.buyerInterestRate = candleAnalyzer.buyerInterestScore(movingCandles,24);
                 
@@ -202,12 +204,10 @@ export class SimulationUtility {
                 }
 
                 if(activePriceZone){
-                    var zoneInhabitantCount = movingCandles.filter(c =>
-                        c.openTime >= zoneOpenTime!
-                        && (c.close > activePriceZone!.lower && c.close < activePriceZone!.upper)
-                        && (c.open > activePriceZone!.lower && c.open < activePriceZone!.upper)
-                    ).length
+                    
                     candle.priceZone = activePriceZone;
+
+                    var zoneInhabitantCount = movingCandles.slice(-24).filter(c => c.priceZone && c.priceZone == candle.priceZone).length
                     candle.candleData.zoneInhabitantCount = zoneInhabitantCount
 
                     var zoneInteraction = PriceZoneUtility.analyzeZoneInteraction(movingCandles, activePriceZone, 50);
@@ -413,6 +413,14 @@ export class SimulationUtility {
                         ).length > 0;
 
                         candle.candleData.crossedEma = crossedEma;
+
+                        if(candle.candleData.zoneSizePercentage > 5){
+                            
+                            var hasTopWickRejection = candle.candleData.top_wick_v > 20 && candle.high > candle.priceZone.upper && candle.open > candle.priceZone.mid;
+                            if(hasTopWickRejection){
+                                candle.candleData.conditionMet = "ZONE_UPPER_REJECTION"
+                            }
+                        }
                         
                         //end
                     }
