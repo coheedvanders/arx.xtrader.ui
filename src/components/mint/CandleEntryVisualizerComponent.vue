@@ -104,6 +104,22 @@
           <button class="backtest-stop-btn" @click="stopBacktest">
             Stop Backtest
           </button>
+
+          <button
+            class="preview-btn buy"
+            :disabled="backtestPlacingSide !== null"
+            @click="placeBacktestPosition('LONG')"
+          >
+            {{ backtestPlacingSide === 'LONG' ? 'Loading…' : 'Long' }}
+          </button>
+          <button
+            class="preview-btn sell"
+            :disabled="backtestPlacingSide !== null"
+            @click="placeBacktestPosition('SHORT')"
+          >
+            {{ backtestPlacingSide === 'SHORT' ? 'Loading…' : 'Short' }}
+          </button>
+          <span v-if="backtestPlaceError" class="backtest-place-error">{{ backtestPlaceError }}</span>
         </template>
       </div>
 
@@ -363,6 +379,108 @@
           />
         </g>
 
+        <!-- Backtest long/short position placements -->
+        <g class="backtest-positions">
+          <rect
+            v-for="box in backtestPositionBoxes"
+            :key="box.id"
+            :x="box.x"
+            :y="box.y"
+            :width="box.width"
+            :height="box.height"
+            :class="['tp-sl-rect', `box-${box.type}`, `status-${box.status}`]"
+          />
+
+          <!-- Per-position freeform drag controls, same idea as the
+               Rectangle tool: everything below is grabbable and moves the
+               position independently of the live/backtest candle stream. -->
+          <template v-for="pos in renderedBacktestPositions" :key="`bt-drag-${pos.id}`">
+            <!-- TP line -->
+            <line
+              :x1="candleX(pos.entryIndex) - candleWidth / 2"
+              :x2="candleX(pos.endIndex) + candleWidth / 2"
+              :y1="priceToY(pos.tpPrice)"
+              :y2="priceToY(pos.tpPrice)"
+              class="backtest-tp-line"
+            />
+            <line
+              :x1="candleX(pos.entryIndex) - candleWidth / 2"
+              :x2="candleX(pos.endIndex) + candleWidth / 2"
+              :y1="priceToY(pos.tpPrice)"
+              :y2="priceToY(pos.tpPrice)"
+              class="backtest-hit-line"
+              @mousedown="startBacktestTpDrag(pos.id, $event)"
+            />
+
+            <!-- SL line -->
+            <line
+              :x1="candleX(pos.entryIndex) - candleWidth / 2"
+              :x2="candleX(pos.endIndex) + candleWidth / 2"
+              :y1="priceToY(pos.slPrice)"
+              :y2="priceToY(pos.slPrice)"
+              class="backtest-sl-line"
+            />
+            <line
+              :x1="candleX(pos.entryIndex) - candleWidth / 2"
+              :x2="candleX(pos.endIndex) + candleWidth / 2"
+              :y1="priceToY(pos.slPrice)"
+              :y2="priceToY(pos.slPrice)"
+              class="backtest-hit-line"
+              @mousedown="startBacktestSlDrag(pos.id, $event)"
+            />
+
+            <!-- Entry line -->
+            <line
+              :x1="candleX(pos.entryIndex) - candleWidth / 2"
+              :x2="candleX(pos.endIndex) + candleWidth / 2"
+              :y1="priceToY(pos.entryPrice)"
+              :y2="priceToY(pos.entryPrice)"
+              class="backtest-entry-line"
+            />
+            <line
+              :x1="candleX(pos.entryIndex) - candleWidth / 2"
+              :x2="candleX(pos.endIndex) + candleWidth / 2"
+              :y1="priceToY(pos.entryPrice)"
+              :y2="priceToY(pos.entryPrice)"
+              class="backtest-hit-line"
+              @mousedown="startBacktestEntryDrag(pos.id, $event)"
+            />
+
+            <!-- Move handle: drag freely (x snaps to nearest candle, y is
+                 free) to reposition the whole thing — entry/TP/SL shift
+                 together, offsets preserved. -->
+            <circle
+              :cx="candleX(pos.entryIndex) - candleWidth / 2"
+              :cy="priceToY(pos.entryPrice)"
+              r="6"
+              class="backtest-move-handle"
+              @mousedown="startBacktestMoveDrag(pos.id, $event)"
+            />
+          </template>
+
+          <text
+            v-for="pos in renderedBacktestPositions"
+            :key="`bt-label-${pos.id}`"
+            :x="candleX(pos.entryIndex) - candleWidth / 2 + 4"
+            :y="priceToY(pos.entryPrice) - 6"
+            :class="['backtest-position-label', pos.side === 'LONG' ? 'label-long' : 'label-short']"
+          >
+            {{ pos.side }} @ {{ pos.entryPrice.toFixed(4) }}
+          </text>
+
+          <text
+            v-for="pos in renderedBacktestPositions"
+            :key="`bt-remove-${pos.id}`"
+            :x="candleX(pos.endIndex) + candleWidth / 2 - 4"
+            :y="priceToY(pos.entryPrice) - 6"
+            text-anchor="end"
+            class="backtest-position-close"
+            @click="removeBacktestPosition(pos.id)"
+          >
+            ✕ remove
+          </text>
+        </g>
+
         <!-- Volume Spike Connection Line -->
         <polyline
           v-if="connectVolumeSpikesvSpikes && volumeSpikePoints.length > 0"
@@ -397,6 +515,19 @@
             :x2="svgWidth"
             :y2="priceToY(price)"
             class="grid-line"
+          />
+        </g>
+
+        <!-- Broken orange line when a candle's zone is fully inhabited (zoneInhabitantCount === 24) -->
+        <g class="zone-full-lines">
+          <line
+            v-for="(x, i) in zoneFullVerticalLines"
+            :key="`zone-full-${i}`"
+            :x1="x"
+            :y1="0"
+            :x2="x"
+            :y2="svgHeight"
+            class="zone-full-line"
           />
         </g>
 
@@ -814,7 +945,7 @@
         <text
           v-for="(price, i) in gridPrices"
           :key="`price-${i}`"
-          :x="svgWidth"
+          :x="svgWidth - 1"
           :y="priceToY(price) + 4"
           class="price-label"
           @mousedown="startPriceAdjust(price, i, $event)"
@@ -1236,6 +1367,8 @@ const backtestIndex = ref(0)
 function startBacktest() {
   backtestActive.value = true
   backtestIndex.value = 0
+  backtestPositions.value = []
+  backtestPlaceError.value = null
   clearPreview()
   disconnectWebSocket()
   disconnectDepthWebSocket()
@@ -1256,6 +1389,276 @@ function backtestPrev() {
 function backtestNext() {
   if (backtestIndex.value < props.candles.length - 1) backtestIndex.value += 1
 }
+
+// ─── Backtest long/short position placement ───────────────────────────────
+//
+// While backtesting, "Long"/"Short" places a position at the candle
+// currently on screen (backtestIndex), using the same TP/SL ROI% calc as
+// the live Preview Buy/Sell flow. As you step forward with Next, each
+// placed position is re-evaluated against the candles you've revealed so
+// far to see whether TP or SL was touched first — reusing the same
+// tp-sl-rect styling/status classes as the rest of the chart.
+interface BacktestPosition {
+  id: number
+  side: 'LONG' | 'SHORT'
+  entryIndex: number
+  entryPrice: number
+  tpPrice: number
+  slPrice: number
+}
+
+let backtestPositionIdCounter = 0
+const backtestPositions = ref<BacktestPosition[]>([])
+const backtestPlacingSide = ref<'LONG' | 'SHORT' | null>(null)
+const backtestPlaceError = ref<string | null>(null)
+
+async function placeBacktestPosition(side: 'LONG' | 'SHORT') {
+  if (!backtestActive.value) return
+  const entryCandle = props.candles[backtestIndex.value]
+  if (!entryCandle || entryCandle.close == null) {
+    backtestPlaceError.value = 'No candle to enter against yet.'
+    return
+  }
+
+  backtestPlaceError.value = null
+  backtestPlacingSide.value = side
+
+  try {
+    const apiSide = side === 'LONG' ? 'BUY' : 'SELL'
+    const tpSl = await OrderMakerUtility.calculateTpSl(
+      previewMargin.value,
+      props.symbol,
+      apiSide,
+      entryCandle.close.toString(),
+      targetTpRoi.value,
+      targetSlRoi.value
+    )
+
+    backtestPositions.value.push({
+      id: ++backtestPositionIdCounter,
+      side,
+      entryIndex: backtestIndex.value,
+      entryPrice: entryCandle.close,
+      tpPrice: tpSl.tp_price,
+      slPrice: tpSl.sl_price,
+    })
+  } catch (error) {
+    console.error('Failed to place backtest position:', error)
+    backtestPlaceError.value = 'Failed to place position. Please try again.'
+  } finally {
+    backtestPlacingSide.value = null
+  }
+}
+
+function removeBacktestPosition(id: number) {
+  backtestPositions.value = backtestPositions.value.filter(p => p.id !== id)
+}
+
+function findBacktestPosition(id: number): BacktestPosition | undefined {
+  return backtestPositions.value.find(p => p.id === id)
+}
+
+/** Converts a mouse event's clientX into the nearest candle index, clamped to range. */
+function clientXToCandleIndex(clientX: number): number | null {
+  if (!chartContainer.value) return null
+  const rect = chartContainer.value.querySelector('svg')?.getBoundingClientRect()
+  if (!rect) return null
+  const x = clientX - rect.left
+  const rawIndex = Math.round((x - 10 - candleWidth.value / 2) / (candleWidth.value + candleGap))
+  return Math.max(0, Math.min(displayCandles.value.length - 1, rawIndex))
+}
+
+// ─── Backtest position free-drag (fully freeform, like the Rectangle tool) ────
+//
+// Four independent handles per position:
+//  - entry line  → vertical only, moves entryPrice
+//  - tp line     → vertical only, moves tpPrice
+//  - sl line     → vertical only, moves slPrice
+//  - move handle → horizontal (snaps to nearest candle, clamped to
+//                  backtestIndex so the box never gets a negative width)
+//                  + vertical (free), drags the WHOLE position — entry
+//                  candle and all three prices shift together, offsets
+//                  preserved.
+function backtestPriceShift(startClientY: number, moveClientY: number): number {
+  const originalRange = maxPrice.value - minPrice.value
+  return -((moveClientY - startClientY) / svgHeight) * originalRange
+}
+
+function startBacktestEntryDrag(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const pos = findBacktestPosition(id)
+  if (!pos) return
+  const startY = event.clientY
+  const startEntry = pos.entryPrice
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    pos.entryPrice = startEntry + backtestPriceShift(startY, moveEvent.clientY)
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+function startBacktestTpDrag(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const pos = findBacktestPosition(id)
+  if (!pos) return
+  const startY = event.clientY
+  const startTp = pos.tpPrice
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    pos.tpPrice = startTp + backtestPriceShift(startY, moveEvent.clientY)
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+function startBacktestSlDrag(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const pos = findBacktestPosition(id)
+  if (!pos) return
+  const startY = event.clientY
+  const startSl = pos.slPrice
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    pos.slPrice = startSl + backtestPriceShift(startY, moveEvent.clientY)
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+function startBacktestMoveDrag(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const pos = findBacktestPosition(id)
+  if (!pos) return
+  const startY = event.clientY
+  const startEntryPrice = pos.entryPrice
+  const startTpPrice = pos.tpPrice
+  const startSlPrice = pos.slPrice
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    const newIndex = clientXToCandleIndex(moveEvent.clientX)
+    if (newIndex !== null) {
+      pos.entryIndex = Math.min(newIndex, backtestIndex.value)
+    }
+    const priceShift = backtestPriceShift(startY, moveEvent.clientY)
+    pos.entryPrice = startEntryPrice + priceShift
+    pos.tpPrice = startTpPrice + priceShift
+    pos.slPrice = startSlPrice + priceShift
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/**
+ * Walks forward from a backtest position's entry through the candles
+ * revealed so far (up to backtestIndex) to find whether TP or SL was hit
+ * first. Status strings match the existing `status-*` CSS classes
+ * (open / win_long / win_short / loss_long / loss_short).
+ */
+function evaluateBacktestPosition(pos: BacktestPosition) {
+  const isLong = pos.side === 'LONG'
+  let endIndex = Math.min(backtestIndex.value, props.candles.length - 1)
+  let status = 'open'
+
+  for (let j = pos.entryIndex + 1; j <= backtestIndex.value; j++) {
+    const c = props.candles[j]
+    if (!c || c.high == null || c.low == null) continue
+    const hitTp = isLong ? c.high >= pos.tpPrice : c.low <= pos.tpPrice
+    const hitSl = isLong ? c.low <= pos.slPrice : c.high >= pos.slPrice
+    if (!hitTp && !hitSl) continue
+
+    endIndex = j
+    if (hitTp && hitSl) {
+      // Both boundaries touched within the same candle — OHLC alone can't
+      // tell us which came first, so approximate using distance from open.
+      const distToTp = Math.abs((c.open ?? pos.entryPrice) - pos.tpPrice)
+      const distToSl = Math.abs((c.open ?? pos.entryPrice) - pos.slPrice)
+      status = distToTp <= distToSl
+        ? (isLong ? 'win_long' : 'win_short')
+        : (isLong ? 'loss_long' : 'loss_short')
+    } else if (hitTp) {
+      status = isLong ? 'win_long' : 'win_short'
+    } else {
+      status = isLong ? 'loss_long' : 'loss_short'
+    }
+    break
+  }
+
+  return { ...pos, endIndex, status }
+}
+
+const renderedBacktestPositions = computed(() => {
+  if (!backtestActive.value) return []
+  return backtestPositions.value.map(evaluateBacktestPosition)
+})
+
+const backtestPositionBoxes = computed(() => {
+  const boxes: any[] = []
+  for (const pos of renderedBacktestPositions.value) {
+    const isLong = pos.side === 'LONG'
+    const boxLeftX = candleX(pos.entryIndex) - candleWidth.value / 2
+    const boxRightX = candleX(pos.endIndex) + candleWidth.value / 2
+    const boxWidth = boxRightX - boxLeftX
+
+    const tpUpper = isLong ? pos.tpPrice : pos.entryPrice
+    const tpLower = isLong ? pos.entryPrice : pos.tpPrice
+    boxes.push({
+      id: `bt-tp-${pos.id}`,
+      x: boxLeftX,
+      y: priceToY(tpUpper),
+      width: boxWidth,
+      height: priceToY(tpLower) - priceToY(tpUpper),
+      type: 'tp',
+      status: pos.status,
+    })
+
+    const slUpper = isLong ? pos.entryPrice : pos.slPrice
+    const slLower = isLong ? pos.slPrice : pos.entryPrice
+    boxes.push({
+      id: `bt-sl-${pos.id}`,
+      x: boxLeftX,
+      y: priceToY(slUpper),
+      width: boxWidth,
+      height: priceToY(slLower) - priceToY(slUpper),
+      type: 'sl',
+      status: pos.status,
+    })
+  }
+  return boxes
+})
+
+// ─── Zone-full marker: broken orange vertical line ─────────────────────────
+// Drawn across the full chart height whenever a candle's
+// candleData.zoneInhabitantCount reaches 24 (i.e. its zone is fully seated).
+const zoneFullVerticalLines = computed(() => {
+  const xs: number[] = []
+  for (let i = 0; i < displayCandles.value.length; i++) {
+    if (displayCandles.value[i].candleData?.zoneInhabitantCount === 24) {
+      xs.push(candleX(i))
+    }
+  }
+  return xs
+})
 
 // ─── Volume Profile Fixed Range tool ───────────────────────────────────────
 //
@@ -2950,6 +3353,73 @@ const formatValue = (value: any): string => {
   font-size: 12px;
   color: rgba(255, 255, 255, 0.6);
   font-family: monospace;
+}
+.backtest-place-error {
+  font-size: 12px;
+  color: #ef5350;
+}
+
+/* ── Backtest long/short position markers ────────────────────────────── */
+.backtest-entry-line {
+  stroke: rgba(255, 255, 255, 0.5);
+  stroke-width: 1;
+  stroke-dasharray: 3, 3;
+  pointer-events: none;
+}
+.backtest-tp-line {
+  stroke: #26a69a;
+  stroke-width: 1;
+  stroke-dasharray: 3, 3;
+  opacity: 0.8;
+  pointer-events: none;
+}
+.backtest-sl-line {
+  stroke: #ef5350;
+  stroke-width: 1;
+  stroke-dasharray: 3, 3;
+  opacity: 0.8;
+  pointer-events: none;
+}
+/* Invisible fat hit-area drawn on top of each visible line so it's easy to
+   grab and drag without the line itself looking thick. */
+.backtest-hit-line {
+  stroke: transparent;
+  stroke-width: 12;
+  cursor: ns-resize;
+  pointer-events: stroke;
+}
+.backtest-move-handle {
+  fill: #fff;
+  stroke: #000;
+  stroke-width: 1;
+  cursor: move;
+  pointer-events: all;
+}
+.backtest-move-handle:hover { fill: #64b5f6; }
+.backtest-position-label {
+  font-size: 11px;
+  font-weight: bold;
+  pointer-events: none;
+}
+.backtest-position-label.label-long { fill: #26a69a; }
+.backtest-position-label.label-short { fill: #ef5350; }
+.backtest-position-close {
+  fill: rgba(255, 255, 255, 0.5);
+  font-size: 10px;
+  cursor: pointer;
+  pointer-events: all;
+}
+.backtest-position-close:hover {
+  fill: #ff8a80;
+}
+
+/* ── Zone-full marker (candleData.zoneInhabitantCount === 24) ────────────── */
+.zone-full-lines { pointer-events: none; }
+.zone-full-line {
+  stroke: #ffa726;
+  stroke-width: 1.5;
+  stroke-dasharray: 6, 5;
+  opacity: 0.35;
 }
 
 /* ── Volume bars (bottom-of-chart overlay) ────────────────────────────── */
