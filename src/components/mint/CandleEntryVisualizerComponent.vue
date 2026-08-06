@@ -914,14 +914,14 @@
           >
             <rect
               :x="rect.x"
-              :y="rect.y"
+              :y="priceToY(rect.priceHigh)"
               :width="rect.width"
-              :height="rect.height"
+              :height="priceToY(rect.priceLow) - priceToY(rect.priceHigh)"
               class="draw-rect"
             />
             <text
               :x="rect.x + rect.width - 4"
-              :y="rect.y - 6"
+              :y="priceToY(rect.priceHigh) - 6"
               class="draw-rect-close"
               text-anchor="end"
               @click="removeRectangle(rect.id)"
@@ -1271,21 +1271,27 @@ const showMaCrossing = ref(false);
 // ─── Freeform rectangle draw tool ──────────────────────────────────────────
 //
 // Click "Rectangle" to arm the tool, then click-drag anywhere on the chart
-// to draw a highlight box. Unlike the Volume Profile tool, this is NOT
-// snapped to candle index/price — it's stored in raw SVG pixel coordinates,
-// so it behaves as a free annotation layer over the chart.
+// to draw a highlight box. `x`/`width` are raw SVG pixel coordinates (fine
+// as-is — horizontal panning only changes scrollLeft, not the coordinate
+// system, so pixel x always lines up with the same candles). `priceHigh`/
+// `priceLow` are stored as PRICES rather than pixel y/height, and converted
+// back to pixels via priceToY() at render time — otherwise, dragging the
+// canvas vertically (which shifts minPrice/maxPrice, not just the viewport)
+// would leave the box sitting at its old pixel position instead of tracking
+// the price level it was actually drawn at.
 interface DrawnRectangle {
   id: number
   x: number
-  y: number
   width: number
-  height: number
+  priceHigh: number
+  priceLow: number
 }
 
 let rectIdCounter = 0
 const rectModeActive = ref(false)
 const rectDrawing = ref(false)
-const rectPreview = ref<DrawnRectangle | null>(null)
+/** Live drag preview, kept in raw pixel space since it only exists for the duration of one drag gesture (price range can't shift mid-draw — rect mode and chart-pan are mutually exclusive). */
+const rectPreview = ref<{ x: number; y: number; width: number; height: number } | null>(null)
 const drawnRectangles = ref<DrawnRectangle[]>([])
 
 function toggleRectMode() {
@@ -1312,14 +1318,13 @@ function startRectDraw(event: MouseEvent) {
   if (!start) return
 
   rectDrawing.value = true
-  rectPreview.value = { id: -1, x: start.x, y: start.y, width: 0, height: 0 }
+  rectPreview.value = { x: start.x, y: start.y, width: 0, height: 0 }
 
   const handleMove = (moveEvent: MouseEvent) => {
     if (!rectDrawing.value) return
     const current = getSvgPoint(moveEvent)
     if (!current) return
     rectPreview.value = {
-      id: -1,
       x: Math.min(start.x, current.x),
       y: Math.min(start.y, current.y),
       width: Math.abs(current.x - start.x),
@@ -1329,7 +1334,14 @@ function startRectDraw(event: MouseEvent) {
 
   const handleUp = () => {
     if (rectPreview.value && rectPreview.value.width > 2 && rectPreview.value.height > 2) {
-      drawnRectangles.value.push({ ...rectPreview.value, id: ++rectIdCounter })
+      const { x, y, width, height } = rectPreview.value
+      drawnRectangles.value.push({
+        id: ++rectIdCounter,
+        x,
+        width,
+        priceHigh: yToPrice(y),
+        priceLow: yToPrice(y + height),
+      })
     }
     rectDrawing.value = false
     rectPreview.value = null
@@ -1458,14 +1470,20 @@ function findBacktestPosition(id: number): BacktestPosition | undefined {
   return backtestPositions.value.find(p => p.id === id)
 }
 
-/** Converts a mouse event's clientX into the nearest candle index, clamped to range. */
+/**
+ * Converts a mouse event's clientX into a candle-index position. Returns a
+ * continuous (non-rounded) value for smooth dragging, and is only clamped
+ * at the low end (can't go left of the first candle) — there's no upper
+ * clamp, so this happily returns indexes past the last candle, i.e. out
+ * into blank/no-candle-yet space to the right of the chart.
+ */
 function clientXToCandleIndex(clientX: number): number | null {
   if (!chartContainer.value) return null
   const rect = chartContainer.value.querySelector('svg')?.getBoundingClientRect()
   if (!rect) return null
   const x = clientX - rect.left
-  const rawIndex = Math.round((x - 10 - candleWidth.value / 2) / (candleWidth.value + candleGap))
-  return Math.max(0, Math.min(displayCandles.value.length - 1, rawIndex))
+  const rawIndex = (x - 10 - candleWidth.value / 2) / (candleWidth.value + candleGap)
+  return Math.max(0, rawIndex)
 }
 
 // ─── Backtest position free-drag (fully freeform, like the Rectangle tool) ────
@@ -1474,11 +1492,10 @@ function clientXToCandleIndex(clientX: number): number | null {
 //  - entry line  → vertical only, moves entryPrice
 //  - tp line     → vertical only, moves tpPrice
 //  - sl line     → vertical only, moves slPrice
-//  - move handle → horizontal (snaps to nearest candle, clamped to
-//                  backtestIndex so the box never gets a negative width)
-//                  + vertical (free), drags the WHOLE position — entry
-//                  candle and all three prices shift together, offsets
-//                  preserved.
+//  - move handle → horizontal (free — can be dragged anywhere, including
+//                  blank space with no candle data yet) + vertical (free),
+//                  drags the WHOLE position — entry candle and all three
+//                  prices shift together, offsets preserved.
 function backtestPriceShift(startClientY: number, moveClientY: number): number {
   const originalRange = maxPrice.value - minPrice.value
   return -((moveClientY - startClientY) / svgHeight) * originalRange
@@ -1554,7 +1571,7 @@ function startBacktestMoveDrag(id: number, event: MouseEvent) {
   const handleMove = (moveEvent: MouseEvent) => {
     const newIndex = clientXToCandleIndex(moveEvent.clientX)
     if (newIndex !== null) {
-      pos.entryIndex = Math.min(newIndex, backtestIndex.value)
+      pos.entryIndex = newIndex
     }
     const priceShift = backtestPriceShift(startY, moveEvent.clientY)
     pos.entryPrice = startEntryPrice + priceShift
@@ -1574,13 +1591,20 @@ function startBacktestMoveDrag(id: number, event: MouseEvent) {
  * revealed so far (up to backtestIndex) to find whether TP or SL was hit
  * first. Status strings match the existing `status-*` CSS classes
  * (open / win_long / win_short / loss_long / loss_short).
+ *
+ * `pos.entryIndex` can now be a non-integer (mid-drag) or sit beyond
+ * `backtestIndex` entirely (dragged out into blank/no-candle-yet space) —
+ * `entryIdx` rounds it for the actual candle lookup, and `endIndex` is
+ * clamped to never fall short of it, so a position parked in blank space
+ * renders as a zero-width marker instead of a negative-width box.
  */
 function evaluateBacktestPosition(pos: BacktestPosition) {
   const isLong = pos.side === 'LONG'
-  let endIndex = Math.min(backtestIndex.value, props.candles.length - 1)
+  const entryIdx = Math.round(pos.entryIndex)
+  let endIndex = Math.max(entryIdx, Math.min(backtestIndex.value, props.candles.length - 1))
   let status = 'open'
 
-  for (let j = pos.entryIndex + 1; j <= backtestIndex.value; j++) {
+  for (let j = entryIdx + 1; j <= backtestIndex.value; j++) {
     const c = props.candles[j]
     if (!c || c.high == null || c.low == null) continue
     const hitTp = isLong ? c.high >= pos.tpPrice : c.low <= pos.tpPrice
@@ -2860,6 +2884,11 @@ const volumeBars = computed(() => {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const priceToY = (price: number): number => {
   return ((maxPrice.value - price) / priceDelta.value) * svgHeight
+}
+
+/** Inverse of priceToY — converts an SVG y-coordinate back into a price. */
+const yToPrice = (y: number): number => {
+  return maxPrice.value - (y / svgHeight) * priceDelta.value
 }
 
 const candleX = (index: number): number => {
