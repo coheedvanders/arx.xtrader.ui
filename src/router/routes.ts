@@ -48,6 +48,12 @@ const routes: RouteRecordRaw[] = [
         name: 'ma-crossing',
         component: () => import('@/pages/trading/BestMACrossingScannerPage.vue'),
       },
+
+      {
+        path: 'accumulation',
+        name: 'accumulation',
+        component: () => import('@/pages/trading/AccumulationPage.vue'),
+      },
     ]
   },
   {

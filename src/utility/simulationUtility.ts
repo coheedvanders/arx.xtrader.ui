@@ -421,6 +421,15 @@ export class SimulationUtility {
                                 candle.candleData.conditionMet = "ZONE_UPPER_REJECTION"
                             }
                         }
+
+                        var currentPriceZoneHigh = Math.max(...movingCandles.filter(c => c.priceZone == candle.priceZone).map(c => c.high),candle.priceZone.upper,candle.priceZone.lower);
+                        var currentPriceZoneLow = Math.min(...movingCandles.filter(c => c.priceZone == candle.priceZone).map(c => c.low),candle.priceZone.upper,candle.priceZone.lower);
+
+                        var priceZoneHighLowChangeDiff = Math.abs(((currentPriceZoneHigh - currentPriceZoneLow) / currentPriceZoneLow) * 100);
+                        
+                        if(priceZoneHighLowChangeDiff > 20){
+                            candle.candleData.conditionMet = "BIG_SPAN"
+                        }
                         
                         //end
                     }

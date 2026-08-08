@@ -37,6 +37,8 @@
 
       <button @click="showMaCrossing = true">See MA</button>
 
+      <button @click="showAccumulationAnalysis = true">Accumulation Scan</button>
+
       <!-- ── Volume Profile Fixed Range tool ─────────────────────────── -->
       <button
         class="tool-btn"
@@ -816,8 +818,8 @@
         <!-- Volume Profile Fixed Range overlays -->
         <g class="volume-profiles">
           <g
-            v-for="(profile, pIdx) in renderedVolumeProfiles"
-            :key="`vp-${pIdx}`"
+            v-for="profile in renderedVolumeProfiles"
+            :key="`vp-${profile.id}`"
             class="volume-profile"
           >
             <!-- range selection box -->
@@ -829,8 +831,23 @@
               class="vp-range-rect"
             />
 
+            <!-- Left/right edge resize handles: drag horizontally to
+                 extend or shrink the profile's period after placement. -->
+            <line
+              :x1="profile.leftX" :x2="profile.leftX"
+              :y1="profile.rangeTop" :y2="profile.rangeBottom"
+              class="vp-edge-handle"
+              @mousedown="startVpResizeLeft(profile.id, $event)"
+            />
+            <line
+              :x1="candleX(profile.endIndex) + candleWidth / 2" :x2="candleX(profile.endIndex) + candleWidth / 2"
+              :y1="profile.rangeTop" :y2="profile.rangeBottom"
+              class="vp-edge-handle"
+              @mousedown="startVpResizeRight(profile.id, $event)"
+            />
+
             <!-- histogram rows: buy (left segment) + sell (right segment), stacked per row -->
-            <g v-for="(row, rIdx) in profile.rows" :key="`vp-${pIdx}-row-${rIdx}`">
+            <g v-for="(row, rIdx) in profile.rows" :key="`vp-${profile.id}-row-${rIdx}`">
               <rect
                 :x="row.x"
                 :y="row.y"
@@ -872,11 +889,19 @@
               Vol {{ formatNotional(profile.totalVolume) }}
             </text>
             <text
+              :x="profile.leftX + 4"
+              :y="profile.rangeTop - 20"
+              class="vp-oi-label"
+              :class="oiLabelClass(profile.id)"
+            >
+              {{ oiLabelText(profile.id) }}
+            </text>
+            <text
               :x="(candleX(profile.endIndex) + candleWidth / 2) - 4"
               :y="profile.rangeTop - 6"
               class="vp-close-btn"
               text-anchor="end"
-              @click="removeVolumeProfile(pIdx)"
+              @click="removeVolumeProfile(profile.id)"
             >
               ✕ remove
             </text>
@@ -918,7 +943,36 @@
               :width="rect.width"
               :height="priceToY(rect.priceLow) - priceToY(rect.priceHigh)"
               class="draw-rect"
+              @mousedown="startRectMoveDrag(rect.id, $event)"
             />
+
+            <!-- Edge resize handles: left/right adjust x+width, top/bottom
+                 adjust the stored priceHigh/priceLow directly. -->
+            <line
+              :x1="rect.x" :x2="rect.x"
+              :y1="priceToY(rect.priceHigh)" :y2="priceToY(rect.priceLow)"
+              class="draw-rect-edge draw-rect-edge-v"
+              @mousedown="startRectResizeLeft(rect.id, $event)"
+            />
+            <line
+              :x1="rect.x + rect.width" :x2="rect.x + rect.width"
+              :y1="priceToY(rect.priceHigh)" :y2="priceToY(rect.priceLow)"
+              class="draw-rect-edge draw-rect-edge-v"
+              @mousedown="startRectResizeRight(rect.id, $event)"
+            />
+            <line
+              :x1="rect.x" :x2="rect.x + rect.width"
+              :y1="priceToY(rect.priceHigh)" :y2="priceToY(rect.priceHigh)"
+              class="draw-rect-edge draw-rect-edge-h"
+              @mousedown="startRectResizeTop(rect.id, $event)"
+            />
+            <line
+              :x1="rect.x" :x2="rect.x + rect.width"
+              :y1="priceToY(rect.priceLow)" :y2="priceToY(rect.priceLow)"
+              class="draw-rect-edge draw-rect-edge-h"
+              @mousedown="startRectResizeBottom(rect.id, $event)"
+            />
+
             <text
               :x="rect.x + rect.width - 4"
               :y="priceToY(rect.priceHigh) - 6"
@@ -1153,6 +1207,14 @@
         </DialogHeaderComponent>
         <MACrossingVisualizerComponent :symbol="props.symbol" />
     </DialogComponent>
+
+  <!-- Accumulation analysis dialog -->
+  <DialogComponent v-model="showAccumulationAnalysis">
+        <DialogHeaderComponent>
+            {{ props.symbol.toUpperCase() }} · Accumulation Scan
+        </DialogHeaderComponent>
+        <AccumulationAnalysisResultComponent v-if="showAccumulationAnalysis" :symbol="props.symbol" />
+    </DialogComponent>
 </template>
 
 <script setup lang="ts">
@@ -1163,6 +1225,8 @@ import { OrderMakerUtility } from '@/utility/OrderMakerUtility';
 import DialogComponent from '../shared/dialog/DialogComponent.vue';
 import KeyLevelVisualizerComponent from './KeyLevelVisualizerComponent.vue';
 import MACrossingVisualizerComponent from './MACrossingVisualizerComponent.vue';
+import AccumulationAnalysisResultComponent from './AccumulationAnalysisResultComponent.vue';
+import { getOpenInterestRateForRange, type OpenInterestRangeRate } from '@/utility/accumulationAnalysis.ts';
 import DialogHeaderComponent from '../shared/dialog/DialogHeaderComponent.vue';
 import { useChocoMintoStore } from '@/stores/chocoMintoStore.ts';
 import { isElementAccessExpression } from 'typescript';
@@ -1267,6 +1331,7 @@ let isDraggingChart = false
 
 const showKeyLevels = ref(false);
 const showMaCrossing = ref(false);
+const showAccumulationAnalysis = ref(false);
 
 // ─── Freeform rectangle draw tool ──────────────────────────────────────────
 //
@@ -1349,6 +1414,131 @@ function startRectDraw(event: MouseEvent) {
     document.removeEventListener('mouseup', handleUp)
   }
 
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+function findRectangle(id: number): DrawnRectangle | undefined {
+  return drawnRectangles.value.find(r => r.id === id)
+}
+
+/** Same idea as the other tools' price-shift helpers — converts a vertical mouse delta into a price delta at the current zoom/price-range. */
+function rectPriceDelta(startClientY: number, moveClientY: number): number {
+  const originalRange = maxPrice.value - minPrice.value
+  return -((moveClientY - startClientY) / svgHeight) * originalRange
+}
+
+// ─── Rectangle post-placement adjustment (move + resize on all 4 edges) ───────
+/** Drag the rectangle's body to move it freely — x (pixel) and price bounds shift together, offsets preserved. */
+function startRectMoveDrag(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const rect = findRectangle(id)
+  if (!rect) return
+  const startClientX = event.clientX
+  const startClientY = event.clientY
+  const startX = rect.x
+  const startPriceHigh = rect.priceHigh
+  const startPriceLow = rect.priceLow
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    const dx = moveEvent.clientX - startClientX
+    const dPrice = rectPriceDelta(startClientY, moveEvent.clientY)
+    rect.x = Math.max(0, startX + dx)
+    rect.priceHigh = startPriceHigh + dPrice
+    rect.priceLow = startPriceLow + dPrice
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/** Drag the left edge: adjusts x + width, right edge stays put. */
+function startRectResizeLeft(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const rect = findRectangle(id)
+  if (!rect) return
+  const startClientX = event.clientX
+  const startX = rect.x
+  const rightEdge = rect.x + rect.width
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    const dx = moveEvent.clientX - startClientX
+    const newX = Math.min(rightEdge - 4, startX + dx)
+    rect.x = newX
+    rect.width = rightEdge - newX
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/** Drag the right edge: adjusts width only. */
+function startRectResizeRight(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const rect = findRectangle(id)
+  if (!rect) return
+  const startClientX = event.clientX
+  const startWidth = rect.width
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    const dx = moveEvent.clientX - startClientX
+    rect.width = Math.max(4, startWidth + dx)
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/** Drag the top edge: adjusts priceHigh only. */
+function startRectResizeTop(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const rect = findRectangle(id)
+  if (!rect) return
+  const startClientY = event.clientY
+  const startPriceHigh = rect.priceHigh
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    const newPriceHigh = startPriceHigh + rectPriceDelta(startClientY, moveEvent.clientY)
+    rect.priceHigh = Math.max(newPriceHigh, rect.priceLow + 1e-9)
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/** Drag the bottom edge: adjusts priceLow only. */
+function startRectResizeBottom(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const rect = findRectangle(id)
+  if (!rect) return
+  const startClientY = event.clientY
+  const startPriceLow = rect.priceLow
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    const newPriceLow = startPriceLow + rectPriceDelta(startClientY, moveEvent.clientY)
+    rect.priceLow = Math.min(newPriceLow, rect.priceHigh - 1e-9)
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
   document.addEventListener('mousemove', handleMove)
   document.addEventListener('mouseup', handleUp)
 }
@@ -1696,6 +1886,7 @@ const zoneFullVerticalLines = computed(() => {
 // platforms use for this kind of profile. The row with the largest total
 // volume is the POC (point of control), drawn as the profile's mid line.
 interface VolumeProfileRange {
+  id: number
   startIndex: number
   endIndex: number
 }
@@ -1703,11 +1894,40 @@ interface VolumeProfileRange {
 const VP_NUM_BUCKETS = 24
 const VP_MAX_BAR_WIDTH = 140
 
+let vpIdCounter = 0
 const vpModeActive = ref(false)
 const vpDragging = ref(false)
 const vpStartIndex = ref<number | null>(null)
 const vpEndIndex = ref<number | null>(null)
 const volumeProfiles = ref<VolumeProfileRange[]>([])
+
+// ─── OI rate per FRVP profile ────────────────────────────────────────────────
+// Keyed by profile id since the OI fetch is async and range-specific (unlike
+// computeVolumeProfile, which is synchronous and derived purely from candles
+// already in memory). Reset/refetched whenever a profile's range changes.
+interface VpOiState {
+  status: 'loading' | 'ready' | 'error' | 'no-data'
+  data?: OpenInterestRangeRate
+  error?: string
+}
+const vpOiRates = ref<Record<number, VpOiState>>({})
+
+async function loadOiRateForProfile(id: number, startIndex: number, endIndex: number) {
+  const startCandle = displayCandles.value[startIndex]
+  const endCandle = displayCandles.value[endIndex]
+  if (!startCandle?.openTime || !endCandle?.openTime) return
+
+  vpOiRates.value[id] = { status: 'loading' }
+  try {
+    const intervalMs = intervalToMs(props.interval)
+    const startTime = startCandle.openTime
+    const endTime = endCandle.openTime + intervalMs
+    const data = await getOpenInterestRateForRange(props.symbol, startTime, endTime)
+    vpOiRates.value[id] = data ? { status: 'ready', data } : { status: 'no-data' }
+  } catch (err) {
+    vpOiRates.value[id] = { status: 'error', error: err instanceof Error ? err.message : 'failed' }
+  }
+}
 
 function toggleVpMode() {
   vpModeActive.value = !vpModeActive.value
@@ -1719,8 +1939,62 @@ function handleCandleClick(index: number) {
   openCandleModal(index)
 }
 
-function removeVolumeProfile(index: number) {
-  volumeProfiles.value.splice(index, 1)
+function removeVolumeProfile(id: number) {
+  volumeProfiles.value = volumeProfiles.value.filter(p => p.id !== id)
+  delete vpOiRates.value[id]
+}
+
+function findVolumeProfile(id: number): VolumeProfileRange | undefined {
+  return volumeProfiles.value.find(p => p.id === id)
+}
+
+/**
+ * Drag the left edge of a placed profile to adjust startIndex — extends or
+ * shrinks the period from the left after placement. Snapped to whole
+ * candles (unlike the backtest-position move handle, a volume profile has
+ * to stay within actual candle data, since it aggregates real OHLCV).
+ */
+function startVpResizeLeft(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const profile = findVolumeProfile(id)
+  if (!profile) return
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    const raw = clientXToCandleIndex(moveEvent.clientX)
+    if (raw === null) return
+    const snapped = Math.round(raw)
+    profile.startIndex = Math.max(0, Math.min(snapped, profile.endIndex - 1))
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+    loadOiRateForProfile(id, profile.startIndex, profile.endIndex)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/** Drag the right edge of a placed profile to adjust endIndex — extends or shrinks the period from the right after placement. */
+function startVpResizeRight(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const profile = findVolumeProfile(id)
+  if (!profile) return
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    const raw = clientXToCandleIndex(moveEvent.clientX)
+    if (raw === null) return
+    const snapped = Math.max(0, Math.min(displayCandles.value.length - 1, Math.round(raw)))
+    profile.endIndex = Math.max(profile.startIndex + 1, snapped)
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+    loadOiRateForProfile(id, profile.startIndex, profile.endIndex)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
 }
 
 function handleCandleMouseDownForVp(index: number, event: MouseEvent) {
@@ -1747,7 +2021,9 @@ function handleCandleMouseDownForVp(index: number, event: MouseEvent) {
       const s = Math.min(vpStartIndex.value, vpEndIndex.value)
       const e = Math.max(vpStartIndex.value, vpEndIndex.value)
       if (e > s) {
-        volumeProfiles.value.push({ startIndex: s, endIndex: e })
+        const id = ++vpIdCounter
+        volumeProfiles.value.push({ id, startIndex: s, endIndex: e })
+        loadOiRateForProfile(id, s, e)
       }
     }
     vpDragging.value = false
@@ -1851,10 +2127,32 @@ function computeVolumeProfile(startIndex: number, endIndex: number) {
   }
 }
 
+function oiLabelText(id: number): string {
+  const state = vpOiRates.value[id]
+  if (!state || state.status === 'loading') return 'OI: loading...'
+  if (state.status === 'error') return 'OI: fetch failed'
+  if (state.status === 'no-data') return 'OI: no data for range'
+  const d = state.data!
+  const sign = d.oiChangePct >= 0 ? '+' : ''
+  return `OI ${sign}${d.oiChangePct.toFixed(2)}% (${sign}${d.ratePerHour.toFixed(2)}%/hr)`
+}
+
+function oiLabelClass(id: number) {
+  const state = vpOiRates.value[id]
+  if (!state || state.status !== 'ready') return 'vp-oi-neutral'
+  const pct = state.data!.oiChangePct
+  if (pct > 1) return 'vp-oi-up'
+  if (pct < -1) return 'vp-oi-down'
+  return 'vp-oi-neutral'
+}
+
 /** All finalized (click-drag-completed) volume profiles, recomputed reactively as price scale/zoom changes. */
 const renderedVolumeProfiles = computed(() => {
   return volumeProfiles.value
-    .map(p => computeVolumeProfile(p.startIndex, p.endIndex))
+    .map(p => {
+      const profile = computeVolumeProfile(p.startIndex, p.endIndex)
+      return profile ? { ...profile, id: p.id } : null
+    })
     .filter((p): p is NonNullable<typeof p> => p !== null)
 })
 
@@ -3285,6 +3583,15 @@ const formatValue = (value: any): string => {
   stroke: rgba(100,149,237,0.6);
 }
 
+/* Invisible fat hit-area on each edge so a placed profile's period can be
+   extended/shrunk after the fact, without needing to redraw it. */
+.vp-edge-handle {
+  stroke: transparent;
+  stroke-width: 10;
+  cursor: ew-resize;
+  pointer-events: stroke;
+}
+
 .vp-row {
   opacity: 0.55;
 }
@@ -3313,6 +3620,15 @@ const formatValue = (value: any): string => {
   font-family: monospace;
 }
 
+.vp-oi-label {
+  font-size: 10px;
+  font-family: monospace;
+}
+
+.vp-oi-up { fill: #26a69a; }
+.vp-oi-down { fill: #ef5350; }
+.vp-oi-neutral { fill: rgba(255,255,255,0.45); }
+
 .vp-close-btn {
   fill: #ef5350;
   font-size: 10px;
@@ -3331,11 +3647,24 @@ const formatValue = (value: any): string => {
   stroke: #ffd54f;
   stroke-width: 1.5;
   pointer-events: all;
+  cursor: move;
 }
 .draw-rect-preview {
   stroke-dasharray: 4, 3;
   pointer-events: none;
+  cursor: default;
 }
+/* Invisible fat hit-areas along each edge so the rectangle can be resized
+   after placement — dragging an edge adjusts just that side (horizontal
+   edges → price bounds, vertical edges → x/width) without moving the rest
+   of the box. */
+.draw-rect-edge {
+  stroke: transparent;
+  stroke-width: 10;
+  pointer-events: stroke;
+}
+.draw-rect-edge-v { cursor: ew-resize; }
+.draw-rect-edge-h { cursor: ns-resize; }
 .draw-rect-close {
   fill: rgba(255, 255, 255, 0.5);
   font-size: 10px;
