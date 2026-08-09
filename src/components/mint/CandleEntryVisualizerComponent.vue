@@ -905,6 +905,15 @@
             >
               ✕ remove
             </text>
+            <text
+              :x="(candleX(profile.endIndex) + candleWidth / 2) - 4"
+              :y="profile.rangeTop - 20"
+              class="vp-download-btn"
+              text-anchor="end"
+              @click="downloadProfileData(profile.id)"
+            >
+              ⬇ download
+            </text>
           </g>
 
           <!-- live drag preview -->
@@ -2106,6 +2115,8 @@ function computeVolumeProfile(startIndex: number, endIndex: number) {
       sellWidth,
       buyVolume: b.buyVolume,
       sellVolume: b.sellVolume,
+      priceLow: b.priceLow,
+      priceHigh: b.priceHigh,
     }
   })
 
@@ -2120,11 +2131,88 @@ function computeVolumeProfile(startIndex: number, endIndex: number) {
     rightX: rightEdgeX + VP_MAX_BAR_WIDTH,
     rangeTop: priceToY(rangeHigh),
     rangeBottom: priceToY(rangeLow),
+    rangeHighPrice: rangeHigh,
+    rangeLowPrice: rangeLow,
     rows,
     pocY: priceToY(pocPrice),
     pocPrice,
     totalVolume,
   }
+}
+
+/**
+ * Bundles everything about a placed FRVP range - the raw OHLCV candles it
+ * covers, the computed volume profile (POC, per-bucket buy/sell volume with
+ * real price bounds), and the OI rate fetched for that same window - into a
+ * single JSON file. Meant to be handed directly to an LLM for analysis, so
+ * field names are kept explicit/self-describing rather than matching the
+ * internal render-oriented shape (pixel x/y, widths, etc. are omitted).
+ */
+function downloadProfileData(id: number) {
+  const meta = findVolumeProfile(id)
+  const profile = renderedVolumeProfiles.value.find(p => p.id === id)
+  if (!meta || !profile) return
+
+  const candles = displayCandles.value.slice(meta.startIndex, meta.endIndex + 1).map(c => ({
+    openTime: c.openTime,
+    openTimeIso: c.openTime ? new Date(c.openTime).toISOString() : null,
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close,
+    volume: c.volume,
+  }))
+
+  const oiState = vpOiRates.value[id]
+
+  const payload = {
+    symbol: props.symbol.toUpperCase(),
+    interval: props.interval,
+    generatedAt: new Date().toISOString(),
+    range: {
+      startIndex: meta.startIndex,
+      endIndex: meta.endIndex,
+      candleCount: candles.length,
+    },
+    candles,
+    fixedRangeVolumeProfile: {
+      rangeHighPrice: profile.rangeHighPrice,
+      rangeLowPrice: profile.rangeLowPrice,
+      pocPrice: profile.pocPrice,
+      totalVolume: profile.totalVolume,
+      buckets: profile.rows.map(r => ({
+        priceLow: r.priceLow,
+        priceHigh: r.priceHigh,
+        buyVolume: r.buyVolume,
+        sellVolume: r.sellVolume,
+        totalVolume: r.buyVolume + r.sellVolume,
+        isPoc: Math.abs((r.priceLow + r.priceHigh) / 2 - profile.pocPrice) < 1e-9,
+      })),
+    },
+    openInterest:
+      oiState?.status === 'ready'
+        ? {
+            status: 'ready',
+            startOi: oiState.data!.startOi,
+            endOi: oiState.data!.endOi,
+            oiChangeAbs: oiState.data!.oiChangeAbs,
+            oiChangePct: oiState.data!.oiChangePct,
+            ratePerHour: oiState.data!.ratePerHour,
+            period: oiState.data!.period,
+            pointCount: oiState.data!.pointCount,
+          }
+        : { status: oiState?.status ?? 'not-fetched', error: oiState?.error },
+  }
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${props.symbol.toLowerCase()}_frvp_${meta.startIndex}-${meta.endIndex}_${Date.now()}.json`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
 }
 
 function oiLabelText(id: number): string {
@@ -3634,6 +3722,21 @@ const formatValue = (value: any): string => {
   font-size: 10px;
   font-weight: bold;
   cursor: pointer;
+  pointer-events: all;
+}
+
+.vp-download-btn {
+  fill: #60a5fa;
+  font-size: 10px;
+  font-weight: bold;
+  cursor: pointer;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.volume-profile:hover .vp-download-btn {
+  opacity: 1;
   pointer-events: all;
 }
 

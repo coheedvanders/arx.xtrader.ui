@@ -391,7 +391,7 @@ export class SimulationUtility {
                         ){
                             var pastBears = movingCandles.slice(-3).filter(c => c.candleData && c.candleData.side == "bear" && c.candleData.change_percentage_v <= -0.1);
                             if(pastBears.length == 3){
-                                candle.candleData.conditionMet = "BEARISH"
+                                //candle.candleData.conditionMet = "BEARISH"
                             }
                         }
 
@@ -401,7 +401,7 @@ export class SimulationUtility {
                         ){
                             var pastBears = movingCandles.slice(-3).filter(c => c.candleData && c.candleData.side == "bull" && c.candleData.change_percentage_v >= 0.1);
                             if(pastBears.length == 3){
-                                candle.candleData.conditionMet = "BULLISH"
+                                //candle.candleData.conditionMet = "BULLISH"
                             }
                         }
 
@@ -429,6 +429,17 @@ export class SimulationUtility {
                         
                         if(priceZoneHighLowChangeDiff > 20){
                             candle.candleData.conditionMet = "BIG_SPAN"
+                        }
+
+                        if(priceZoneHighLowChangeDiff < 20 && priceZoneHighLowChangeDiff > 10){
+                            candle.candleData.conditionMet = "MEDIUM_SPAN"
+                        }
+
+                        if(priceZones.length >= 2 && !candle.candleData.conditionMet){
+                            var pastPriceZoneConditionMet = movingCandles.filter(c => c.priceZone == priceZones[priceZones.length - 2] && c.candleData!.zoneInhabitantCount == 24)[0].candleData!.conditionMet;
+                            if(pastPriceZoneConditionMet && !pastPriceZoneConditionMet.includes("PREV")){
+                                candle.candleData.conditionMet = "PREV_" + pastPriceZoneConditionMet.replace("PREV_","");
+                            }
                         }
                         
                         //end

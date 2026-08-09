@@ -9,7 +9,17 @@
         <select class="interval-select" v-model="selectedInterval" :disabled="loading">
           <option v-for="opt in INTERVAL_OPTIONS" :key="opt" :value="opt">{{ opt }}</option>
         </select>
-        <span v-if="loading" class="scan-progress">{{ scannedCount }} / {{ symbols.length }}</span>
+        <span v-if="loading || aggregatingNews" class="scan-progress">
+          <template v-if="loading">{{ scannedCount }} / {{ symbols.length }}</template>
+          <template v-else-if="aggregatingNews">aggregating news…</template>
+        </span>
+        <button
+          class="scan-btn secondary"
+          :disabled="loading || aggregatingNews || !results.length"
+          @click="aggregateNews"
+        >
+          {{ aggregatingNews ? 'Refreshing…' : 'Refresh News' }}
+        </button>
         <button class="scan-btn" :disabled="loading" @click="scanAll">
           {{ loading ? 'Scanning…' : results.length ? 'Rescan' : 'Scan' }}
         </button>
@@ -19,6 +29,9 @@
     <div v-if="errorSymbols.length" class="scan-errors">
       Failed to scan: {{ errorSymbols.join(', ') }}
     </div>
+    <div v-if="newsFetchError" class="scan-errors">
+      Failed to aggregate news (see console).
+    </div>
 
     <table class="scan-table">
       <thead>
@@ -27,6 +40,7 @@
           <th class="num">Total Volume (30d, USDT)</th>
           <th>Volume Buildup</th>
           <th>Trend</th>
+          <th>News</th>
         </tr>
       </thead>
       <tbody>
@@ -46,9 +60,20 @@
           <td>
             <span class="trend-badge" :class="r.trend">{{ r.trend }}</span>
           </td>
+          <td>
+            <span
+              v-if="r.news"
+              class="news-badge"
+              :class="r.news.sentiment"
+              :title="r.news.latestTitle || ''"
+            >
+              {{ r.news.postsCount }}
+            </span>
+            <span v-else class="news-badge muted">–</span>
+          </td>
         </tr>
         <tr v-if="!loading && sortedResults.length === 0">
-          <td colspan="4" class="empty">No symbols scanned yet.</td>
+          <td colspan="5" class="empty">No symbols scanned yet.</td>
         </tr>
       </tbody>
     </table>
@@ -72,9 +97,19 @@ import type { CandleEntry, FuturesSymbol } from '@/core/interfaces.ts';
 
 
 type Trend = 'bullish' | 'bearish' | 'ranging';
+type Sentiment = 'bullish' | 'bearish' | 'neutral';
 type Interval = '3m' | '5m' | '15m' | '1h' | '4h' | '1d';
 
 const INTERVAL_OPTIONS: Interval[] = ['3m', '5m', '15m', '1h', '4h', '1d'];
+
+interface NewsSummary {
+  postsCount: number;
+  bullishScore: number;
+  bearishScore: number;
+  sentiment: Sentiment;
+  latestTitle: string;
+  latestUrl: string;
+}
 
 interface ScanResult {
   symbol: string;
@@ -82,6 +117,7 @@ interface ScanResult {
   totalVolume: number;
   trend: Trend;
   volumeBuildup: boolean;
+  news: NewsSummary | null;
 }
 
 interface Props {
@@ -89,7 +125,8 @@ interface Props {
   lookbackDays?: number;
   buildupWindow?: number; // candles compared for volume buildup
   rangingThresholdPct?: number; // |close change %| below this = ranging
-  requestDelayMs?: number; // pause between each symbol's request, avoids rate limit bans
+  requestDelayMs?: number; // pause between each symbol's kline request, avoids rate limit bans
+  newsApiBase?: string; // base URL of your Flask API (orderbot-api.py), e.g. http://localhost:5000
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -98,6 +135,7 @@ const props = withDefaults(defineProps<Props>(), {
   buildupWindow: 10,
   rangingThresholdPct: 3,
   requestDelayMs: 200,
+  newsApiBase: 'http://127.0.0.1:5001',
 });
 
 const selectedInterval = ref<Interval>(props.defaultInterval);
@@ -111,6 +149,9 @@ const results = ref<ScanResult[]>([]);
 const loading = ref(false);
 const scannedCount = ref(0);
 const errorSymbols = ref<string[]>([]);
+
+const aggregatingNews = ref(false);
+const newsFetchError = ref(false);
 
 const showEntryHistory = ref(false);
 const selectedSymbol = ref('');
@@ -174,6 +215,32 @@ async function fetchKlines(symbol: string): Promise<CandleEntry[]> {
   }));
 }
 
+// One call to our own Flask API's /news endpoint, which aggregates several RSS
+// feeds server-side (no browser CORS wall there) and scores sentiment per symbol.
+// Runs once after the full candle scan — not once per symbol.
+async function aggregateNews(): Promise<void> {
+  if (!results.value.length) return;
+  aggregatingNews.value = true;
+  newsFetchError.value = false;
+
+  try {
+    const symbolList = results.value.map(r => r.symbol).join(',');
+    const url = `${props.newsApiBase}/news?symbols=${encodeURIComponent(symbolList)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`news api: ${res.status}`);
+    const payload = await res.json();
+    const data: Record<string, NewsSummary | null> = payload?.data ?? {};
+
+    for (const r of results.value) {
+      r.news = data[r.symbol] ?? null;
+    }
+  } catch (e) {
+    newsFetchError.value = true;
+  }
+
+  aggregatingNews.value = false;
+}
+
 function determineTrend(candles: CandleEntry[]): Trend {
   const first = candles[0].close;
   const last = candles[candles.length - 1].close;
@@ -200,6 +267,7 @@ async function scanSymbol(symbol: string): Promise<ScanResult> {
     totalVolume: candles.reduce((s, c) => s + c.volume * c.close, 0), // USDT notional, not base-asset volume
     trend: determineTrend(candles),
     volumeBuildup: hasVolumeBuildup(candles),
+    news: null,
   };
 }
 
@@ -220,11 +288,14 @@ async function scanAll(): Promise<void> {
       errorSymbols.value.push(symbol);
     }
     scannedCount.value++;
-    await sleep(props.requestDelayMs);
+    await sleep(props.requestDelayMs); // pace Binance klines requests
   }
 
   results.value = scanned;
   loading.value = false;
+
+  // News aggregation runs once, after the full candle scan is done — not per symbol.
+  await aggregateNews();
 }
 
 function openHistory(r: ScanResult): void {
@@ -296,6 +367,10 @@ onMounted(async () => {
   border-radius: 6px;
   font-size: 0.8rem;
   cursor: pointer;
+}
+
+.scan-btn.secondary {
+  opacity: 0.85;
 }
 
 .scan-btn:disabled {
@@ -375,6 +450,31 @@ onMounted(async () => {
 .trend-badge.ranging {
   background: rgba(148, 163, 184, 0.15);
   color: #94a3b8;
+}
+
+.news-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  background: rgba(148, 163, 184, 0.15);
+  color: #94a3b8;
+}
+
+.news-badge.bullish {
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+}
+
+.news-badge.bearish {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+}
+
+.news-badge.muted {
+  background: transparent;
+  color: #475569;
 }
 
 .empty {
