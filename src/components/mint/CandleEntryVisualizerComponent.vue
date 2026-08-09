@@ -57,6 +57,32 @@
         Clear VP ({{ volumeProfiles.length }})
       </button>
 
+      <button
+        class="tool-btn"
+        @click="fillPriceZonesWithVolumeProfile"
+        title="Auto-place one Fixed-Range Volume Profile per Price Zone (replaces any currently placed VPs)"
+      >
+        Fill PZ VP
+      </button>
+
+      <button
+        v-if="volumeProfiles.length > 0"
+        class="tool-btn"
+        @click="downloadAllFrvpZip"
+        title="Download every placed FRVP as a single zip (one JSON per profile + manifest + README)"
+      >
+        Download FRVPs ({{ volumeProfiles.length }})
+      </button>
+
+      <button
+        v-if="volumeProfiles.length > 0"
+        class="tool-btn"
+        @click="runFrvpAnalysis"
+        title="Run the confluence analyzer over every placed FRVP (oldest to newest) and show a LONG/SHORT/NEUTRAL read"
+      >
+        Analyze FRVPs
+      </button>
+
       <!-- ── Freeform rectangle draw tool ──────────────────────────────── -->
       <button
         class="tool-btn"
@@ -1224,6 +1250,127 @@
         </DialogHeaderComponent>
         <AccumulationAnalysisResultComponent v-if="showAccumulationAnalysis" :symbol="props.symbol" />
     </DialogComponent>
+
+  <!-- FRVP confluence analysis dialog -->
+  <DialogComponent v-model="showFrvpAnalysis" :width="'900px'">
+    <DialogHeaderComponent>
+      {{ props.symbol.toUpperCase() }} · FRVP Market Analysis
+    </DialogHeaderComponent>
+
+    <div style="max-height:90vh;overflow:auto;">
+      <div v-if="frvpAnalysisResult" class="frvp-analysis">
+        <div class="frvp-analysis-meta">
+          <span>Symbol: {{ frvpAnalysisResult.symbol }}</span>
+          <span>Interval: {{ frvpAnalysisResult.interval }}</span>
+          <span>Zones analyzed: {{ frvpAnalysisResult.zonesAnalyzed }}</span>
+          <span>OI coverage: {{ frvpAnalysisResult.oiCoverage.withOi }} / {{ frvpAnalysisResult.oiCoverage.total }}</span>
+        </div>
+
+        <div class="frvp-bias-card" :class="`frvp-bias-${frvpAnalysisResult.bias.toLowerCase()}`">
+          <div class="frvp-bias-label">{{ frvpAnalysisResult.bias }}</div>
+          <div class="frvp-bias-confidence">
+            {{ frvpAnalysisResult.confidencePct }}% CONFIDENCE
+            <span class="frvp-bias-strength">({{ frvpAnalysisResult.biasStrength.replace('_', ' ') }})</span>
+          </div>
+          <div class="frvp-bias-caveat">Directional bias — not probability of profit</div>
+        </div>
+
+        <div v-if="frvpAnalysisResult.reasons.length" class="frvp-section">
+          <h4>Why?</h4>
+          <ul class="frvp-reason-list">
+            <li v-for="(r, i) in frvpAnalysisResult.reasons" :key="`frvp-reason-${i}`">✓ {{ r }}</li>
+          </ul>
+        </div>
+
+        <div v-if="frvpAnalysisResult.warnings.length" class="frvp-section">
+          <h4>Risk / Contradictions</h4>
+          <ul class="frvp-warning-list">
+            <li v-for="(w, i) in frvpAnalysisResult.warnings" :key="`frvp-warn-${i}`">⚠ {{ w }}</li>
+          </ul>
+        </div>
+
+        <div class="frvp-section">
+          <h4>Current FRVP Structure</h4>
+          <div class="frvp-badges">
+            <span class="frvp-badge">Price Direction: {{ frvpAnalysisResult.currentStructure.priceDirection }}</span>
+            <span class="frvp-badge">POC Position: {{ frvpAnalysisResult.currentStructure.pocPositionBand }}</span>
+            <span class="frvp-badge">Close vs POC: {{ frvpAnalysisResult.currentStructure.closePocRelation }}</span>
+            <span class="frvp-badge">Displacement: {{ frvpAnalysisResult.currentStructure.pocDisplacementBand }}</span>
+            <span class="frvp-badge">
+              HVN: {{ frvpAnalysisResult.currentStructure.hvnStructure }} ({{ frvpAnalysisResult.currentStructure.hvnSpread }})
+            </span>
+            <span class="frvp-badge">Edges: {{ frvpAnalysisResult.currentStructure.edgeThickness }}</span>
+            <span class="frvp-badge">
+              OI: {{ frvpAnalysisResult.currentStructure.oiRegime }}
+              <template v-if="frvpAnalysisResult.currentStructure.oiChangePct !== null">
+                ({{ frvpAnalysisResult.currentStructure.oiChangePct!.toFixed(2) }}%)
+              </template>
+            </span>
+          </div>
+        </div>
+
+        <div class="frvp-section">
+          <h4>Pattern Detected: {{ frvpAnalysisResult.patternDetected }}</h4>
+          <p class="frvp-pattern-explanation">{{ frvpAnalysisResult.patternExplanation }}</p>
+        </div>
+
+        <div class="frvp-section">
+          <h4>Historical Validation</h4>
+          <p v-if="frvpAnalysisResult.historicalValidation.insufficientSample" class="frvp-hist-unavailable">
+            Historical validation unavailable — only {{ frvpAnalysisResult.historicalValidation.comparableSetups }}
+            comparable setup(s) found.
+          </p>
+          <p v-else>
+            Similar setups: {{ frvpAnalysisResult.historicalValidation.comparableSetups }} ·
+            Correct: {{ frvpAnalysisResult.historicalValidation.correct }} ·
+            Historical hit rate: {{ frvpAnalysisResult.historicalValidation.accuracy }}%
+          </p>
+        </div>
+
+        <div class="frvp-section">
+          <h4>Zone-by-Zone Analysis</h4>
+          <details
+            v-for="(z, i) in frvpAnalysisResult.zones"
+            :key="`frvp-zone-${z.id}`"
+            class="frvp-zone-detail"
+            :open="i === frvpAnalysisResult.zones.length - 1"
+          >
+            <summary>
+              Zone {{ String(i + 1).padStart(2, '0') }} — {{ z.structure.priceDirection }}
+              {{ z.structure.priceChangePct.toFixed(2) }}% · {{ z.signal }} · {{ z.patternLabel }}
+            </summary>
+            <div class="frvp-zone-body">
+              <div>Price: {{ z.structure.priceDirection }} {{ z.structure.priceChangePct.toFixed(2) }}%</div>
+              <div>POC: {{ z.structure.pocPositionBand }}</div>
+              <div>Close vs POC: {{ z.structure.closePocRelation }}</div>
+              <div>Displacement: {{ z.structure.pocDisplacementBand }}</div>
+              <div>HVN: {{ z.structure.hvnStructure }} ({{ z.structure.hvnSpread }})</div>
+              <div>Edges: {{ z.structure.edgeThickness }}</div>
+              <div>
+                OI: {{ z.structure.oiRegime }}
+                <template v-if="z.structure.oiChangePct !== null">({{ z.structure.oiChangePct!.toFixed(2) }}%)</template>
+              </div>
+              <div>Signal: {{ z.signal }} BIAS</div>
+              <div v-if="z.nextZone">
+                Next zone: {{ z.nextZone.actualDirection }}
+                <span v-if="z.nextZone.predictedCorrect === true" class="frvp-hit">(prediction correct)</span>
+                <span v-else-if="z.nextZone.predictedCorrect === false" class="frvp-miss">(prediction missed)</span>
+              </div>
+              <div>Pattern: {{ z.patternLabel }}</div>
+            </div>
+          </details>
+        </div>
+
+        <div class="frvp-section frvp-narrative">
+          <p>{{ frvpAnalysisResult.narrative }}</p>
+        </div>
+      </div>
+
+      <div v-else class="frvp-analysis-empty">
+        Place at least one FRVP on the chart, then click "Analyze FRVPs".
+      </div>
+    </div>
+  </DialogComponent>
 </template>
 
 <script setup lang="ts">
@@ -1236,6 +1383,7 @@ import KeyLevelVisualizerComponent from './KeyLevelVisualizerComponent.vue';
 import MACrossingVisualizerComponent from './MACrossingVisualizerComponent.vue';
 import AccumulationAnalysisResultComponent from './AccumulationAnalysisResultComponent.vue';
 import { getOpenInterestRateForRange, type OpenInterestRangeRate } from '@/utility/accumulationAnalysis.ts';
+import { analyzeFrvps, type FrvpAnalysisResult, type FrvpZoneInput } from '@/utility/analyzeFrvps';
 import DialogHeaderComponent from '../shared/dialog/DialogHeaderComponent.vue';
 import { useChocoMintoStore } from '@/stores/chocoMintoStore.ts';
 import { isElementAccessExpression } from 'typescript';
@@ -1341,6 +1489,8 @@ let isDraggingChart = false
 const showKeyLevels = ref(false);
 const showMaCrossing = ref(false);
 const showAccumulationAnalysis = ref(false);
+const showFrvpAnalysis = ref(false);
+const frvpAnalysisResult = ref<FrvpAnalysisResult | null>(null);
 
 // ─── Freeform rectangle draw tool ──────────────────────────────────────────
 //
@@ -2046,6 +2196,66 @@ function handleCandleMouseDownForVp(index: number, event: MouseEvent) {
   document.addEventListener('mouseup', handleUp)
 }
 
+/** Small pause between queued OI fetches so "Fill PZ VP" doesn't burst-fire one request per zone. */
+const VP_FILL_OI_THROTTLE_MS = 300
+
+function delay(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/**
+ * "Fill PZ VP" — auto-places one Fixed-Range Volume Profile per Price Zone,
+ * instead of hand-dragging a VP box over each zone. Walks displayCandles
+ * the same way zoneRectangles does to find each zone's [startIndex, endIndex]
+ * (grouped by candle.priceZone, CANDLES_PER_ZONE candles per zone), then
+ * replaces whatever VP boxes are currently placed with a fresh one per zone.
+ *
+ * The VP boxes themselves all appear at once (computeVolumeProfile is
+ * synchronous, driven off candles already in memory). Only the per-zone OI
+ * rate lookups are network calls, and those are awaited one at a time with
+ * a throttle delay between them — otherwise filling, say, 15 zones would
+ * fire 15 concurrent OI requests and risk tripping the API's rate limit.
+ */
+async function fillPriceZonesWithVolumeProfile() {
+  const ranges: { startIndex: number; endIndex: number }[] = []
+  let currentZone: CandleEntry['priceZone'] | null = null
+  let zoneStartIndex = 0
+
+  for (let i = 0; i < displayCandles.value.length; i++) {
+    const candle = displayCandles.value[i]
+    if (candle.priceZone && (!currentZone || JSON.stringify(currentZone) !== JSON.stringify(candle.priceZone))) {
+      if (currentZone) {
+        ranges.push({ startIndex: zoneStartIndex, endIndex: i - 1 })
+      }
+      currentZone = candle.priceZone
+      zoneStartIndex = i
+    }
+  }
+  if (currentZone) {
+    const zoneEndIndex = Math.min(zoneStartIndex + CANDLES_PER_ZONE - 1, displayCandles.value.length - 1)
+    ranges.push({ startIndex: zoneStartIndex, endIndex: zoneEndIndex })
+  }
+
+  // Wipe whatever's currently placed so zones don't stack duplicate VPs on repeat clicks.
+  for (const p of volumeProfiles.value) delete vpOiRates.value[p.id]
+  volumeProfiles.value = []
+
+  // Place every VP box up front (instant, no network) so the chart fills in immediately...
+  const placed: { id: number; startIndex: number; endIndex: number }[] = []
+  for (const { startIndex, endIndex } of ranges) {
+    if (endIndex <= startIndex) continue
+    const id = ++vpIdCounter
+    volumeProfiles.value.push({ id, startIndex, endIndex })
+    placed.push({ id, startIndex, endIndex })
+  }
+
+  // ...then fetch OI rates one zone at a time, throttled, instead of all at once.
+  for (const { id, startIndex, endIndex } of placed) {
+    await loadOiRateForProfile(id, startIndex, endIndex)
+    await delay(VP_FILL_OI_THROTTLE_MS)
+  }
+}
+
 /**
  * Builds a Fixed-Range Volume Profile for candles [startIndex, endIndex].
  * Returns null if the range is empty or degenerate.
@@ -2141,17 +2351,19 @@ function computeVolumeProfile(startIndex: number, endIndex: number) {
 }
 
 /**
- * Bundles everything about a placed FRVP range - the raw OHLCV candles it
- * covers, the computed volume profile (POC, per-bucket buy/sell volume with
- * real price bounds), and the OI rate fetched for that same window - into a
- * single JSON file. Meant to be handed directly to an LLM for analysis, so
- * field names are kept explicit/self-describing rather than matching the
- * internal render-oriented shape (pixel x/y, widths, etc. are omitted).
+ * Builds the exportable payload for a single placed FRVP range - the raw
+ * OHLCV candles it covers, the computed volume profile (POC, per-bucket
+ * buy/sell volume with real price bounds), and the OI rate fetched for that
+ * same window. Shared by the single-profile download button and the
+ * "Download FRVPs" (all-profiles zip) button below. Field names are kept
+ * explicit/self-describing (rather than matching the internal
+ * render-oriented shape - pixel x/y, widths, etc. are omitted) since this
+ * is meant to be handed directly to an LLM for analysis.
  */
-function downloadProfileData(id: number) {
+function buildFrvpExportPayload(id: number) {
   const meta = findVolumeProfile(id)
   const profile = renderedVolumeProfiles.value.find(p => p.id === id)
-  if (!meta || !profile) return
+  if (!meta || !profile) return null
 
   const candles = displayCandles.value.slice(meta.startIndex, meta.endIndex + 1).map(c => ({
     openTime: c.openTime,
@@ -2165,7 +2377,7 @@ function downloadProfileData(id: number) {
 
   const oiState = vpOiRates.value[id]
 
-  const payload = {
+  return {
     symbol: props.symbol.toUpperCase(),
     interval: props.interval,
     generatedAt: new Date().toISOString(),
@@ -2203,16 +2415,140 @@ function downloadProfileData(id: number) {
           }
         : { status: oiState?.status ?? 'not-fetched', error: oiState?.error },
   }
+}
+
+function downloadProfileData(id: number) {
+  const payload = buildFrvpExportPayload(id)
+  if (!payload) return
 
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `${props.symbol.toLowerCase()}_frvp_${meta.startIndex}-${meta.endIndex}_${Date.now()}.json`
+  a.download = `${props.symbol.toLowerCase()}_frvp_${payload.range.startIndex}-${payload.range.endIndex}_${Date.now()}.json`
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
+}
+
+/**
+ * "Download FRVPs" - zips the export payload of every currently placed FRVP
+ * into a single .zip (one JSON file per profile, ordered left-to-right by
+ * startIndex), plus a manifest.json summarizing the batch and a README.txt
+ * with the prompt-ready structure explanation. Requires the `jszip` package
+ * (npm install jszip) - add it to the project if it isn't already there.
+ */
+async function downloadAllFrvpZip() {
+  if (volumeProfiles.value.length === 0) return
+
+  const JSZip = (await import('jszip')).default
+  const zip = new JSZip()
+
+  const sorted = [...volumeProfiles.value].sort((a, b) => a.startIndex - b.startIndex)
+  const fileEntries: { file: string; startIndex: number; endIndex: number; candleCount: number }[] = []
+
+  sorted.forEach((meta, i) => {
+    const payload = buildFrvpExportPayload(meta.id)
+    if (!payload) return
+    const fileName = `frvp_${String(i + 1).padStart(2, '0')}_${meta.startIndex}-${meta.endIndex}.json`
+    zip.file(fileName, JSON.stringify(payload, null, 2))
+    fileEntries.push({
+      file: fileName,
+      startIndex: meta.startIndex,
+      endIndex: meta.endIndex,
+      candleCount: payload.range.candleCount,
+    })
+  })
+
+  const manifest = {
+    symbol: props.symbol.toUpperCase(),
+    interval: props.interval,
+    generatedAt: new Date().toISOString(),
+    profileCount: fileEntries.length,
+    orderedOldestToNewest: true,
+    files: fileEntries,
+  }
+  zip.file('manifest.json', JSON.stringify(manifest, null, 2))
+  zip.file('README.txt', FRVP_ZIP_README)
+
+  const blob = await zip.generateAsync({ type: 'blob' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${props.symbol.toLowerCase()}_frvps_${Date.now()}.zip`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+const FRVP_ZIP_README = `This zip contains Fixed-Range Volume Profiles (FRVPs) exported from the chart.
+
+FILES
+- manifest.json          Batch summary: symbol, interval, and the ordered list of
+                          FRVP files (oldest range first, by startIndex).
+- frvp_NN_start-end.json One file per FRVP box placed on the chart, NN = order
+                          (01, 02, ...), start-end = candle index range it covers.
+
+EACH frvp_NN_*.json FILE SHAPE
+{
+  "symbol": string,
+  "interval": string,              // candle interval, e.g. "15m"
+  "generatedAt": ISO timestamp,
+  "range": { "startIndex", "endIndex", "candleCount" },
+  "candles": [                     // raw OHLCV for every candle in this FRVP's range, oldest first
+    { "openTime", "openTimeIso", "open", "high", "low", "close", "volume" }
+  ],
+  "fixedRangeVolumeProfile": {
+    "rangeHighPrice", "rangeLowPrice",
+    "pocPrice",                    // Point of Control: price level with the most total volume
+    "totalVolume",
+    "buckets": [                   // price rows across the range, low to high
+      { "priceLow", "priceHigh", "buyVolume", "sellVolume", "totalVolume", "isPoc" }
+    ]
+  },
+  "openInterest": {
+    "status": "ready" | "no-data" | "error" | "not-fetched",
+    "startOi", "endOi", "oiChangeAbs", "oiChangePct", "ratePerHour", "period", "pointCount"
+  }
+}
+
+Each FRVP is one price zone from the chart: its own candle range, its own volume
+profile (where volume built up within that range), and its own OI change over that
+same window. Consecutive files (frvp_01, frvp_02, ...) are consecutive zones in time.
+`
+
+/**
+ * "Analyze FRVPs" - runs the confluence analyzer (analyzeFrvps.ts) over every
+ * currently placed FRVP, oldest to newest, and opens the result in a modal.
+ * Reuses buildFrvpExportPayload() so the analyzer sees exactly the same
+ * candles/profile/OI data as the JSON/zip exports - no separate data path.
+ */
+function runFrvpAnalysis() {
+  if (volumeProfiles.value.length === 0) return
+
+  const sorted = [...volumeProfiles.value].sort((a, b) => a.startIndex - b.startIndex)
+  const zoneInputs: FrvpZoneInput[] = []
+
+  for (const meta of sorted) {
+    const payload = buildFrvpExportPayload(meta.id)
+    if (!payload) continue
+    zoneInputs.push({
+      id: meta.id,
+      startIndex: payload.range.startIndex,
+      endIndex: payload.range.endIndex,
+      candles: payload.candles,
+      fixedRangeVolumeProfile: payload.fixedRangeVolumeProfile,
+      openInterest: payload.openInterest as FrvpZoneInput['openInterest'],
+    })
+  }
+
+  frvpAnalysisResult.value = analyzeFrvps(zoneInputs, {
+    symbol: props.symbol.toUpperCase(),
+    interval: props.interval,
+  })
+  showFrvpAnalysis.value = true
 }
 
 function oiLabelText(id: number): string {
@@ -3716,6 +4052,143 @@ const formatValue = (value: any): string => {
 .vp-oi-up { fill: #26a69a; }
 .vp-oi-down { fill: #ef5350; }
 .vp-oi-neutral { fill: rgba(255,255,255,0.45); }
+
+/* ── FRVP confluence analysis modal ────────────────────────────────────── */
+.frvp-analysis {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 4px 2px 12px;
+  color: #ccc;
+  font-size: 13px;
+}
+
+.frvp-analysis-empty {
+  padding: 24px;
+  color: rgba(255,255,255,0.5);
+  font-size: 13px;
+  text-align: center;
+}
+
+.frvp-analysis-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 12px;
+  color: rgba(255,255,255,0.55);
+}
+
+.frvp-bias-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 18px;
+  border-radius: 8px;
+  border: 1px solid #444;
+  background: rgba(255,255,255,0.04);
+}
+
+.frvp-bias-label {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.frvp-bias-confidence {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.frvp-bias-strength {
+  font-weight: 400;
+  color: rgba(255,255,255,0.6);
+}
+
+.frvp-bias-caveat {
+  font-size: 11px;
+  color: rgba(255,255,255,0.45);
+  font-style: italic;
+}
+
+.frvp-bias-long { border-color: rgba(38,166,154,0.5); }
+.frvp-bias-long .frvp-bias-label { color: #26a69a; }
+.frvp-bias-short { border-color: rgba(239,83,80,0.5); }
+.frvp-bias-short .frvp-bias-label { color: #ef5350; }
+.frvp-bias-neutral { border-color: rgba(255,255,255,0.25); }
+.frvp-bias-neutral .frvp-bias-label { color: rgba(255,255,255,0.6); }
+
+.frvp-section h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #eee;
+}
+
+.frvp-reason-list, .frvp-warning-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.frvp-warning-list { color: #d9a441; }
+
+.frvp-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.frvp-badge {
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid #444;
+  background: rgba(255,255,255,0.05);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.frvp-pattern-explanation, .frvp-hist-unavailable {
+  margin: 0;
+  color: rgba(255,255,255,0.7);
+}
+
+.frvp-zone-detail {
+  border: 1px solid #333;
+  border-radius: 4px;
+  margin-bottom: 6px;
+  padding: 6px 10px;
+}
+
+.frvp-zone-detail summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #ccc;
+}
+
+.frvp-zone-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 4px 12px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: rgba(255,255,255,0.75);
+}
+
+.frvp-hit { color: #26a69a; }
+.frvp-miss { color: #ef5350; }
+
+.frvp-narrative p {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.04);
+  color: rgba(255,255,255,0.8);
+  font-size: 12px;
+  line-height: 1.5;
+}
 
 .vp-close-btn {
   fill: #ef5350;
