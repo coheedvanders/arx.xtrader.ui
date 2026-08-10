@@ -436,9 +436,12 @@ export class SimulationUtility {
                         }
 
                         if(priceZones.length >= 2 && !candle.candleData.conditionMet){
-                            var pastPriceZoneConditionMet = movingCandles.filter(c => c.priceZone == priceZones[priceZones.length - 2] && c.candleData!.zoneInhabitantCount == 24)[0].candleData!.conditionMet;
-                            if(pastPriceZoneConditionMet && !pastPriceZoneConditionMet.includes("PREV")){
-                                candle.candleData.conditionMet = "PREV_" + pastPriceZoneConditionMet.replace("PREV_","");
+                            var lastCandleInZone = movingCandles.filter(c => c.priceZone == priceZones[priceZones.length - 2] && c.candleData && c.candleData.zoneInhabitantCount == 24)[0];
+                            if(lastCandleInZone){
+                                var pastPriceZoneConditionMet = lastCandleInZone.candleData?.conditionMet;
+                                if(pastPriceZoneConditionMet && !pastPriceZoneConditionMet.includes("PREV")){
+                                    candle.candleData.conditionMet = "PREV_" + pastPriceZoneConditionMet.replace("PREV_","");
+                                }
                             }
                         }
                         

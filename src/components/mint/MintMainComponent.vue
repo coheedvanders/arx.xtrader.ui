@@ -216,7 +216,7 @@ const notificationStore = useNotificationStore();
 const isBotEnabled = ref(false)
 
 const MASTER_SYMBOL = "BTCUSDT";
-const KLINE_INTERVAL = "15m"
+const KLINE_INTERVAL = "1h"
 const MAX_INIT_CANDLES = 500;
 const SUPPORT_AND_RESISTANCE_PERIOD_LENGTH = 10;
 

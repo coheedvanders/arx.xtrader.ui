@@ -13,6 +13,14 @@
 // from it. OI is a confirmation/context signal on top of that, never a
 // standalone directional signal by itself.
 //
+// Two cross-zone confluence checks sit on top of each zone's own POC read:
+//   - POC/HVN overlap: does this zone's POC/HVN line up with a level a
+//     recent prior zone also treated as significant? (computeZoneConfluence)
+//   - Rally/decline exhaustion: is a sustained prior move decelerating and
+//     showing early signs of failing, ahead of a fully confirmed reversal?
+//     (detectRallyExhaustion — softer/earlier than the confirmed
+//     failedDisplacementReversal case in scoreZone)
+//
 // All magic numbers live in THRESHOLDS / WEIGHTS below so they're easy to
 // tune without hunting through the logic.
 
@@ -79,6 +87,10 @@ export type EdgeThickness = 'THIN_EDGES' | 'NORMAL_EDGES' | 'THICK_EDGES'
 export type OiRegime = 'BUILDING' | 'UNWINDING' | 'FLAT' | 'UNAVAILABLE'
 export type Bias = 'LONG' | 'SHORT' | 'NEUTRAL'
 export type BiasStrength = 'NEUTRAL' | 'WEAK' | 'MODERATE' | 'STRONG' | 'VERY_STRONG'
+/** Whether this zone's POC/HVN sits at a level a recent prior zone also treated as significant. */
+export type ConfluenceLevel = 'NONE' | 'POC_OVERLAP' | 'HVN_OVERLAP'
+/** A sustained prior-zone rally/decline that is decelerating but hasn't produced a confirmed reversal yet (see PatternBreak for the confirmed case). */
+export type PriorTrendExhaustion = 'NONE' | 'RALLY_EXHAUSTION' | 'DECLINE_EXHAUSTION'
 
 /** Tunable thresholds. All percentages are expressed as plain numbers (0.10 = 0.10%, not 10%) unless noted. */
 const THRESHOLDS = {
@@ -97,6 +109,13 @@ const THRESHOLDS = {
   oiFlatPct: 0.10,
   minComparableSetups: 5, // section 16/20: below this, historical validation is "insufficient sample"
   minZonesForFullConfidence: 5,
+  historicalAdjustmentScale: 0.4, // how much each point of (accuracy - 50) shifts confidence
+  minConfidenceFloor: 20, // never let historical drag confidence below this
+  confluenceOverlapPct: 0.15, // fraction of range size within which two zones' POC/HVN price levels count as "the same level"
+  confluenceLookback: 3, // how many prior zones to scan for POC/HVN overlap
+  rallyLookback: 3, // how many trailing zones to scan for a sustained same-direction rally/decline
+  rallyMinZones: 2, // minimum consecutive same-direction zones before a run counts as a "rally"/"decline"
+  exhaustionMomentumDropPct: 0.5, // current zone's |priceChangePct| must fall below this fraction of the rally's average to count as decelerating
 }
 
 /** Scoring weights, taken directly from the spec's section 12. */
@@ -109,6 +128,8 @@ const WEIGHTS = {
   oiBuildDirectional: 8, // LONG D(bullish build) / SHORT D
   hvnBonus: 4,
   edgeBonus: 3,
+  pocHvnConfluenceBonus: 10, // this zone's POC/HVN overlaps a level that was already significant in a recent prior zone
+  rallyExhaustionReversal: 18, // sustained prior rally/decline decelerating, not yet a confirmed break (weaker than failedDisplacementReversal)
   contradictionPenalty: -10,
   severeContradictionPenalty: -15,
 }
@@ -136,6 +157,8 @@ export interface ZoneStructure {
   hvnCount: number
   hvnStructure: HvnStructure
   hvnSpread: HvnSpread
+  /** Price (not normalized position) at the midpoint of each HVN node — used for cross-zone POC/HVN overlap checks. */
+  hvnNodePrices: number[]
   edgeThickness: EdgeThickness
   oiRegime: OiRegime
   oiChangePct: number | null
@@ -146,12 +169,16 @@ function average(values: number[]): number {
   return values.reduce((sum, v) => sum + v, 0) / (values.length || 1)
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max)
+}
+
 function classifyHvnStructure(
   buckets: FrvpZoneBucket[],
   rangeLow: number,
   rangeSize: number
-): { hvnCount: number; hvnStructure: HvnStructure; hvnSpread: HvnSpread } {
-  if (!buckets.length) return { hvnCount: 0, hvnStructure: 'SINGLE_HVN', hvnSpread: 'CLUSTERED' }
+): { hvnCount: number; hvnStructure: HvnStructure; hvnSpread: HvnSpread; hvnNodePrices: number[] } {
+  if (!buckets.length) return { hvnCount: 0, hvnStructure: 'SINGLE_HVN', hvnSpread: 'CLUSTERED', hvnNodePrices: [] }
 
   const maxVol = Math.max(...buckets.map(b => b.totalVolume))
   const threshold = maxVol * THRESHOLDS.hvnRelativeVolume
@@ -188,7 +215,7 @@ function classifyHvnStructure(
     else hvnSpread = 'SEPARATED'
   }
 
-  return { hvnCount, hvnStructure, hvnSpread }
+  return { hvnCount, hvnStructure, hvnSpread, hvnNodePrices: nodeMidpoints }
 }
 
 function classifyEdgeThickness(
@@ -251,7 +278,7 @@ function classifyZoneStructure(zone: FrvpZoneInput): ZoneStructure {
         ? 'MODERATE_DISPLACEMENT'
         : 'STRONG_DISPLACEMENT'
 
-  const { hvnCount, hvnStructure, hvnSpread } = classifyHvnStructure(buckets, rangeLow, rangeSize)
+  const { hvnCount, hvnStructure, hvnSpread, hvnNodePrices } = classifyHvnStructure(buckets, rangeLow, rangeSize)
   const edgeThickness = classifyEdgeThickness(buckets, rangeLow, rangeHigh, rangeSize, totalVolume)
 
   let oiRegime: OiRegime = 'UNAVAILABLE'
@@ -285,11 +312,94 @@ function classifyZoneStructure(zone: FrvpZoneInput): ZoneStructure {
     hvnCount,
     hvnStructure,
     hvnSpread,
+    hvnNodePrices,
     edgeThickness,
     oiRegime,
     oiChangePct,
     ratePerHour,
   }
+}
+
+// ─── Cross-zone confluence: POC/HVN overlap + rally/decline exhaustion ──────
+
+export interface ZoneConfluence {
+  hasOverlap: boolean
+  overlapType: ConfluenceLevel
+  /** Ids of prior zones (within THRESHOLDS.confluenceLookback) whose POC/HVN lines up with this zone's. */
+  overlappingZoneIds: (number | string)[]
+  description: string | null
+}
+
+/**
+ * Checks whether this zone's POC (or any of its HVN nodes) sits at a price
+ * level that a recent prior zone also treated as significant (its own POC or
+ * an HVN node). This is a confluence/confirmation signal on top of the
+ * zone's own acceptance/rejection read — it never creates direction by
+ * itself, only reinforces whichever side this zone's closePocRelation
+ * already leans toward (see scoreZone).
+ */
+function computeZoneConfluence(structure: ZoneStructure, priorStructures: ZoneStructure[]): ZoneConfluence {
+  const lookback = priorStructures.slice(-THRESHOLDS.confluenceLookback)
+  if (!lookback.length) return { hasOverlap: false, overlapType: 'NONE', overlappingZoneIds: [], description: null }
+
+  const tolerance = structure.rangeSize * THRESHOLDS.confluenceOverlapPct
+  const currentLevels = [structure.pocPrice, ...structure.hvnNodePrices]
+
+  const overlappingZoneIds: (number | string)[] = []
+  let overlapType: ConfluenceLevel = 'NONE'
+
+  for (const prior of lookback) {
+    const pocMatch = currentLevels.some(cl => Math.abs(cl - prior.pocPrice) <= tolerance)
+    const hvnMatch = !pocMatch && prior.hvnNodePrices.some(pp => currentLevels.some(cl => Math.abs(cl - pp) <= tolerance))
+    if (pocMatch || hvnMatch) {
+      overlappingZoneIds.push(prior.id)
+      if (pocMatch) overlapType = 'POC_OVERLAP'
+      else if (overlapType === 'NONE') overlapType = 'HVN_OVERLAP'
+    }
+  }
+
+  const hasOverlap = overlappingZoneIds.length > 0
+  const description = hasOverlap
+    ? `${overlapType === 'POC_OVERLAP' ? 'POC' : 'HVN'} level aligns with prior zone${overlappingZoneIds.length > 1 ? 's' : ''} ${overlappingZoneIds.join(', ')}`
+    : null
+
+  return { hasOverlap, overlapType, overlappingZoneIds, description }
+}
+
+/**
+ * Looks at the trailing THRESHOLDS.rallyLookback zones for a sustained
+ * same-direction run (a "rally" or "decline"), then checks whether THIS
+ * zone shows early deceleration — shrinking price change vs. the run's
+ * average, loss of acceptance/rejection at the POC, or OI stalling out
+ * after building. This fires on deceleration alone, so it's a softer,
+ * earlier signal than the confirmed failedDisplacementReversal case in
+ * scoreZone (LONG E / SHORT equivalent), which requires the reversal to
+ * have already shown up in price/POC relation.
+ */
+function detectRallyExhaustion(structure: ZoneStructure, priorStructures: ZoneStructure[]): PriorTrendExhaustion {
+  if (priorStructures.length < THRESHOLDS.rallyMinZones) return 'NONE'
+
+  const window = priorStructures.slice(-THRESHOLDS.rallyLookback)
+  const isRally = window.length >= THRESHOLDS.rallyMinZones && window.every(z => z.priceDirection === 'UP')
+  const isDecline = window.length >= THRESHOLDS.rallyMinZones && window.every(z => z.priceDirection === 'DOWN')
+  if (!isRally && !isDecline) return 'NONE'
+
+  const avgMomentum = average(window.map(z => Math.abs(z.priceChangePct)))
+  const currentMomentum = Math.abs(structure.priceChangePct)
+  const decelerating = avgMomentum > 0 && currentMomentum < avgMomentum * THRESHOLDS.exhaustionMomentumDropPct
+
+  const last = window[window.length - 1]
+  const oiFading = last.oiRegime === 'BUILDING' && structure.oiRegime !== 'BUILDING'
+
+  if (isRally) {
+    const losingAcceptance = structure.closePocRelation !== 'ABOVE_POC' || structure.priceDirection !== 'UP'
+    if (decelerating || (losingAcceptance && oiFading)) return 'RALLY_EXHAUSTION'
+  }
+  if (isDecline) {
+    const losingRejection = structure.closePocRelation !== 'BELOW_POC' || structure.priceDirection !== 'DOWN'
+    if (decelerating || (losingRejection && oiFading)) return 'DECLINE_EXHAUSTION'
+  }
+  return 'NONE'
 }
 
 // ─── Per-zone scoring ────────────────────────────────────────────────────────
@@ -307,13 +417,20 @@ export interface ZoneScoreBreakdown {
 }
 
 /**
- * Scores a single zone using ONLY that zone's own structure plus the PRIOR
- * zone (never a future zone) — see spec section 20 "avoid look-ahead bias".
+ * Scores a single zone using ONLY that zone's own structure plus PRIOR
+ * zones (never a future zone) — see spec section 20 "avoid look-ahead bias".
  * The "failed displacement reversal" rules (LONG E / SHORT equivalent) are
  * causal: they use the prior zone's setup + this zone's own outcome, never
- * a zone that comes after this one.
+ * a zone that comes after this one. `confluence` and `exhaustion` are
+ * likewise derived only from zones at or before this one (see
+ * computeZoneConfluence / detectRallyExhaustion).
  */
-function scoreZone(s: ZoneStructure, prev: ZoneStructure | undefined): ZoneScoreBreakdown {
+function scoreZone(
+  s: ZoneStructure,
+  prev: ZoneStructure | undefined,
+  confluence: ZoneConfluence,
+  exhaustion: PriorTrendExhaustion
+): ZoneScoreBreakdown {
   let longScore = 0
   let shortScore = 0
   const reasons: ScoreReason[] = []
@@ -408,6 +525,30 @@ function scoreZone(s: ZoneStructure, prev: ZoneStructure | undefined): ZoneScore
     else if (s.closePocRelation === 'BELOW_POC') add('SHORT', WEIGHTS.edgeBonus, 'Thick edge volume confirms bearish displacement')
   }
 
+  // POC/HVN overlap confluence — this zone's POC or HVN sits at a level a
+  // recent prior zone also treated as significant. Never a standalone
+  // signal: it only reinforces whichever acceptance/rejection this zone's
+  // own close/POC relation already shows.
+  if (confluence.hasOverlap) {
+    const levelKind = confluence.overlapType === 'POC_OVERLAP' ? 'POC' : 'HVN'
+    if (s.closePocRelation === 'ABOVE_POC') {
+      add('LONG', WEIGHTS.pocHvnConfluenceBonus, `${levelKind} overlaps a prior zone's value area — reinforces bullish acceptance`)
+    } else if (s.closePocRelation === 'BELOW_POC') {
+      add('SHORT', WEIGHTS.pocHvnConfluenceBonus, `${levelKind} overlaps a prior zone's value area — reinforces bearish rejection`)
+    }
+  }
+
+  // Rally/decline exhaustion — a sustained prior move is decelerating and
+  // showing early signs of failing to hold. Weaker than the confirmed
+  // failedDisplacementReversal case above, since this fires on deceleration
+  // alone rather than a reversal that has already shown up in price.
+  if (exhaustion === 'RALLY_EXHAUSTION') {
+    add('SHORT', WEIGHTS.rallyExhaustionReversal, 'Prior rally decelerating with signs of exhaustion — potential reversal lower')
+  }
+  if (exhaustion === 'DECLINE_EXHAUSTION') {
+    add('LONG', WEIGHTS.rallyExhaustionReversal, 'Prior decline decelerating with signs of exhaustion — potential reversal higher')
+  }
+
   // Contradiction penalties: price + OI directly opposing the structural lean.
   if (longScore > shortScore && s.priceDirection === 'DOWN' && s.oiRegime === 'BUILDING' && s.closePocRelation === 'BELOW_POC') {
     const penalty = s.pocDisplacementBand === 'STRONG_DISPLACEMENT' ? WEIGHTS.severeContradictionPenalty : WEIGHTS.contradictionPenalty
@@ -445,9 +586,15 @@ export type PatternBreak =
   | 'BEARISH_PATTERN_BREAK'
   | 'BEARISH_DISPLACEMENT_FAILURE'
   | 'BULLISH_POSITIONING_FAILURE'
+  | 'RALLY_EXHAUSTION_REVERSAL'
+  | 'DECLINE_EXHAUSTION_REVERSAL'
   | null
 
-function detectPatternBreak(s: ZoneStructure, prev: ZoneStructure | undefined): PatternBreak {
+function detectPatternBreak(
+  s: ZoneStructure,
+  prev: ZoneStructure | undefined,
+  exhaustion: PriorTrendExhaustion = 'NONE'
+): PatternBreak {
   if (!prev) return null
 
   const prevBullishSetup = prev.pocPositionBand === 'LOW_POC' && prev.closePocRelation === 'ABOVE_POC'
@@ -467,6 +614,11 @@ function detectPatternBreak(s: ZoneStructure, prev: ZoneStructure | undefined): 
     return 'BULLISH_POSITIONING_FAILURE'
   }
 
+  // Softer, earlier signals — only surfaced when none of the confirmed
+  // breaks above already fired.
+  if (exhaustion === 'RALLY_EXHAUSTION') return 'RALLY_EXHAUSTION_REVERSAL'
+  if (exhaustion === 'DECLINE_EXHAUSTION') return 'DECLINE_EXHAUSTION_REVERSAL'
+
   return null
 }
 
@@ -475,6 +627,8 @@ const PATTERN_LABELS: Record<Exclude<PatternBreak, null>, string> = {
   BEARISH_PATTERN_BREAK: 'BEARISH PATTERN BREAK',
   BEARISH_DISPLACEMENT_FAILURE: 'FAILED BEARISH DISPLACEMENT',
   BULLISH_POSITIONING_FAILURE: 'FAILED BULLISH POSITIONING',
+  RALLY_EXHAUSTION_REVERSAL: 'RALLY EXHAUSTION',
+  DECLINE_EXHAUSTION_REVERSAL: 'DECLINE EXHAUSTION',
 }
 
 const PATTERN_EXPLANATIONS: Record<string, string> = {
@@ -490,6 +644,10 @@ const PATTERN_EXPLANATIONS: Record<string, string> = {
     'Price pushed down with OI building, but the move failed to continue and price is recovering — likely trapped short positioning.',
   'FAILED BULLISH POSITIONING':
     'Price pushed up with OI building, but the move failed to continue and price is fading — likely trapped long positioning.',
+  'RALLY EXHAUSTION':
+    'A sustained rally across the prior zones is decelerating and losing acceptance above POC — an early, unconfirmed sign of a potential reversal lower.',
+  'DECLINE EXHAUSTION':
+    'A sustained decline across the prior zones is decelerating and losing rejection below POC — an early, unconfirmed sign of a potential reversal higher.',
   'BULLISH LEAN': 'Structure leans bullish but without enough confluence for a strong signal.',
   'BEARISH LEAN': 'Structure leans bearish but without enough confluence for a strong signal.',
   'NO CLEAR PATTERN': 'No single structure or OI signal dominates; conditions are mixed or too weak to lean either way.',
@@ -522,6 +680,10 @@ export interface ZoneAnalysis {
   signal: Bias
   patternLabel: string
   patternBreak: PatternBreak
+  /** POC/HVN overlap with recent prior zones — confluence, not a standalone signal. */
+  confluence: ZoneConfluence
+  /** Sustained prior rally/decline decelerating but not yet confirmed-reversed. */
+  exhaustion: PriorTrendExhaustion
   /** Present for every zone except the last (needs a following zone to compare against). */
   nextZone?: NextZoneOutcome
 }
@@ -560,7 +722,12 @@ function buildReasons(latest: ZoneAnalysis, bias: Bias): string[] {
   return [...relevant].sort((a, b) => b.weight - a.weight).slice(0, 5).map(r => r.label)
 }
 
-function buildWarnings(oiReadyCount: number, totalZones: number, latest: ZoneAnalysis): string[] {
+function buildWarnings(
+  oiReadyCount: number,
+  totalZones: number,
+  latest: ZoneAnalysis,
+  historicalValidation: HistoricalValidation
+): string[] {
   const warnings: string[] = []
   if (oiReadyCount < totalZones) {
     warnings.push(`OI data unavailable for ${totalZones - oiReadyCount}/${totalZones} zones`)
@@ -573,6 +740,18 @@ function buildWarnings(oiReadyCount: number, totalZones: number, latest: ZoneAna
   }
   if (totalZones < THRESHOLDS.minZonesForFullConfidence) {
     warnings.push('Small sample size — treat this bias as exploratory, not statistically reliable')
+  }
+  if (latest.exhaustion !== 'NONE') {
+    warnings.push(
+      `${latest.exhaustion === 'RALLY_EXHAUSTION' ? 'Rally' : 'Decline'} exhaustion is based on decelerating momentum, ` +
+      'not a confirmed reversal — treat with extra caution'
+    )
+  }
+  if (!historicalValidation.insufficientSample && historicalValidation.accuracy !== null && historicalValidation.accuracy < 50) {
+    warnings.push(
+      `Historical accuracy for this signal is only ${historicalValidation.accuracy}% across ` +
+      `${historicalValidation.comparableSetups} similar setups — confidence has been reduced accordingly`
+    )
   }
   return warnings
 }
@@ -628,8 +807,11 @@ export function analyzeFrvps(
 
   const zoneAnalyses: ZoneAnalysis[] = structures.map((structure, i) => {
     const prev = i > 0 ? structures[i - 1] : undefined
-    const score = scoreZone(structure, prev)
-    const patternBreak = detectPatternBreak(structure, prev)
+    const priorStructures = structures.slice(0, i)
+    const confluence = computeZoneConfluence(structure, priorStructures)
+    const exhaustion = detectRallyExhaustion(structure, priorStructures)
+    const score = scoreZone(structure, prev, confluence, exhaustion)
+    const patternBreak = detectPatternBreak(structure, prev, exhaustion)
     const patternLabel = choosePatternLabel(score, patternBreak)
     const { bias: signal } = biasFromScore(score)
     return {
@@ -641,6 +823,8 @@ export function analyzeFrvps(
       signal,
       patternLabel,
       patternBreak,
+      confluence,
+      exhaustion,
     }
   })
 
@@ -665,11 +849,26 @@ export function analyzeFrvps(
   let confidenceCap = 90
   if (oiReadyCount < zones.length) confidenceCap = Math.min(confidenceCap, 80)
   if (zones.length < THRESHOLDS.minZonesForFullConfidence) confidenceCap = Math.min(confidenceCap, 70)
-  const confidencePct = Math.round(Math.min(50 + advantage, confidenceCap))
+
+  const historicalValidation = buildHistoricalValidation(zoneAnalyses, bias)
+
+  // Base confidence from the latest zone's own score...
+  let confidencePct = Math.min(50 + advantage, confidenceCap)
+
+  // ...then pulled toward what similar past setups actually did. A signal
+  // that scores high purely on its own structure but has a poor track
+  // record for THIS bias shouldn't get to report high confidence
+  // unchallenged (section 14: "the percentage should also reflect signal
+  // quality"). 50% historical accuracy = a coin flip = no adjustment;
+  // above it nudges confidence up (still capped), below it pulls it down.
+  if (!historicalValidation.insufficientSample && historicalValidation.accuracy !== null) {
+    const historicalAdjustment = (historicalValidation.accuracy - 50) * THRESHOLDS.historicalAdjustmentScale
+    confidencePct = clamp(confidencePct + historicalAdjustment, THRESHOLDS.minConfidenceFloor, confidenceCap)
+  }
+  confidencePct = Math.round(confidencePct)
 
   const reasons = buildReasons(latest, bias)
-  const warnings = buildWarnings(oiReadyCount, zones.length, latest)
-  const historicalValidation = buildHistoricalValidation(zoneAnalyses, bias)
+  const warnings = buildWarnings(oiReadyCount, zones.length, latest, historicalValidation)
   const narrative = buildNarrative(bias, confidencePct, latest, warnings)
 
   return {
