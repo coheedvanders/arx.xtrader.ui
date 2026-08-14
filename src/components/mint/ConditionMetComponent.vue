@@ -18,7 +18,7 @@
           @click="showEntryHistoryModal(symbol.symbol)"
         >
           <div class="symbol-main">
-            <span class="symbol-name">{{ symbol.symbol }}</span>
+            <span class="symbol-name">{{ symbol.symbol }} <span v-if="symbol.crossedMa">[x]</span></span>
             <span class="usdt-value">${{ formatUsdt((symbol as any).usdtValue) }}</span>
           </div>
 

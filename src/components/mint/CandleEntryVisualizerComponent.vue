@@ -19,6 +19,22 @@
 
       <label class="checkbox-label">
         <input
+          v-model="showOiBar"
+          type="checkbox"
+        />
+        <span>Show OI bar</span>
+      </label>
+
+      <label class="checkbox-label">
+        <input
+          v-model="showLongShortRatio"
+          type="checkbox"
+        />
+        <span>Long/Short Ratio</span>
+      </label>
+
+      <label class="checkbox-label">
+        <input
           v-model="showEma"
           type="checkbox"
         />
@@ -66,6 +82,14 @@
       </button>
 
       <button
+        class="tool-btn"
+        @click="fillVolumeSpikesWithVolumeProfile"
+        title="Walk volume-spike candles oldest→newest and place a VP per confirmed swing leg; a bounce that gets fully retraced by a later spike doesn't get its own VP — it's absorbed back into the leg that was extending (replaces any currently placed VPs)"
+      >
+        VP Volume Spikes
+      </button>
+
+      <button
         v-if="volumeProfiles.length > 0"
         class="tool-btn"
         @click="downloadAllFrvpZip"
@@ -81,6 +105,24 @@
         title="Run the confluence analyzer over every placed FRVP (oldest to newest) and show a LONG/SHORT/NEUTRAL read"
       >
         Analyze FRVPs
+      </button>
+
+      <!-- ── Anchored VWAP tool ──────────────────────────────────────────── -->
+      <button
+        class="tool-btn"
+        :class="{ 'tool-btn-active': avwapModeActive }"
+        @click="toggleAvwapMode"
+        title="Click to enable, then click a candle to anchor a VWAP (with upper/lower stdev bands) from that candle forward"
+      >
+        {{ avwapModeActive ? 'Anchored VWAP: pick a candle…' : 'Anchored VWAP' }}
+      </button>
+
+      <button
+        v-if="anchoredVwaps.length > 0"
+        class="tool-btn"
+        @click="anchoredVwaps = []"
+      >
+        Clear AVWAP ({{ anchoredVwaps.length }})
       </button>
 
       <!-- ── Freeform rectangle draw tool ──────────────────────────────── -->
@@ -279,7 +321,7 @@
     <div v-if="previewError" class="preview-error">{{ previewError }}</div>
 
     <div class="chart-container" ref="chartContainer" @wheel="handleZoom" @mousemove="handleMouseMove" @mouseleave="handleMouseLeave" @mousedown="handleChartMouseDown">
-      <svg :width="svgWidth" :height="svgHeight" class="candles-svg">
+      <svg :width="svgWidth" :height="totalSvgHeight" class="candles-svg">
         <!-- Crosshair Lines -->
         <g v-show="true" ref="crosshairGroup" class="crosshair">
           <line
@@ -294,7 +336,7 @@
             x1="0"
             y1="0"
             x2="0"
-            :y2="svgHeight"
+            :y2="totalSvgHeight"
             class="crosshair-line vertical"
             style="display: none"
           />
@@ -559,7 +601,25 @@
           />
         </g>
 
-        <!-- Volume Bars (drawn behind candles/EMA, overlaid at the bottom of the chart) -->
+        <!-- Volume panel background + separator (own section below the price chart) -->
+        <template v-if="panelLayout.volume">
+          <rect
+            x="0"
+            :y="panelLayout.volume.top"
+            :width="svgWidth"
+            :height="panelLayout.volume.bottom - panelLayout.volume.top"
+            class="indicator-panel-bg"
+          />
+          <line
+            x1="0"
+            :x2="svgWidth"
+            :y1="panelLayout.volume.top"
+            :y2="panelLayout.volume.top"
+            class="indicator-panel-separator"
+          />
+        </template>
+
+        <!-- Volume Bars — own section below the price chart, doesn't overlap candles -->
         <g v-if="showVolume" class="volume-bars">
           <rect
             v-for="(bar, i) in volumeBars"
@@ -574,12 +634,132 @@
 
         <!-- Volume panel max label -->
         <text
-          v-if="showVolume && maxVolumeInView > 0"
+          v-if="showVolume && maxVolumeInView > 0 && panelLayout.volume"
           :x="6"
-          :y="svgHeight - volumePanelUsableHeight - 6"
+          :y="panelLayout.volume.top + 14"
           class="volume-panel-label"
         >
           Vol max {{ formatNotional(maxVolumeInView) }}
+        </text>
+
+        <!-- OI panel background + separator (own section below volume) -->
+        <template v-if="panelLayout.oi">
+          <rect
+            x="0"
+            :y="panelLayout.oi.top"
+            :width="svgWidth"
+            :height="panelLayout.oi.bottom - panelLayout.oi.top"
+            class="indicator-panel-bg"
+          />
+          <line
+            x1="0"
+            :x2="svgWidth"
+            :y1="panelLayout.oi.top"
+            :y2="panelLayout.oi.top"
+            class="indicator-panel-separator"
+          />
+        </template>
+
+        <!-- Open Interest Bars — own section, doesn't overlap volume or candles -->
+        <g v-if="showOiBar" class="oi-bars">
+          <rect
+            v-for="(bar, i) in oiBars"
+            :key="`oi-${i}`"
+            :x="bar.x"
+            :y="bar.y"
+            :width="bar.width"
+            :height="bar.height"
+            class="oi-bar"
+          />
+        </g>
+
+        <!-- OI panel max label / status -->
+        <text
+          v-if="showOiBar && maxOiInView > 0 && panelLayout.oi"
+          :x="6"
+          :y="panelLayout.oi.top + 14"
+          class="oi-panel-label"
+        >
+          OI max {{ formatNotional(maxOiInView) }}
+        </text>
+        <text
+          v-if="showOiBar && oiLoading && panelLayout.oi"
+          :x="6"
+          :y="panelLayout.oi.top + 14"
+          class="oi-panel-label"
+        >
+          Loading OI…
+        </text>
+        <text
+          v-if="showOiBar && oiError && panelLayout.oi"
+          :x="6"
+          :y="panelLayout.oi.top + 14"
+          class="oi-panel-label oi-panel-label-error"
+        >
+          OI: {{ oiError }}
+        </text>
+
+        <!-- L/S panel background + separator (own section below OI) -->
+        <template v-if="panelLayout.ls">
+          <rect
+            x="0"
+            :y="panelLayout.ls.top"
+            :width="svgWidth"
+            :height="panelLayout.ls.bottom - panelLayout.ls.top"
+            class="indicator-panel-bg"
+          />
+          <line
+            x1="0"
+            :x2="svgWidth"
+            :y1="panelLayout.ls.top"
+            :y2="panelLayout.ls.top"
+            class="indicator-panel-separator"
+          />
+        </template>
+
+        <!-- Long/Short Ratio — own section, doesn't overlap OI/volume/candles -->
+        <line
+          v-if="showLongShortRatio && lsRatioBars.length > 0"
+          x1="0"
+          :x2="svgWidth"
+          :y1="lsRatioCenterY"
+          :y2="lsRatioCenterY"
+          class="ls-ratio-centerline"
+        />
+        <g v-if="showLongShortRatio" class="ls-ratio-bars">
+          <rect
+            v-for="(bar, i) in lsRatioBars"
+            :key="`ls-${i}`"
+            :x="bar.x"
+            :y="bar.y"
+            :width="bar.width"
+            :height="bar.height"
+            :class="['ls-ratio-bar', bar.long ? 'ls-ratio-bar-long' : 'ls-ratio-bar-short']"
+          />
+        </g>
+        <text
+          v-if="showLongShortRatio && lsRatioBars.length > 0"
+          :x="6"
+          :y="lsRatioPanelTopY + 14"
+          class="ls-ratio-panel-label"
+        >
+          Long% (green) / Short% (red) — zoomed to range
+        </text>
+        <text
+          v-if="showLongShortRatio && lsRatioLoading"
+          :x="6"
+          :y="lsRatioPanelTopY + 14"
+          class="ls-ratio-panel-label"
+        >
+          Loading L/S ratio…
+        </text>
+        <text
+          v-if="showLongShortRatio && lsRatioError"
+          :x="6"
+          :y="lsRatioPanelTopY + 14"
+          class="ls-ratio-panel-label ls-ratio-panel-label-error"
+        >
+          L/S: {{ lsRatioError }}
         </text>
 
         <!-- EMA9 Line -->
@@ -727,10 +907,11 @@
               indecisive: candle.candleData?.isIndecisive,
               live: i === displayCandles.length - 1 && liveCandle !== null,
               muted: isCandleMuted(i),
-              'vp-target': vpModeActive
+              'vp-target': vpModeActive,
+              'avwap-target': avwapModeActive
             }"
             @click="handleCandleClick(i)"
-            @mousedown="handleCandleMouseDownForVp(i, $event)"
+            @mousedown="handleCandleMouseDown(i, $event)"
             @mouseenter="hoveredCandleIndex = i"
             @mouseleave="hoveredCandleIndex = null"
           >
@@ -916,11 +1097,19 @@
             </text>
             <text
               :x="profile.leftX + 4"
-              :y="profile.rangeTop - 20"
+              :y="profile.rangeTop - 34"
               class="vp-oi-label"
               :class="oiLabelClass(profile.id)"
             >
               {{ oiLabelText(profile.id) }}
+            </text>
+            <text
+              :x="profile.leftX + 4"
+              :y="profile.rangeTop - 20"
+              class="vp-bias-label"
+              :class="vpAnalysisLabelClass(profile.id)"
+            >
+              {{ vpAnalysisLabelText(profile.id) }}
             </text>
             <text
               :x="(candleX(profile.endIndex) + candleWidth / 2) - 4"
@@ -940,6 +1129,42 @@
             >
               ⬇ download
             </text>
+
+            <!-- Nudge end point one candle back/forward — sits above the OI label, left side -->
+            <g class="vp-end-nudge">
+              <rect
+                :x="profile.leftX"
+                :y="profile.rangeTop - 66"
+                width="18" height="16" rx="3"
+                class="vp-nudge-btn-bg"
+                @click="nudgeVpEndIndex(profile.id, -1, $event)"
+              />
+              <text
+                :x="profile.leftX + 9"
+                :y="profile.rangeTop - 54"
+                class="vp-nudge-btn-label"
+                text-anchor="middle"
+                @click="nudgeVpEndIndex(profile.id, -1, $event)"
+              >
+                ‹
+              </text>
+              <rect
+                :x="profile.leftX + 20"
+                :y="profile.rangeTop - 66"
+                width="18" height="16" rx="3"
+                class="vp-nudge-btn-bg"
+                @click="nudgeVpEndIndex(profile.id, 1, $event)"
+              />
+              <text
+                :x="profile.leftX + 29"
+                :y="profile.rangeTop - 54"
+                class="vp-nudge-btn-label"
+                text-anchor="middle"
+                @click="nudgeVpEndIndex(profile.id, 1, $event)"
+              >
+                ›
+              </text>
+            </g>
           </g>
 
           <!-- live drag preview -->
@@ -1028,6 +1253,87 @@
             :height="rectPreview.height"
             class="draw-rect draw-rect-preview"
           />
+        </g>
+
+        <!-- Anchored VWAP tool overlay -->
+        <g class="anchored-vwaps">
+          <g
+            v-for="avwap in anchoredVwapSeries"
+            :key="`avwap-${avwap.id}`"
+            class="avwap-group"
+          >
+            <!-- shaded band between upper/lower -->
+            <polygon
+              v-if="avwap.points.length > 1"
+              :points="avwapBandPolygon(avwap.points)"
+              class="avwap-band-fill"
+              :style="{ fill: avwap.color }"
+            />
+
+            <!-- upper band -->
+            <polyline
+              v-if="avwap.points.length > 1"
+              :points="avwapLinePoints(avwap.points, 'upper')"
+              class="avwap-band-line"
+              :style="{ stroke: avwap.color }"
+            />
+
+            <!-- lower band -->
+            <polyline
+              v-if="avwap.points.length > 1"
+              :points="avwapLinePoints(avwap.points, 'lower')"
+              class="avwap-band-line"
+              :style="{ stroke: avwap.color }"
+            />
+
+            <!-- mid (the VWAP itself) -->
+            <polyline
+              v-if="avwap.points.length > 1"
+              :points="avwapLinePoints(avwap.points, 'mid')"
+              class="avwap-mid-line"
+              :style="{ stroke: avwap.color }"
+            />
+
+            <!-- anchor marker -->
+            <circle
+              :cx="candleX(avwap.anchorIndex)"
+              :cy="priceToY(avwap.anchorPrice)"
+              r="4"
+              class="avwap-anchor-dot"
+              :style="{ fill: avwap.color }"
+            />
+            <text
+              :x="candleX(avwap.anchorIndex) + 7"
+              :y="priceToY(avwap.anchorPrice) - 7"
+              class="avwap-anchor-close"
+              @click="removeAnchoredVwap(avwap.id)"
+            >
+              AVWAP ✕
+            </text>
+
+            <!-- end handle — always visible; drag to pin the series to an earlier candle. Hollow = auto-extending to the latest candle, filled = pinned to a fixed end (drag back out to the last candle to reopen it). -->
+            <line
+              :x1="candleX(avwap.effectiveEndIndex)"
+              :y1="priceToY(avwap.endPrice) - 14"
+              :x2="candleX(avwap.effectiveEndIndex)"
+              :y2="priceToY(avwap.endPrice) + 14"
+              class="avwap-end-guide"
+              :style="{ stroke: avwap.color }"
+            />
+            <rect
+              :x="candleX(avwap.effectiveEndIndex) - 5"
+              :y="priceToY(avwap.endPrice) - 5"
+              width="10"
+              height="10"
+              :class="[
+                'avwap-end-handle',
+                avwap.isOpenEnded ? 'avwap-end-handle-open' : 'avwap-end-handle-pinned',
+                { 'avwap-end-handle-dragging': avwapEndDraggingId === avwap.id }
+              ]"
+              :style="avwap.isOpenEnded ? { stroke: avwap.color } : { fill: avwap.color }"
+              @mousedown="startAvwapEndDrag(avwap.id, $event)"
+            />
+          </g>
         </g>
 
         <!-- Price Axis Labels (Interactive) -->
@@ -1375,7 +1681,7 @@
 
 <script setup lang="ts">
 import type { CandleEntry, FuturesSymbol } from '@/core/interfaces';
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 // NOTE: adjust this import path to wherever OrderMakerUtility actually lives in your project
 import { OrderMakerUtility } from '@/utility/OrderMakerUtility';
 import DialogComponent from '../shared/dialog/DialogComponent.vue';
@@ -1387,6 +1693,7 @@ import { analyzeFrvps, type FrvpAnalysisResult, type FrvpZoneInput } from '@/uti
 import DialogHeaderComponent from '../shared/dialog/DialogHeaderComponent.vue';
 import { useChocoMintoStore } from '@/stores/chocoMintoStore.ts';
 import { isElementAccessExpression } from 'typescript';
+import { candleAnalyzer } from '@/utility/candleAnalyzerUtility.ts';
 
 var chocomintoStore = useChocoMintoStore();
 // ─── Binance kline stream message shape ───────────────────────────────────────
@@ -1469,7 +1776,8 @@ const hoveredCandleIndex = ref<number | null>(null)
 const candleWidth = ref(8)
 const connectVolumeSpikesvSpikes = ref(true)
 const showVolume = ref(true)
-const showEma = ref(false)
+const showOiBar = ref(false)
+const showEma = ref(true)
 const showMa = ref(false)
 const candleGap = 5
 const svgHeight = 600
@@ -1713,6 +2021,201 @@ function handleChartMouseDown(event: MouseEvent) {
     return
   }
   startChartDrag(event)
+}
+
+// ─── Anchored VWAP tool ─────────────────────────────────────────────────────
+//
+// Click "Anchored VWAP" to arm the tool, then click a single candle to drop
+// an anchor there. From the anchor forward, we run a cumulative
+// volume-weighted average of typical price ((H+L+C)/3), same as Binance/
+// TradingView's Anchored VWAP — plus upper/lower bands built from the
+// cumulative (volume-weighted) standard deviation of typical price around
+// that running mean, widened by AVWAP_BAND_MULTIPLIER. The tool disarms
+// itself after one placement (it's a single-click anchor, not a drag range),
+// and multiple anchors can be stacked — each gets its own color and remove (✕).
+//
+// `endIndex: null` means "open-ended" — the series keeps extending to
+// whatever the latest displayed candle is, live-updating as new candles
+// arrive (the original behavior). Dragging the small end-handle pins it to
+// an explicit candle instead; dragging that handle back out to the last
+// candle reopens it to `null` so it resumes auto-extending.
+interface AnchoredVwap {
+  id: number
+  anchorIndex: number
+  endIndex: number | null
+}
+
+interface AnchoredVwapPoint {
+  index: number
+  mid: number
+  upper: number
+  lower: number
+}
+
+// Reuses ANCHORED_VWAP_BAND_MULTIPLIER from utility/anchoredVwap.ts (the standalone
+// getAnchorVwap() function) so the chart's line/bands and any code calling
+// getAnchorVwap() directly can never drift out of sync on this value.
+const AVWAP_BAND_MULTIPLIER = candleAnalyzer.getAnchorVwapBandMultiplier()
+const AVWAP_COLORS = ['#facc15', '#38bdf8', '#f472b6', '#a78bfa', '#4ade80', '#fb923c']
+
+let avwapIdCounter = 0
+const avwapModeActive = ref(false)
+const anchoredVwaps = ref<AnchoredVwap[]>([])
+/** id of the anchored VWAP whose end-handle is currently being dragged, if any — used to dim/highlight it while adjusting. */
+const avwapEndDraggingId = ref<number | null>(null)
+
+function toggleAvwapMode() {
+  avwapModeActive.value = !avwapModeActive.value
+}
+
+function removeAnchoredVwap(id: number) {
+  anchoredVwaps.value = anchoredVwaps.value.filter(a => a.id !== id)
+}
+
+/**
+ * Cumulative VWAP + volume-weighted stdev bands from `anchorIndex` through
+ * `endIndex` (inclusive). Pass `null` for endIndex to run through the last
+ * currently-displayed candle (open-ended / live-extending). Bails out
+ * row-by-row on missing OHLC/volume rather than skipping the whole candle,
+ * since a gap just means that candle contributes nothing to the running sums.
+ */
+function computeAnchoredVwapPoints(anchorIndex: number, endIndex: number | null): AnchoredVwapPoint[] {
+  const candles = displayCandles.value
+  const points: AnchoredVwapPoint[] = []
+  const lastIndex = Math.min(endIndex ?? candles.length - 1, candles.length - 1)
+
+  let cumPV = 0   // Σ (typicalPrice * volume)
+  let cumPV2 = 0  // Σ (typicalPrice² * volume) — for weighted variance
+  let cumVol = 0  // Σ volume
+
+  for (let i = anchorIndex; i <= lastIndex; i++) {
+    const c = candles[i]
+    if (c.high == null || c.low == null || c.close == null) continue
+
+    const typical = (c.high + c.low + c.close) / 3
+    const vol = c.volume ?? 0
+
+    cumPV += typical * vol
+    cumPV2 += typical * typical * vol
+    cumVol += vol
+
+    if (cumVol <= 0) continue
+
+    const mean = cumPV / cumVol
+    const variance = Math.max(cumPV2 / cumVol - mean * mean, 0)
+    const stdev = Math.sqrt(variance)
+
+    points.push({
+      index: i,
+      mid: mean,
+      upper: mean + stdev * AVWAP_BAND_MULTIPLIER,
+      lower: mean - stdev * AVWAP_BAND_MULTIPLIER,
+    })
+  }
+
+  return points
+}
+
+const anchoredVwapSeries = computed(() => {
+  return anchoredVwaps.value.map((a, i) => {
+    const points = computeAnchoredVwapPoints(a.anchorIndex, a.endIndex)
+    const anchorCandle = displayCandles.value[a.anchorIndex]
+    const lastPoint = points[points.length - 1] ?? null
+    // Where the end-handle renders: the pinned endIndex if set, otherwise the last displayed candle (open-ended).
+    const effectiveEndIndex = a.endIndex ?? displayCandles.value.length - 1
+    return {
+      id: a.id,
+      anchorIndex: a.anchorIndex,
+      endIndex: a.endIndex,
+      effectiveEndIndex,
+      isOpenEnded: a.endIndex === null,
+      anchorPrice: points[0]?.mid ?? anchorCandle?.close ?? 0,
+      endPrice: lastPoint?.mid ?? anchorCandle?.close ?? 0,
+      color: AVWAP_COLORS[i % AVWAP_COLORS.length],
+      points,
+    }
+  })
+})
+
+/** Builds an SVG `points` string for one of the three lines (mid/upper/lower) of an anchored VWAP. */
+function avwapLinePoints(points: AnchoredVwapPoint[], key: 'mid' | 'upper' | 'lower'): string {
+  return points.map(p => `${candleX(p.index)},${priceToY(p[key])}`).join(' ')
+}
+
+/** Builds the closed polygon (upper edge forward, lower edge back) used for the shaded band fill. */
+function avwapBandPolygon(points: AnchoredVwapPoint[]): string {
+  if (points.length === 0) return ''
+  const top = points.map(p => `${candleX(p.index)},${priceToY(p.upper)}`)
+  const bottom = [...points].reverse().map(p => `${candleX(p.index)},${priceToY(p.lower)}`)
+  return [...top, ...bottom].join(' ')
+}
+
+/** Drops an anchor at `index` when the tool is armed, then disarms itself (single-click placement, not a drag). Starts open-ended — drag the end-handle afterward to pin it. */
+function handleCandleMouseDownForAvwap(index: number, event: MouseEvent) {
+  if (!avwapModeActive.value) return
+  event.preventDefault()
+  event.stopPropagation()
+
+  anchoredVwaps.value.push({ id: ++avwapIdCounter, anchorIndex: index, endIndex: null })
+  avwapModeActive.value = false
+}
+
+/**
+ * Drag handle at the end of an anchored VWAP series — lets you pin the
+ * series to stop at an earlier candle instead of always running to the
+ * latest one. Dragging it all the way back out to the last displayed
+ * candle reopens the series to `endIndex: null` (auto-extending again).
+ *
+ * Rebuilds `anchoredVwaps.value` with a fresh array on every move (rather
+ * than mutating the found item's `endIndex` in place) so the reassignment
+ * unambiguously triggers the ref and `anchoredVwapSeries` recomputes live
+ * on every drag tick, not just once something else happens to re-render.
+ */
+function startAvwapEndDrag(avwapId: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+
+  const target = anchoredVwaps.value.find(a => a.id === avwapId)
+  if (!target) return
+  const anchorIndex = target.anchorIndex
+
+  avwapEndDraggingId.value = avwapId
+
+  const applyEndIndex = (endIndex: number | null) => {
+    anchoredVwaps.value = anchoredVwaps.value.map(a =>
+      a.id === avwapId ? { ...a, endIndex } : a
+    )
+  }
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    if (!chartContainer.value) return
+    const rect = chartContainer.value.querySelector('svg')?.getBoundingClientRect()
+    if (!rect) return
+    const x = moveEvent.clientX - rect.left
+    const rawIndex = Math.round((x - 10 - candleWidth.value / 2) / (candleWidth.value + candleGap))
+    const lastIndex = displayCandles.value.length - 1
+    const clamped = Math.max(anchorIndex + 1, Math.min(lastIndex, rawIndex))
+    // Dragged all the way to the last candle → reopen to auto-extending instead of pinning to "currently last".
+    applyEndIndex(clamped >= lastIndex ? null : clamped)
+  }
+
+  const handleUp = () => {
+    avwapEndDraggingId.value = null
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/** Single mousedown entry point for a candle — routes to whichever click-driven tool is currently armed. */
+function handleCandleMouseDown(index: number, event: MouseEvent) {
+  if (avwapModeActive.value) {
+    handleCandleMouseDownForAvwap(index, event)
+    return
+  }
+  handleCandleMouseDownForVp(index, event)
 }
 
 // ─── Backtest / playback controls ──────────────────────────────────────────
@@ -2071,6 +2574,64 @@ interface VpOiState {
 }
 const vpOiRates = ref<Record<number, VpOiState>>({})
 
+// ─── Bias/confidence analysis per FRVP profile ──────────────────────────────
+// Runs automatically the moment a profile's OI rate finishes loading. Each
+// run re-analyzes every currently placed profile from oldest to this one
+// (inclusive) via analyzeFrvps, so the bias/confidence shown on a given VP
+// reflects the full confluence picture built up to that point in time, not
+// just that single zone in isolation.
+interface VpAnalysisState {
+  status: 'analyzing' | 'ready' | 'error' | 'insufficient'
+  bias?: string
+  confidencePct?: number
+}
+const vpAnalysis = ref<Record<number, VpAnalysisState>>({})
+
+async function runVpAnalysisForProfile(id: number) {
+  const target = findVolumeProfile(id)
+  if (!target) return
+
+  // Oldest → this VP (inclusive). Same "oldest to current" ordering as the
+  // OI fetch queue in the fill functions, just scoped up to this profile.
+  const upToHere = volumeProfiles.value
+    .filter(p => p.startIndex <= target.startIndex)
+    .sort((a, b) => a.startIndex - b.startIndex)
+
+  if (upToHere.length === 0) {
+    vpAnalysis.value[id] = { status: 'insufficient' }
+    return
+  }
+
+  vpAnalysis.value[id] = { status: 'analyzing' }
+  try {
+    const zoneInputs: FrvpZoneInput[] = []
+    for (const meta of upToHere) {
+      const payload = buildFrvpExportPayload(meta.id)
+      if (!payload) continue
+      zoneInputs.push({
+        id: meta.id,
+        startIndex: payload.range.startIndex,
+        endIndex: payload.range.endIndex,
+        candles: payload.candles,
+        fixedRangeVolumeProfile: payload.fixedRangeVolumeProfile,
+        openInterest: payload.openInterest as FrvpZoneInput['openInterest'],
+      })
+    }
+    if (zoneInputs.length === 0) {
+      vpAnalysis.value[id] = { status: 'insufficient' }
+      return
+    }
+
+    const result = analyzeFrvps(zoneInputs, {
+      symbol: props.symbol.toUpperCase(),
+      interval: props.interval,
+    })!
+    vpAnalysis.value[id] = { status: 'ready', bias: result.bias, confidencePct: result.confidencePct }
+  } catch (err) {
+    vpAnalysis.value[id] = { status: 'error' }
+  }
+}
+
 async function loadOiRateForProfile(id: number, startIndex: number, endIndex: number) {
   const startCandle = displayCandles.value[startIndex]
   const endCandle = displayCandles.value[endIndex]
@@ -2086,25 +2647,53 @@ async function loadOiRateForProfile(id: number, startIndex: number, endIndex: nu
   } catch (err) {
     vpOiRates.value[id] = { status: 'error', error: err instanceof Error ? err.message : 'failed' }
   }
+
+  // OI rate is in (ready or otherwise) — run/refresh this VP's bias analysis now.
+  if (vpOiRates.value[id]?.status === 'ready') {
+    await runVpAnalysisForProfile(id)
+  }
 }
 
 function toggleVpMode() {
   vpModeActive.value = !vpModeActive.value
 }
 
-/** Wraps openCandleModal so the modal doesn't pop open mid-drag while the VP tool is armed. */
+/** Wraps openCandleModal so the modal doesn't pop open mid-drag/mid-click while the VP or Anchored VWAP tools are armed. */
 function handleCandleClick(index: number) {
-  if (vpModeActive.value) return
+  if (vpModeActive.value || avwapModeActive.value) return
   openCandleModal(index)
 }
 
 function removeVolumeProfile(id: number) {
   volumeProfiles.value = volumeProfiles.value.filter(p => p.id !== id)
   delete vpOiRates.value[id]
+  delete vpAnalysis.value[id]
 }
 
 function findVolumeProfile(id: number): VolumeProfileRange | undefined {
   return volumeProfiles.value.find(p => p.id === id)
+}
+
+/**
+ * Nudge the right edge (endIndex) of a placed profile one candle at a time.
+ * dir = +1 moves the end point forward to the next candle, -1 moves it back
+ * to the previous candle. Clamped so it can never cross startIndex or run
+ * past the last available candle.
+ */
+function nudgeVpEndIndex(id: number, dir: 1 | -1, event?: MouseEvent) {
+  event?.preventDefault()
+  event?.stopPropagation()
+  const profile = findVolumeProfile(id)
+  if (!profile) return
+
+  const next = Math.max(
+    profile.startIndex + 1,
+    Math.min(displayCandles.value.length - 1, profile.endIndex + dir)
+  )
+  if (next === profile.endIndex) return
+
+  profile.endIndex = next
+  loadOiRateForProfile(id, profile.startIndex, profile.endIndex)
 }
 
 /**
@@ -2237,7 +2826,7 @@ async function fillPriceZonesWithVolumeProfile() {
   }
 
   // Wipe whatever's currently placed so zones don't stack duplicate VPs on repeat clicks.
-  for (const p of volumeProfiles.value) delete vpOiRates.value[p.id]
+  for (const p of volumeProfiles.value) { delete vpOiRates.value[p.id]; delete vpAnalysis.value[p.id] }
   volumeProfiles.value = []
 
   // Place every VP box up front (instant, no network) so the chart fills in immediately...
@@ -2250,6 +2839,104 @@ async function fillPriceZonesWithVolumeProfile() {
   }
 
   // ...then fetch OI rates one zone at a time, throttled, instead of all at once.
+  for (const { id, startIndex, endIndex } of placed) {
+    await loadOiRateForProfile(id, startIndex, endIndex)
+    await delay(VP_FILL_OI_THROTTLE_MS)
+  }
+}
+
+/**
+ * "VP Volume Spikes" — walks the volume-spike candles in chronological order
+ * (oldest first) and collapses them into a sequence of alternating swing
+ * pivots, placing one Fixed-Range Volume Profile per leg between pivots:
+ *
+ *   - Each new spike either extends the leg currently in progress (a new
+ *     low while we're hunting lows, or a new high while hunting highs) —
+ *     the leg's end just keeps moving out to "the latest lowest" (or
+ *     highest), no new VP yet.
+ *   - Or it opposes the current leg. Before accepting it as a genuine
+ *     reversal, check whether it fully retraces the leg BEFORE the current
+ *     one — i.e. it breaks back past the point where the current leg
+ *     started. If so, the current leg was just a blip, never a real swing:
+ *     collapse it away and re-test the new spike against what's now on top
+ *     (this can cascade through several blips in a row). Otherwise it's a
+ *     confirmed new pivot and starts the next leg.
+ *
+ * This is different from "Connect volume spikes" (the orange line), which
+ * just connects every spike in order — this only draws a VP boundary at
+ * swings that actually hold, so a brief bounce that gets erased by a
+ * deeper low right after doesn't spawn its own tiny VP; it just gets
+ * absorbed into the leg that was already extending.
+ */
+async function fillVolumeSpikesWithVolumeProfile() {
+  const spikes: { index: number; close: number }[] = []
+  for (let i = 0; i < displayCandles.value.length; i++) {
+    const candle = displayCandles.value[i]
+    if (candle.candleData?.volumeSpike && candle.close != null) {
+      spikes.push({ index: i, close: candle.close })
+    }
+  }
+  if (spikes.length < 2) return
+
+  // `pivots` holds indices into `spikes` for the confirmed swing points found
+  // so far, oldest first. Processing each new spike either extends the last
+  // pivot in place, cascades back popping blips that got fully retraced, or
+  // confirms a genuine new pivot.
+  const pivots: number[] = [0]
+  for (let i = 1; i < spikes.length; i++) {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      if (pivots.length < 2) {
+        pivots.push(i)
+        break
+      }
+      const prevPivot = spikes[pivots[pivots.length - 2]]
+      const top = spikes[pivots[pivots.length - 1]]
+      const risingLeg = top.close > prevPivot.close
+
+      const continuesLeg = risingLeg
+        ? spikes[i].close >= top.close
+        : spikes[i].close <= top.close
+      if (continuesLeg) {
+        pivots[pivots.length - 1] = i // still making a new high/low — extend this leg's end
+        break
+      }
+
+      const fullyRetraced = risingLeg
+        ? spikes[i].close <= prevPivot.close
+        : spikes[i].close >= prevPivot.close
+      if (fullyRetraced) {
+        pivots.pop() // this pivot was never a real swing — collapse it and re-test against the prior one
+        continue
+      }
+
+      pivots.push(i) // confirmed reversal — genuine new pivot
+      break
+    }
+  }
+
+  const ranges: { startIndex: number; endIndex: number }[] = []
+  for (let k = 0; k < pivots.length - 1; k++) {
+    ranges.push({
+      startIndex: spikes[pivots[k]].index,
+      endIndex: spikes[pivots[k + 1]].index,
+    })
+  }
+
+  // Wipe whatever's currently placed so repeat clicks don't stack duplicate VPs.
+  for (const p of volumeProfiles.value) { delete vpOiRates.value[p.id]; delete vpAnalysis.value[p.id] }
+  volumeProfiles.value = []
+
+  // Place every VP box up front (instant, no network)...
+  const placed: { id: number; startIndex: number; endIndex: number }[] = []
+  for (const { startIndex, endIndex } of ranges) {
+    if (endIndex <= startIndex) continue
+    const id = ++vpIdCounter
+    volumeProfiles.value.push({ id, startIndex, endIndex })
+    placed.push({ id, startIndex, endIndex })
+  }
+
+  // ...then fetch OI rates one leg at a time, throttled, instead of all at once.
   for (const { id, startIndex, endIndex } of placed) {
     await loadOiRateForProfile(id, startIndex, endIndex)
     await delay(VP_FILL_OI_THROTTLE_MS)
@@ -2376,6 +3063,7 @@ function buildFrvpExportPayload(id: number) {
   }))
 
   const oiState = vpOiRates.value[id]
+  const analysisState = vpAnalysis.value[id]
 
   return {
     symbol: props.symbol.toUpperCase(),
@@ -2414,6 +3102,14 @@ function buildFrvpExportPayload(id: number) {
             pointCount: oiState.data!.pointCount,
           }
         : { status: oiState?.status ?? 'not-fetched', error: oiState?.error },
+    biasAnalysis:
+      analysisState?.status === 'ready'
+        ? {
+            status: 'ready',
+            bias: analysisState.bias,
+            confidencePct: analysisState.confidencePct,
+          }
+        : { status: analysisState?.status ?? 'not-run' },
   }
 }
 
@@ -2446,7 +3142,14 @@ async function downloadAllFrvpZip() {
   const zip = new JSZip()
 
   const sorted = [...volumeProfiles.value].sort((a, b) => a.startIndex - b.startIndex)
-  const fileEntries: { file: string; startIndex: number; endIndex: number; candleCount: number }[] = []
+  const fileEntries: {
+    file: string
+    startIndex: number
+    endIndex: number
+    candleCount: number
+    bias: string | null
+    biasConfidencePct: number | null
+  }[] = []
 
   sorted.forEach((meta, i) => {
     const payload = buildFrvpExportPayload(meta.id)
@@ -2458,6 +3161,8 @@ async function downloadAllFrvpZip() {
       startIndex: meta.startIndex,
       endIndex: meta.endIndex,
       candleCount: payload.range.candleCount,
+      bias: payload.biasAnalysis.status === 'ready' ? payload.biasAnalysis.bias! : null,
+      biasConfidencePct: payload.biasAnalysis.status === 'ready' ? payload.biasAnalysis.confidencePct! : null,
     })
   })
 
@@ -2487,7 +3192,8 @@ const FRVP_ZIP_README = `This zip contains Fixed-Range Volume Profiles (FRVPs) e
 
 FILES
 - manifest.json          Batch summary: symbol, interval, and the ordered list of
-                          FRVP files (oldest range first, by startIndex).
+                          FRVP files (oldest range first, by startIndex), each with
+                          its bias/confidence at a glance (bias, biasConfidencePct).
 - frvp_NN_start-end.json One file per FRVP box placed on the chart, NN = order
                           (01, 02, ...), start-end = candle index range it covers.
 
@@ -2511,8 +3217,18 @@ EACH frvp_NN_*.json FILE SHAPE
   "openInterest": {
     "status": "ready" | "no-data" | "error" | "not-fetched",
     "startOi", "endOi", "oiChangeAbs", "oiChangePct", "ratePerHour", "period", "pointCount"
+  },
+  "biasAnalysis": {
+    "status": "ready" | "analyzing" | "error" | "insufficient" | "not-run",
+    "bias",                        // "LONG" | "SHORT" | "NEUTRAL" (only present when status is "ready")
+    "confidencePct"                // 0-100 (only present when status is "ready")
   }
 }
+
+biasAnalysis is the confluence-analyzer's read on this zone, computed from every
+FRVP from the oldest placed up through this one (inclusive) - so it reflects the
+full picture built up to this point in time, not this zone in isolation. It's the
+same bias/confidence shown on the chart just under each FRVP's OI line.
 
 Each FRVP is one price zone from the chart: its own candle range, its own volume
 profile (where volume built up within that range), and its own OI change over that
@@ -2568,6 +3284,23 @@ function oiLabelClass(id: number) {
   if (pct > 1) return 'vp-oi-up'
   if (pct < -1) return 'vp-oi-down'
   return 'vp-oi-neutral'
+}
+
+function vpAnalysisLabelText(id: number): string {
+  const state = vpAnalysis.value[id]
+  if (!state || state.status === 'analyzing') return 'Bias: analyzing...'
+  if (state.status === 'error') return 'Bias: analysis failed'
+  if (state.status === 'insufficient') return 'Bias: n/a'
+  return `${state.bias!.toLowerCase()} - ${state.confidencePct}%`
+}
+
+function vpAnalysisLabelClass(id: number) {
+  const state = vpAnalysis.value[id]
+  if (!state || state.status !== 'ready' || !state.bias) return 'vp-bias-neutral'
+  const bias = state.bias.toLowerCase()
+  if (bias === 'long') return 'vp-bias-long'
+  if (bias === 'short') return 'vp-bias-short'
+  return 'vp-bias-neutral'
 }
 
 /** All finalized (click-drag-completed) volume profiles, recomputed reactively as price scale/zoom changes. */
@@ -3569,8 +4302,52 @@ const tpSlBoxes = computed(() => {
   return boxes
 })
 
-// ─── Volume panel (bottom-of-chart overlay, does not affect price scale) ──────
-/** Reserved pixel height, at the bottom of the SVG, for volume bars. */
+// ─── Indicator panel layout (own stacked sections below the price chart) ──────
+//
+// Volume / OI / Long-Short used to be drawn as semi-transparent overlays on
+// top of the last ~100–230px of the price chart itself, which meant tall
+// wicks or a strong trend leg could visually collide with the bars sitting
+// "inside" the candle area. This computed lays out each active panel as its
+// own dedicated band stacked BELOW the price chart (y > svgHeight), so the
+// price chart, volume, OI, and L/S each get their own non-overlapping
+// section — same idea as how most charting platforms stack sub-panes.
+// Panels only take up space when their checkbox is on; toggling one off
+// closes the gap rather than leaving a blank band.
+const PANEL_GAP = 10
+
+const panelLayout = computed(() => {
+  let cursor = svgHeight // bottom edge of the price chart — panels start here
+  let volume: { top: number; bottom: number } | null = null
+  let oi: { top: number; bottom: number } | null = null
+  let ls: { top: number; bottom: number } | null = null
+
+  if (showVolume.value) {
+    const top = cursor + PANEL_GAP
+    const bottom = top + VOLUME_PANEL_HEIGHT
+    volume = { top, bottom }
+    cursor = bottom
+  }
+  if (showOiBar.value) {
+    const top = cursor + PANEL_GAP
+    const bottom = top + OI_PANEL_HEIGHT
+    oi = { top, bottom }
+    cursor = bottom
+  }
+  if (showLongShortRatio.value) {
+    const top = cursor + PANEL_GAP
+    const bottom = top + LS_PANEL_HEIGHT
+    ls = { top, bottom }
+    cursor = bottom
+  }
+
+  return { volume, oi, ls, totalHeight: cursor }
+})
+
+/** Full SVG canvas height — price chart height plus whichever indicator panels are currently active. Since the SVG has no viewBox/CSS scaling, 1 unit here is 1 rendered pixel, so growing this is safe and doesn't distort price-chart math (which still keys off the constant `svgHeight`). */
+const totalSvgHeight = computed(() => panelLayout.value.totalHeight)
+
+// ─── Volume panel (own section below the price chart) ─────────────────────────
+/** Reserved pixel height for the volume panel. */
 const VOLUME_PANEL_HEIGHT = 100
 /** Tallest bar uses at most this fraction of the reserved panel height. */
 const VOLUME_PANEL_MAX_RATIO = 0.9
@@ -3587,20 +4364,306 @@ const maxVolumeInView = computed(() => {
   return max
 })
 
-/** One bar per candle, anchored to the bottom of the chart, scaled by volume. */
+/** One bar per candle, anchored to the bottom of its own panel (grows upward), scaled by volume. */
 const volumeBars = computed(() => {
-  if (maxVolumeInView.value <= 0) return []
+  if (maxVolumeInView.value <= 0 || !panelLayout.value.volume) return []
+  const panelBottom = panelLayout.value.volume.bottom
   return displayCandles.value.map((candle, i) => {
     const vol = candle.volume ?? 0
     const barHeight = (vol / maxVolumeInView.value) * volumePanelUsableHeight
     return {
       x: candleX(i) - candleWidth.value / 2,
-      y: svgHeight - barHeight,
+      y: panelBottom - barHeight,
       width: candleWidth.value,
       height: barHeight,
       isBull: candle.close! >= candle.open!,
     }
   })
+})
+
+// ─── Open Interest bar panel ────────────────────────────────────────────────
+//
+// Binance's kline endpoint has no per-candle OI field, so unlike volume this
+// needs its own fetch: the futures Open Interest History endpoint
+// (/futures/data/openInterestHist), which only samples on a fixed set of
+// periods (5m/15m/30m/1h/2h/4h/6h/12h/1d) — not arbitrary kline intervals.
+// We fetch on that nearest supported period and then, for each displayed
+// candle, look up the most recent OI sample at or before that candle's
+// close time. Rendered as its own yellow bar band directly above the
+// volume band (same technique as volumeBars, just a second row).
+interface OiHistoryEntry {
+  timestamp: number
+  sumOpenInterest: number
+}
+
+const OI_SUPPORTED_PERIODS = ['5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d']
+
+const oiHistory = ref<OiHistoryEntry[]>([])
+const oiLoading = ref(false)
+const oiError = ref<string | null>(null)
+
+/** Binance's OI-history endpoint only supports a fixed set of periods — pick whichever is closest to the kline interval actually in use. */
+function resolveOiPeriod(interval: string): string {
+  if (OI_SUPPORTED_PERIODS.includes(interval)) return interval
+  const wantedMs = intervalToMs(interval)
+  let best = OI_SUPPORTED_PERIODS[0]
+  let bestDiff = Infinity
+  for (const period of OI_SUPPORTED_PERIODS) {
+    const diff = Math.abs(intervalToMs(period) - wantedMs)
+    if (diff < bestDiff) {
+      bestDiff = diff
+      best = period
+    }
+  }
+  return best
+}
+
+async function fetchOiHistory() {
+  if (!props.symbol) return
+  oiLoading.value = true
+  oiError.value = null
+  try {
+    const period = resolveOiPeriod(props.interval)
+    const url = `https://fapi.binance.com/futures/data/openInterestHist?symbol=${props.symbol.toUpperCase()}&period=${period}&limit=500`
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`request failed (${res.status})`)
+    const data = await res.json()
+    oiHistory.value = (Array.isArray(data) ? data : []).map((d: any) => ({
+      timestamp: Number(d.timestamp),
+      sumOpenInterest: parseFloat(d.sumOpenInterest),
+    }))
+  } catch (err) {
+    oiError.value = err instanceof Error ? err.message : 'failed to load OI history'
+    oiHistory.value = []
+  } finally {
+    oiLoading.value = false
+  }
+}
+
+// Fetch the first time the checkbox is turned on, and whenever the symbol
+// or interval changes while it's already on (stale OI history for a
+// different pair/timeframe would otherwise just sit there silently).
+watch(showOiBar, (active) => {
+  if (active) fetchOiHistory()
+})
+watch(() => [props.symbol, props.interval], () => {
+  if (showOiBar.value) fetchOiHistory()
+})
+
+/**
+ * Maps each displayed candle to the most recent OI sample at or before that
+ * candle's close time. `oiHistory` and `displayCandles` both run oldest→
+ * newest, so a single forward-only pointer over the sorted samples covers
+ * every candle in one pass.
+ */
+const oiPerCandle = computed<(number | null)[]>(() => {
+  if (oiHistory.value.length === 0) return displayCandles.value.map(() => null)
+
+  const intervalMs = intervalToMs(props.interval)
+  const sorted = [...oiHistory.value].sort((a, b) => a.timestamp - b.timestamp)
+  let sIdx = 0
+
+  return displayCandles.value.map(candle => {
+    if (candle.openTime == null) return null
+    const cutoff = candle.openTime + intervalMs
+    while (sIdx + 1 < sorted.length && sorted[sIdx + 1].timestamp <= cutoff) sIdx++
+    return sorted[sIdx].timestamp <= cutoff ? sorted[sIdx].sumOpenInterest : null
+  })
+})
+
+/** Highest OI value currently in view — used to scale bar heights, same idea as maxVolumeInView. */
+const maxOiInView = computed(() => {
+  let max = 0
+  for (const v of oiPerCandle.value) {
+    if (v != null && v > max) max = v
+  }
+  return max
+})
+
+/**
+ * Lowest OI value currently in view. Needed because open interest — unlike
+ * volume — never dips anywhere near zero; it moves in a narrow band (e.g.
+ * 95k–100k contracts). Scaling bar height as value/max (anchored at zero)
+ * would put every single bar at ~95–100% of the panel height, making them
+ * all look the same. Scaling against the actual min↔max range in view
+ * instead turns the real fluctuation into a visible relative bar chart.
+ */
+const minOiInView = computed(() => {
+  let min = Infinity
+  for (const v of oiPerCandle.value) {
+    if (v != null && v < min) min = v
+  }
+  return min === Infinity ? 0 : min
+})
+
+const OI_PANEL_HEIGHT = 70
+const OI_PANEL_MAX_RATIO = 0.9
+const oiPanelUsableHeight = OI_PANEL_HEIGHT * OI_PANEL_MAX_RATIO
+/** Floor so the lowest bar in view is still a visible sliver rather than a 0px line. */
+const OI_BAR_MIN_HEIGHT_RATIO = 0.08
+
+/** One bar per candle with a known OI sample, anchored to the bottom of its own panel (grows upward) and scaled against the min↔max OI range currently in view. */
+const oiBars = computed(() => {
+  const max = maxOiInView.value
+  const min = minOiInView.value
+  if (max <= 0 || !panelLayout.value.oi) return []
+  const range = max - min
+  const baseline = panelLayout.value.oi.bottom
+  const bars: { x: number; y: number; width: number; height: number }[] = []
+  oiPerCandle.value.forEach((val, i) => {
+    if (val == null) return
+    // Flat data (range === 0) falls back to a uniform mid-height bar instead of div-by-zero.
+    const ratio = range > 0
+      ? OI_BAR_MIN_HEIGHT_RATIO + ((val - min) / range) * (1 - OI_BAR_MIN_HEIGHT_RATIO)
+      : 0.5
+    const barHeight = ratio * oiPanelUsableHeight
+    bars.push({
+      x: candleX(i) - candleWidth.value / 2,
+      y: baseline - barHeight,
+      width: candleWidth.value,
+      height: barHeight,
+    })
+  })
+  return bars
+})
+
+// ─── Long/Short Ratio panel ─────────────────────────────────────────────────
+//
+// Binance's Top/Global Long-Short Account Ratio endpoint
+// (/futures/data/globalLongShortAccountRatio) is sampled on the same fixed
+// period set as the OI-history endpoint, so it shares resolveOiPeriod() and
+// the same as-of matching approach as oiPerCandle above.
+//
+// Rendered as a single STACKED column per candle rather than a net-deviation
+// histogram: longAccount + shortAccount always sum to 1.0, so each candle's
+// column is just split at that proportion — green (long %) fills from the
+// panel's top edge down, red (short %) picks up exactly where green stopped
+// and fills the rest. A dashed line marks the 50/50 point for reference.
+// Sits directly above the OI band.
+interface LsRatioEntry {
+  timestamp: number
+  longAccount: number
+  shortAccount: number
+}
+
+const showLongShortRatio = ref(false)
+const lsRatioHistory = ref<LsRatioEntry[]>([])
+const lsRatioLoading = ref(false)
+const lsRatioError = ref<string | null>(null)
+
+async function fetchLongShortRatio() {
+  if (!props.symbol) return
+  lsRatioLoading.value = true
+  lsRatioError.value = null
+  try {
+    const period = resolveOiPeriod(props.interval) // same supported period set as OI history
+    const url = `https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${props.symbol.toUpperCase()}&period=${period}&limit=500`
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`request failed (${res.status})`)
+    const data = await res.json()
+    lsRatioHistory.value = (Array.isArray(data) ? data : []).map((d: any) => ({
+      timestamp: Number(d.timestamp),
+      longAccount: parseFloat(d.longAccount),
+      shortAccount: parseFloat(d.shortAccount),
+    }))
+  } catch (err) {
+    lsRatioError.value = err instanceof Error ? err.message : 'failed to load long/short ratio'
+    lsRatioHistory.value = []
+  } finally {
+    lsRatioLoading.value = false
+  }
+}
+
+watch(showLongShortRatio, (active) => {
+  if (active) fetchLongShortRatio()
+})
+watch(() => [props.symbol, props.interval], () => {
+  if (showLongShortRatio.value) fetchLongShortRatio()
+})
+
+/** Same as-of forward-fill approach as oiPerCandle — see that comment for why. */
+const lsRatioPerCandle = computed<({ longAccount: number; shortAccount: number } | null)[]>(() => {
+  if (lsRatioHistory.value.length === 0) return displayCandles.value.map(() => null)
+
+  const intervalMs = intervalToMs(props.interval)
+  const sorted = [...lsRatioHistory.value].sort((a, b) => a.timestamp - b.timestamp)
+  let sIdx = 0
+
+  return displayCandles.value.map(candle => {
+    if (candle.openTime == null) return null
+    const cutoff = candle.openTime + intervalMs
+    while (sIdx + 1 < sorted.length && sorted[sIdx + 1].timestamp <= cutoff) sIdx++
+    if (sorted[sIdx].timestamp > cutoff) return null
+    return { longAccount: sorted[sIdx].longAccount, shortAccount: sorted[sIdx].shortAccount }
+  })
+})
+
+const LS_PANEL_HEIGHT = 60
+
+/** Top edge of the L/S panel's own section (own band, computed from panelLayout). */
+const lsRatioPanelTopY = computed(() => panelLayout.value.ls?.top ?? 0)
+/** 50/50 reference line, vertically centered in the L/S band. */
+const lsRatioCenterY = computed(() => lsRatioPanelTopY.value + LS_PANEL_HEIGHT / 2)
+
+/** Lowest longAccount fraction currently in view. */
+const minLongAccountInView = computed(() => {
+  let min = Infinity
+  for (const e of lsRatioPerCandle.value) {
+    if (e != null && e.longAccount < min) min = e.longAccount
+  }
+  return min === Infinity ? 0 : min
+})
+
+/** Highest longAccount fraction currently in view. */
+const maxLongAccountInView = computed(() => {
+  let max = -Infinity
+  for (const e of lsRatioPerCandle.value) {
+    if (e != null && e.longAccount > max) max = e.longAccount
+  }
+  return max === -Infinity ? 1 : max
+})
+
+/** Floor/ceiling so even the most extreme bar in view still shows a sliver of the other color, rather than 0px. */
+const LS_BAR_EDGE_MARGIN_RATIO = 0.08
+
+/**
+ * One stacked column per candle: green segment on top (long%), red on the
+ * bottom (short%), red starting exactly where green ends.
+ *
+ * The split point is NOT plotted on the literal 0–100% axis. Global
+ * long/short splits rarely move more than a few percentage points day to
+ * day, so on a true 0–100% scale every column looks identical (same
+ * flattening problem the OI band had). Instead the long% axis is zoomed to
+ * the actual min↔max longAccount seen in view — the lowest long% in view
+ * maps near the bottom of the panel, the highest near the top — so real
+ * fluctuation is actually visible as the split line moving up and down.
+ * This trades literal "58% long" accuracy for a readable relative read;
+ * exact values are still in lsRatioPerCandle if you want a numeric label.
+ */
+const lsRatioBars = computed(() => {
+  if (!panelLayout.value.ls) return []
+  const topY = lsRatioPanelTopY.value
+  const min = minLongAccountInView.value
+  const max = maxLongAccountInView.value
+  const range = max - min
+  const bars: { x: number; y: number; width: number; height: number; long: boolean }[] = []
+
+  lsRatioPerCandle.value.forEach((entry, i) => {
+    if (entry == null) return
+    const x = candleX(i) - candleWidth.value / 2
+
+    const zoomedLongFraction = range > 0
+      ? LS_BAR_EDGE_MARGIN_RATIO + ((entry.longAccount - min) / range) * (1 - 2 * LS_BAR_EDGE_MARGIN_RATIO)
+      : 0.5
+
+    const longHeight = zoomedLongFraction * LS_PANEL_HEIGHT
+    const shortHeight = LS_PANEL_HEIGHT - longHeight
+
+    bars.push({ x, y: topY, width: candleWidth.value, height: longHeight, long: true })
+    bars.push({ x, y: topY + longHeight, width: candleWidth.value, height: shortHeight, long: false })
+  })
+
+  return bars
 })
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -3993,6 +5056,11 @@ const formatValue = (value: any): string => {
   cursor: crosshair;
 }
 
+/* ── Anchored VWAP tool ────────────────────────────────────────────────── */
+.candle.avwap-target {
+  cursor: crosshair;
+}
+
 .volume-profiles { pointer-events: none; }
 
 .vp-range-rect {
@@ -4052,6 +5120,17 @@ const formatValue = (value: any): string => {
 .vp-oi-up { fill: #26a69a; }
 .vp-oi-down { fill: #ef5350; }
 .vp-oi-neutral { fill: rgba(255,255,255,0.45); }
+
+.vp-bias-label {
+  font-size: 10px;
+  font-family: monospace;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.vp-bias-long { fill: #26a69a; }
+.vp-bias-short { fill: #ef5350; }
+.vp-bias-neutral { fill: rgba(255,255,255,0.45); }
 
 /* ── FRVP confluence analysis modal ────────────────────────────────────── */
 .frvp-analysis {
@@ -4217,6 +5296,27 @@ const formatValue = (value: any): string => {
   fill: #ff8a80;
 }
 
+.vp-nudge-btn-bg {
+  fill: rgba(255,255,255,0.08);
+  stroke: rgba(255,255,255,0.2);
+  stroke-width: 1;
+  cursor: pointer;
+  pointer-events: all;
+}
+
+.vp-nudge-btn-bg:hover {
+  fill: rgba(96,165,250,0.35);
+  stroke: #60a5fa;
+}
+
+.vp-nudge-btn-label {
+  fill: rgba(255,255,255,0.85);
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+  pointer-events: none;
+}
+
 /* ── Freeform rectangle draw tool ─────────────────────────────────────── */
 .draw-rect {
   fill: rgba(255, 213, 79, 0.12);
@@ -4249,6 +5349,64 @@ const formatValue = (value: any): string => {
 }
 .draw-rect-close:hover {
   fill: #ff8a80;
+}
+
+/* ── Anchored VWAP overlay ────────────────────────────────────────────── */
+.anchored-vwaps { pointer-events: none; }
+.avwap-group { pointer-events: none; }
+
+.avwap-mid-line {
+  fill: none;
+  stroke-width: 1.75;
+  opacity: 0.95;
+}
+.avwap-band-line {
+  fill: none;
+  stroke-width: 1;
+  stroke-dasharray: 4, 3;
+  opacity: 0.6;
+}
+.avwap-band-fill {
+  stroke: none;
+  opacity: 0.07;
+}
+.avwap-anchor-dot {
+  stroke: #0d0d0d;
+  stroke-width: 1;
+}
+.avwap-anchor-close {
+  fill: rgba(255, 255, 255, 0.55);
+  font-size: 10px;
+  cursor: pointer;
+  pointer-events: all;
+  user-select: none;
+}
+.avwap-anchor-close:hover {
+  fill: #ff8a80;
+}
+
+.avwap-end-guide {
+  stroke-width: 1;
+  stroke-dasharray: 2, 2;
+  opacity: 0.5;
+  pointer-events: none;
+}
+.avwap-end-handle {
+  cursor: ew-resize;
+  pointer-events: all;
+  stroke-width: 1.5;
+}
+.avwap-end-handle-open {
+  fill: rgba(0, 0, 0, 0.3);
+  opacity: 0.75;
+}
+.avwap-end-handle-pinned {
+  stroke: #0d0d0d;
+  opacity: 0.95;
+}
+.avwap-end-handle-dragging {
+  opacity: 1;
+  filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.6));
 }
 
 /* ── Backtest playback controls ───────────────────────────────────────── */
@@ -4361,6 +5519,22 @@ const formatValue = (value: any): string => {
 .volume-bar { opacity: 0.35; }
 .volume-bar.bull { fill: #26a69a; }
 .volume-bar.bear { fill: #ef5350; }
+
+.oi-bars { pointer-events: none; }
+.oi-bar { fill: #ffd60a; opacity: 0.45; }
+.oi-panel-label { fill: rgba(255, 214, 10, 0.55); font-size: 10px; font-family: monospace; pointer-events: none; }
+.oi-panel-label-error { fill: #ff8a80; }
+
+.indicator-panel-bg { fill: rgba(255, 255, 255, 0.015); pointer-events: none; }
+.indicator-panel-separator { stroke: rgba(255, 255, 255, 0.1); stroke-width: 1; pointer-events: none; }
+
+.ls-ratio-bars { pointer-events: none; }
+.ls-ratio-bar { opacity: 0.65; }
+.ls-ratio-bar-long { fill: #26a69a; }
+.ls-ratio-bar-short { fill: #ef5350; }
+.ls-ratio-centerline { stroke: rgba(255, 255, 255, 0.25); stroke-width: 1; stroke-dasharray: 3, 3; }
+.ls-ratio-panel-label { fill: rgba(255, 255, 255, 0.4); font-size: 10px; font-family: monospace; pointer-events: none; }
+.ls-ratio-panel-label-error { fill: #ff8a80; }
 .volume-panel-label { fill: rgba(255,255,255,0.35); font-size: 10px; font-family: monospace; pointer-events: none; }
 
 /* ── Live indicator ───────────────────────────────────────────────────── */

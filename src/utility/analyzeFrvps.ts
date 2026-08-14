@@ -116,6 +116,22 @@ const THRESHOLDS = {
   rallyLookback: 3, // how many trailing zones to scan for a sustained same-direction rally/decline
   rallyMinZones: 2, // minimum consecutive same-direction zones before a run counts as a "rally"/"decline"
   exhaustionMomentumDropPct: 0.5, // current zone's |priceChangePct| must fall below this fraction of the rally's average to count as decelerating
+  /**
+   * Confidence ceiling based on the LATEST zone's own candle count — separate
+   * from minZonesForFullConfidence (which caps on total zones in the batch).
+   * A zone can be the 11th zone in a big, well-covered batch and still only
+   * be built from 2-3 candles; every structural metric (POC position,
+   * displacement, edges, HVN) is computed the same regardless of candle
+   * count, so without this the confidence % doesn't reflect how thin the
+   * sample actually is. Checked from smallest to largest, first match wins;
+   * a zone with more candles than every listed maxCandles gets no extra cap.
+   */
+  candleCountConfidenceCaps: [
+    { maxCandles: 5, cap: 65 },
+    { maxCandles: 10, cap: 70 },
+    { maxCandles: 20, cap: 75 },
+    { maxCandles: 40, cap: 80 },
+  ],
 }
 
 /** Scoring weights, taken directly from the spec's section 12. */
@@ -124,8 +140,8 @@ const WEIGHTS = {
   moderateAcceptanceOrRejection: 12, // LONG A/B, SHORT A/B (moderate displacement variant)
   continuationBonus: 15, // LONG C / SHORT C
   failedDisplacementReversal: 25, // LONG E / confirmed failed bullish positioning -> SHORT
-  oiUnwindDirectional: 10, // LONG D / SHORT E
-  oiBuildDirectional: 8, // LONG D(bullish build) / SHORT D
+  oiUnwindDirectional: 6, // LONG D / SHORT E — short-covering / liquidation read, deliberately weaker than fresh positioning
+  oiBuildDirectional: 12, // LONG D(bullish build) / SHORT D — fresh positioning entering, stronger conviction than unwind
   hvnBonus: 4,
   edgeBonus: 3,
   pocHvnConfluenceBonus: 10, // this zone's POC/HVN overlaps a level that was already significant in a recent prior zone
@@ -140,6 +156,8 @@ export interface ZoneStructure {
   id: number | string
   startIndex: number
   endIndex: number
+  /** Number of candles with a usable open/close inside this zone — the raw sample size behind every metric below. */
+  candleCount: number
   firstOpen: number | null
   lastClose: number | null
   priceChangePct: number
@@ -295,6 +313,7 @@ function classifyZoneStructure(zone: FrvpZoneInput): ZoneStructure {
     id: zone.id,
     startIndex: zone.startIndex,
     endIndex: zone.endIndex,
+    candleCount: candles.length,
     firstOpen,
     lastClose,
     priceChangePct,
@@ -478,8 +497,8 @@ function scoreZone(
     add('LONG', WEIGHTS.oiUnwindDirectional, 'Price rising with OI unwinding above a low POC (short covering)')
   }
   // SHORT E — bearish OI-unwinding (long liquidation read).
-  if (s.oiRegime === 'UNWINDING' && s.priceDirection === 'DOWN' && s.closePocRelation === 'BELOW_POC') {
-    add('SHORT', WEIGHTS.oiUnwindDirectional, 'Price falling with OI unwinding below POC (long liquidation)')
+  if (s.oiRegime === 'UNWINDING' && s.priceDirection === 'DOWN' && s.closePocRelation === 'BELOW_POC' && s.pocPositionBand === 'HIGH_POC') {
+    add('SHORT', WEIGHTS.oiUnwindDirectional, 'Price falling with OI unwinding below a high POC (long liquidation)')
   }
   // SHORT D — bearish OI-building.
   if (s.oiRegime === 'BUILDING' && s.priceDirection === 'DOWN' && s.closePocRelation === 'BELOW_POC') {
@@ -741,6 +760,15 @@ function buildWarnings(
   if (totalZones < THRESHOLDS.minZonesForFullConfidence) {
     warnings.push('Small sample size — treat this bias as exploratory, not statistically reliable')
   }
+  const candleCountTier = THRESHOLDS.candleCountConfidenceCaps.find(
+    tier => latest.structure.candleCount <= tier.maxCandles
+  )
+  if (candleCountTier) {
+    warnings.push(
+      `Latest zone is built from only ${latest.structure.candleCount} candle` +
+      `${latest.structure.candleCount === 1 ? '' : 's'} — confidence capped at ${candleCountTier.cap}% regardless of score`
+    )
+  }
   if (latest.exhaustion !== 'NONE') {
     warnings.push(
       `${latest.exhaustion === 'RALLY_EXHAUSTION' ? 'Rally' : 'Decline'} exhaustion is based on decelerating momentum, ` +
@@ -849,6 +877,15 @@ export function analyzeFrvps(
   let confidenceCap = 90
   if (oiReadyCount < zones.length) confidenceCap = Math.min(confidenceCap, 80)
   if (zones.length < THRESHOLDS.minZonesForFullConfidence) confidenceCap = Math.min(confidenceCap, 70)
+
+  // Candle-count cap is separate from the batch-size cap above: it looks at
+  // how many candles actually built the LATEST zone, regardless of how many
+  // zones are in the batch overall. Without this, a 2-3 candle zone sitting
+  // inside a large, well-covered batch could still report 85-90% confidence.
+  const candleCountCap = THRESHOLDS.candleCountConfidenceCaps.find(
+    tier => latest.structure.candleCount <= tier.maxCandles
+  )?.cap
+  if (candleCountCap !== undefined) confidenceCap = Math.min(confidenceCap, candleCountCap)
 
   const historicalValidation = buildHistoricalValidation(zoneAnalyses, bias)
 

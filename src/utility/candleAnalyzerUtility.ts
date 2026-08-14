@@ -418,6 +418,44 @@ static detectPriceMove(
     return "normal";
 }
 
+static getAnchorVwapBandMultiplier(): number{
+    return 2
+}
+
+static getAnchorVwap(candleEntries: CandleEntry[]): PriceZone {
+  let cumPV = 0;   // Σ (typicalPrice * volume)
+  let cumPV2 = 0;  // Σ (typicalPrice² * volume) — for weighted variance
+  let cumVol = 0;  // Σ volume
+ 
+  let mid = 0;
+  let stdev = 0;
+
+  let ANCHORED_VWAP_BAND_MULTIPLIER = 2;
+ 
+  for (const c of candleEntries) {
+    if (c.high == null || c.low == null || c.close == null) continue;
+ 
+    const typical = (c.high + c.low + c.close) / 3;
+    const vol = c.volume ?? 0;
+ 
+    cumPV += typical * vol;
+    cumPV2 += typical * typical * vol;
+    cumVol += vol;
+ 
+    if (cumVol <= 0) continue;
+ 
+    mid = cumPV / cumVol;
+    const variance = Math.max(cumPV2 / cumVol - mid * mid, 0);
+    stdev = Math.sqrt(variance);
+  }
+ 
+  return {
+    mid,
+    upper: mid + stdev * this.getAnchorVwapBandMultiplier(),
+    lower: mid - stdev * this.getAnchorVwapBandMultiplier(),
+  };
+}
+
 /**
  * Detects "absorption" on the most recent candle in the array: high volume
  * relative to recent history, but a disproportionately small/rejected body

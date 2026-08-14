@@ -129,9 +129,9 @@ export class SimulationUtility {
                 candle.candleData.pastCandleAverageChange = pastCandleAverageChange
                 candle.candleData.atr = atr;
                 candle.isWeakening = candleAnalyzer.isWeakening(movingCandles);
-                candle.candleData.ema200 = candleAnalyzer.calculateEMA(movingCandles, 40);
-                candle.candleData.ma200 = candleAnalyzer.calculateEMA(movingCandles, 200);
-                candle.candleData.ma100 = candleAnalyzer.calculateEMA(movingCandles, 100);
+                candle.candleData.ema200 = candleAnalyzer.calculateEMA(movingCandles, 200);
+                candle.candleData.ma200 = candleAnalyzer.calculateMovingAverage(movingCandles, 200)!;
+                candle.candleData.ma100 = candleAnalyzer.calculateMovingAverage(movingCandles, 100)!;
                 candle.candleData.crossedEma = (candle.open < candle.candleData.ema200 && candle.close > candle.candleData.ema200) || (candle.open > candle.candleData.ema200 && candle.close < candle.candleData.ema200);
                 candle.candleData.buyerInterestRate = candleAnalyzer.buyerInterestScore(movingCandles,24);
                 
@@ -404,6 +404,10 @@ export class SimulationUtility {
                                 //candle.candleData.conditionMet = "BULLISH"
                             }
                         }
+
+                        var pastHasVolumeSpike = movingCandles.slice(-6).filter(c => c.candleData && c.candleData.volumeSpike).length > 0;
+
+                        //if(!pastHasVolumeSpike) continue;
 
                         var crossedEma = movingCandles.slice(-3).filter(c => c.candleData
                             && (

@@ -216,7 +216,7 @@ const notificationStore = useNotificationStore();
 const isBotEnabled = ref(false)
 
 const MASTER_SYMBOL = "BTCUSDT";
-const KLINE_INTERVAL = "1h"
+const KLINE_INTERVAL = "15m"
 const MAX_INIT_CANDLES = 500;
 const SUPPORT_AND_RESISTANCE_PERIOD_LENGTH = 10;
 
@@ -399,30 +399,30 @@ async function onNewCandle(candle:Candle){
     //send event to the SymbolBasketComponent
     
     completionCount.value = 0;
-    if(chocoMintoStore.isLive && chocoMintoStore.isRedeemerEnabled){
-        var balance = await OrderMakerUtility.getBalance();
-        const positions = await OrderMakerUtility.getPositions();
-        const fees = OrderMakerUtility.calculateTotalTradingFees(positions);
-        var baseTarget = MARGIN * 5
-        var targetProfit = baseTarget + fees.totalFees + fees.liquidityBuffer
+    // if(chocoMintoStore.isLive && chocoMintoStore.isRedeemerEnabled){
+    //     var balance = await OrderMakerUtility.getBalance();
+    //     const positions = await OrderMakerUtility.getPositions();
+    //     const fees = OrderMakerUtility.calculateTotalTradingFees(positions);
+    //     var baseTarget = MARGIN * 5
+    //     var targetProfit = baseTarget + fees.totalFees + fees.liquidityBuffer
 
-        UI_BAL_CHECK.value = `T: ${targetProfit} => U: ${balance.unrealized_pnl}`
+    //     UI_BAL_CHECK.value = `T: ${targetProfit} => U: ${balance.unrealized_pnl}`
         
-        if(balance && balance.unrealized_pnl > targetProfit){
-            try {
-                await OrderMakerUtility.closeAllOpenPositions();
-            } catch (error) {
-                const errorDetails = {
-                    message: error instanceof Error ? error.message : String(error),
-                    stack: error instanceof Error ? error.stack : undefined,
-                    name: error instanceof Error ? error.name : 'Unknown',
-                    timestamp: new Date().toISOString(),
-                    symbol: ""
-                };
-                indexDBLogger.writeLog(`[closing positions] Error: ${JSON.stringify(errorDetails)}`);
-            }
-        }
-    }
+    //     if(balance && balance.unrealized_pnl > targetProfit){
+    //         try {
+    //             await OrderMakerUtility.closeAllOpenPositions();
+    //         } catch (error) {
+    //             const errorDetails = {
+    //                 message: error instanceof Error ? error.message : String(error),
+    //                 stack: error instanceof Error ? error.stack : undefined,
+    //                 name: error instanceof Error ? error.name : 'Unknown',
+    //                 timestamp: new Date().toISOString(),
+    //                 symbol: ""
+    //             };
+    //             indexDBLogger.writeLog(`[closing positions] Error: ${JSON.stringify(errorDetails)}`);
+    //         }
+    //     }
+    // }
 
     if(!chocoMintoStore.isManualSimulation){
         setTimeout(() => {
