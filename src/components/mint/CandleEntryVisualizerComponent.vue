@@ -125,6 +125,24 @@
         Clear AVWAP ({{ anchoredVwaps.length }})
       </button>
 
+      <!-- ── Range Download tool ─────────────────────────────────────────── -->
+      <button
+        class="tool-btn"
+        :class="{ 'tool-btn-active': rangeDownloadModeActive }"
+        @click="toggleRangeDownloadMode"
+        title="Click to enable, then click-drag from one candle to another to select a range. A download button appears on the box - grabs OHLCV+EMA200, AVWAP points, FRVP (if any), OI and Long/Short Ratio per candle in that range."
+      >
+        {{ rangeDownloadModeActive ? 'Range Download: pick a range…' : 'Range Download' }}
+      </button>
+
+      <button
+        v-if="rangeDownloadBoxes.length > 0"
+        class="tool-btn"
+        @click="rangeDownloadBoxes = []"
+      >
+        Clear Range Boxes ({{ rangeDownloadBoxes.length }})
+      </button>
+
       <!-- ── Freeform rectangle draw tool ──────────────────────────────── -->
       <button
         class="tool-btn"
@@ -314,8 +332,24 @@
     <div v-if="previewPosition" class="preview-panel" :class="previewPosition.side.toLowerCase()">
       <span class="preview-side-badge" :class="previewPosition.side.toLowerCase()">{{ previewPosition.side }}</span>
       <span class="preview-stat"><label>Entry</label><span>{{ previewPosition.entryPrice.toFixed(4) }}</span></span>
-      <span class="preview-stat tp"><label>TP</label><span>{{ previewPosition.tpPrice.toFixed(4) }}</span></span>
-      <span class="preview-stat sl"><label>SL</label><span>{{ previewPosition.slPrice.toFixed(4) }}</span></span>
+      <span class="preview-stat tp">
+        <label>TP</label>
+        <input
+          type="number"
+          step="any"
+          class="preview-price-input tp"
+          v-model.number="previewPosition.tpPrice"
+        />
+      </span>
+      <span class="preview-stat sl">
+        <label>SL</label>
+        <input
+          type="number"
+          step="any"
+          class="preview-price-input sl"
+          v-model.number="previewPosition.slPrice"
+        />
+      </span>
       <button class="preview-panel-close" @click="clearPreview">×</button>
     </div>
     <div v-if="previewError" class="preview-error">{{ previewError }}</div>
@@ -447,6 +481,42 @@
             :y2="priceToY(previewPosition.entryPrice)"
             class="preview-entry-line"
           />
+
+          <!-- Preview TP/SL drag handles — visible line + a wider invisible
+               hit-area line on top of it so the price is easy to grab. -->
+          <template v-if="previewPosition">
+            <line
+              :x1="candleX(displayCandles.length - 1) - candleWidth / 2"
+              :x2="svgWidth"
+              :y1="priceToY(previewPosition.tpPrice)"
+              :y2="priceToY(previewPosition.tpPrice)"
+              class="preview-tp-line"
+            />
+            <line
+              :x1="candleX(displayCandles.length - 1) - candleWidth / 2"
+              :x2="svgWidth"
+              :y1="priceToY(previewPosition.tpPrice)"
+              :y2="priceToY(previewPosition.tpPrice)"
+              class="preview-hit-line"
+              @mousedown="startPreviewTpDrag($event)"
+            />
+
+            <line
+              :x1="candleX(displayCandles.length - 1) - candleWidth / 2"
+              :x2="svgWidth"
+              :y1="priceToY(previewPosition.slPrice)"
+              :y2="priceToY(previewPosition.slPrice)"
+              class="preview-sl-line"
+            />
+            <line
+              :x1="candleX(displayCandles.length - 1) - candleWidth / 2"
+              :x2="svgWidth"
+              :y1="priceToY(previewPosition.slPrice)"
+              :y2="priceToY(previewPosition.slPrice)"
+              class="preview-hit-line"
+              @mousedown="startPreviewSlDrag($event)"
+            />
+          </template>
         </g>
 
         <!-- Backtest long/short position placements -->
@@ -908,7 +978,8 @@
               live: i === displayCandles.length - 1 && liveCandle !== null,
               muted: isCandleMuted(i),
               'vp-target': vpModeActive,
-              'avwap-target': avwapModeActive
+              'avwap-target': avwapModeActive,
+              'range-download-target': rangeDownloadModeActive
             }"
             @click="handleCandleClick(i)"
             @mousedown="handleCandleMouseDown(i, $event)"
@@ -1188,6 +1259,86 @@
               class="vp-poc-line vp-preview-row"
             />
           </g>
+        </g>
+
+        <!-- Range Download tool overlay -->
+        <g class="range-download-boxes">
+          <g
+            v-for="box in renderedRangeDownloadBoxes"
+            :key="`range-dl-${box.id}`"
+            class="range-download-box"
+          >
+            <rect
+              :x="box.leftX"
+              :y="box.rangeTop"
+              :width="box.rightX - box.leftX"
+              :height="box.rangeBottom - box.rangeTop"
+              class="range-dl-rect"
+            />
+
+            <!-- Left/right edge resize handles: drag horizontally to
+                 extend or shrink the selected range after placement. -->
+            <line
+              :x1="box.leftX" :x2="box.leftX"
+              :y1="box.rangeTop" :y2="box.rangeBottom"
+              class="range-dl-edge-handle"
+              @mousedown="startRangeDownloadResizeLeft(box.id, $event)"
+            />
+            <line
+              :x1="box.rightX" :x2="box.rightX"
+              :y1="box.rangeTop" :y2="box.rangeBottom"
+              class="range-dl-edge-handle"
+              @mousedown="startRangeDownloadResizeRight(box.id, $event)"
+            />
+
+            <text
+              :x="box.leftX + 4"
+              :y="box.rangeTop - 6"
+              class="range-dl-summary-label"
+            >
+              Range {{ box.endIndex - box.startIndex + 1 }} candles
+            </text>
+
+            <text
+              :x="box.rightX - 4"
+              :y="box.rangeTop - 6"
+              class="range-dl-close-btn"
+              text-anchor="end"
+              @click="removeRangeDownloadBox(box.id)"
+            >
+              ✕ remove
+            </text>
+
+            <text
+              :x="(box.leftX + box.rightX) / 2 - 6"
+              :y="box.rangeTop - 20"
+              class="range-dl-download-btn"
+              text-anchor="end"
+              @click="downloadRangeData(box.id)"
+            >
+              ⬇ download range
+            </text>
+
+            <text
+              :x="(box.leftX + box.rightX) / 2 + 6"
+              :y="box.rangeTop - 20"
+              class="range-dl-analyze-btn"
+              text-anchor="start"
+              @click="analyzeRangeData(box.id)"
+            >
+              ▶ Analyze
+            </text>
+          </g>
+
+          <!-- live drag preview -->
+          <rect
+            v-if="draggingRangeDownloadPreview"
+            :x="draggingRangeDownloadPreview.leftX"
+            :y="draggingRangeDownloadPreview.rangeTop"
+            :width="draggingRangeDownloadPreview.rightX - draggingRangeDownloadPreview.leftX"
+            :height="draggingRangeDownloadPreview.rangeBottom - draggingRangeDownloadPreview.rangeTop"
+            class="range-dl-rect range-dl-rect-preview"
+          />
         </g>
 
         <!-- Freeform rectangle draw tool overlay -->
@@ -1677,6 +1828,174 @@
       </div>
     </div>
   </DialogComponent>
+
+  <!-- Range Download scalp analysis dialog -->
+  <DialogComponent v-model="showRangeAnalysis" :width="'900px'">
+    <DialogHeaderComponent>
+      {{ props.symbol.toUpperCase() }} · Range Scalp Analysis
+    </DialogHeaderComponent>
+
+    <div style="max-height:90vh;overflow:auto;">
+      <div v-if="rangeAnalysisLoading" class="range-analysis-empty">
+        Analyzing range…
+      </div>
+
+      <div v-else-if="rangeAnalysisError" class="range-analysis-empty range-analysis-error">
+        {{ rangeAnalysisError }}
+      </div>
+
+      <div v-else-if="rangeAnalysisResult" class="range-analysis">
+        <div class="range-analysis-meta">
+          <span>Symbol: {{ rangeAnalysisResult.symbol }}</span>
+          <span>Interval: {{ rangeAnalysisResult.interval }}</span>
+          <span>Time: {{ rangeAnalysisResult.lastCandleTimePht }}</span>
+          <span>Last Price: {{ rangeAnalysisResult.lastPrice }}</span>
+        </div>
+
+        <div class="range-bias-card" :class="`range-bias-${rangeAnalysisResult.bias.toLowerCase()}`">
+          <div class="range-bias-label">{{ rangeAnalysisResult.bias }}</div>
+          <div class="range-bias-confidence">{{ rangeAnalysisResult.confidence }}% CONFIDENCE</div>
+          <div class="range-bias-caveat">Structural read — not a guaranteed outcome</div>
+        </div>
+
+        <!-- Preview position TP-hit confidence — only when a Preview Buy/Sell is active -->
+        <div v-if="rangeAnalysisResult.position" class="range-position-card" :class="`range-position-${rangeAnalysisResult.position.side.toLowerCase()}`">
+          <div class="range-position-header">
+            <span class="range-position-side">{{ rangeAnalysisResult.position.side }} PREVIEW</span>
+            <span
+              class="range-position-alignment"
+              :class="`range-align-${rangeAnalysisResult.position.alignment.toLowerCase()}`"
+            >
+              {{ rangeAnalysisResult.position.alignment }} vs structure
+            </span>
+          </div>
+          <div class="range-position-confidence">
+            {{ rangeAnalysisResult.position.tpHitConfidence }}%
+            <span class="range-position-confidence-label">confidence to hit TP</span>
+          </div>
+          <div class="range-trade-card">
+            <div class="range-trade-row">
+              <span class="range-trade-label">Entry</span>
+              <span>{{ rangeAnalysisResult.position.entryPrice }}</span>
+            </div>
+            <div class="range-trade-row">
+              <span class="range-trade-label">TP</span>
+              <span>{{ rangeAnalysisResult.position.tpPrice }} ({{ rangeAnalysisResult.position.tpDistancePercent.toFixed(2) }}%)</span>
+            </div>
+            <div class="range-trade-row">
+              <span class="range-trade-label">SL</span>
+              <span>{{ rangeAnalysisResult.position.slPrice }} ({{ rangeAnalysisResult.position.slDistancePercent.toFixed(2) }}%)</span>
+            </div>
+            <div class="range-trade-row">
+              <span class="range-trade-label">R:R</span>
+              <span>{{ rangeAnalysisResult.position.riskReward.toFixed(2) }}</span>
+            </div>
+            <div class="range-trade-row">
+              <span class="range-trade-label">Entry Quality</span>
+              <span class="range-entry-quality" :class="`range-eq-${rangeAnalysisResult.position.entryQuality.toLowerCase()}`">
+                {{ rangeAnalysisResult.position.entryQuality.replace('_', ' ') }}
+              </span>
+            </div>
+            <div class="range-trade-row">
+              <span class="range-trade-label">TP Placement</span>
+              <span>{{ rangeAnalysisResult.position.tpRealism.replace(/_/g, ' ') }}</span>
+            </div>
+          </div>
+          <p class="range-position-thesis">{{ rangeAnalysisResult.position.thesis }}</p>
+          <ul v-if="rangeAnalysisResult.position.obstacles.length" class="range-warning-list">
+            <li v-for="(o, i) in rangeAnalysisResult.position.obstacles" :key="`range-obstacle-${i}`">⚠ {{ o }}</li>
+          </ul>
+        </div>
+
+        <div v-if="rangeAnalysisResult.bias !== 'NEUTRAL'" class="range-trade-card">
+          <div class="range-trade-row">
+            <span class="range-trade-label">Analyzer's Own Direction</span>
+            <span>{{ rangeAnalysisResult.bias }}</span>
+          </div>
+          <div class="range-trade-row">
+            <span class="range-trade-label">Entry</span>
+            <span>{{ rangeAnalysisResult.entryReference ?? '—' }}</span>
+          </div>
+          <div class="range-trade-row">
+            <span class="range-trade-label">TP</span>
+            <span>{{ rangeAnalysisResult.takeProfit ?? 'no clear target found' }}</span>
+          </div>
+          <div class="range-trade-row">
+            <span class="range-trade-label">SL</span>
+            <span>{{ rangeAnalysisResult.stopLoss ?? 'no clear invalidation found' }}</span>
+          </div>
+          <div class="range-trade-row">
+            <span class="range-trade-label">R:R</span>
+            <span>{{ rangeAnalysisResult.riskReward !== null ? rangeAnalysisResult.riskReward.toFixed(2) : '—' }}</span>
+          </div>
+          <div class="range-trade-row">
+            <span class="range-trade-label">Entry Quality</span>
+            <span class="range-entry-quality" :class="`range-eq-${rangeAnalysisResult.entryQuality.toLowerCase()}`">
+              {{ rangeAnalysisResult.entryQuality.replace('_', ' ') }}
+            </span>
+          </div>
+        </div>
+
+        <div class="range-section">
+          <h4>Short-Term Thesis</h4>
+          <p class="range-thesis">{{ rangeAnalysisResult.thesis }}</p>
+        </div>
+
+        <div v-if="rangeAnalysisResult.supportingSignals.length" class="range-section">
+          <h4>Supporting Signals</h4>
+          <ul class="range-reason-list">
+            <li v-for="(r, i) in rangeAnalysisResult.supportingSignals" :key="`range-support-${i}`">✓ {{ r }}</li>
+          </ul>
+        </div>
+
+        <div v-if="rangeAnalysisResult.contradictingSignals.length" class="range-section">
+          <h4>Contradicting Signals</h4>
+          <ul class="range-warning-list">
+            <li v-for="(w, i) in rangeAnalysisResult.contradictingSignals" :key="`range-contra-${i}`">⚠ {{ w }}</li>
+          </ul>
+        </div>
+
+        <div class="range-section">
+          <h4>Price Action</h4>
+          <p>{{ rangeAnalysisResult.priceAction.description }}</p>
+        </div>
+
+        <div class="range-section">
+          <h4>EMA200</h4>
+          <p>{{ rangeAnalysisResult.trend.description }}</p>
+        </div>
+
+        <div class="range-section">
+          <h4>Open Interest</h4>
+          <p>{{ rangeAnalysisResult.openInterest.description }}</p>
+        </div>
+
+        <div class="range-section">
+          <h4>Long/Short</h4>
+          <p>{{ rangeAnalysisResult.longShort.description }}</p>
+        </div>
+
+        <div class="range-section">
+          <h4>AVWAP</h4>
+          <p>{{ rangeAnalysisResult.avwap.description }}</p>
+        </div>
+
+        <div class="range-section">
+          <h4>FRVP</h4>
+          <p>{{ rangeAnalysisResult.frvp.description }}</p>
+        </div>
+
+        <div class="range-section">
+          <h4>Risk / Invalidation</h4>
+          <p>{{ rangeAnalysisResult.risk }}</p>
+        </div>
+      </div>
+
+      <div v-else class="range-analysis-empty">
+        Draw a Range Download box on the chart, then click "▶ Analyze".
+      </div>
+    </div>
+  </DialogComponent>
 </template>
 
 <script setup lang="ts">
@@ -1690,6 +2009,7 @@ import MACrossingVisualizerComponent from './MACrossingVisualizerComponent.vue';
 import AccumulationAnalysisResultComponent from './AccumulationAnalysisResultComponent.vue';
 import { getOpenInterestRateForRange, type OpenInterestRangeRate } from '@/utility/accumulationAnalysis.ts';
 import { analyzeFrvps, type FrvpAnalysisResult, type FrvpZoneInput } from '@/utility/analyzeFrvps';
+import { analyzeRange, type RangeAnalysisResult, type RangeAnalysisInput } from '@/utility/rangeAnalyze';
 import DialogHeaderComponent from '../shared/dialog/DialogHeaderComponent.vue';
 import { useChocoMintoStore } from '@/stores/chocoMintoStore.ts';
 import { isElementAccessExpression } from 'typescript';
@@ -1799,6 +2119,11 @@ const showMaCrossing = ref(false);
 const showAccumulationAnalysis = ref(false);
 const showFrvpAnalysis = ref(false);
 const frvpAnalysisResult = ref<FrvpAnalysisResult | null>(null);
+
+const showRangeAnalysis = ref(false);
+const rangeAnalysisResult = ref<RangeAnalysisResult | null>(null);
+const rangeAnalysisLoading = ref(false);
+const rangeAnalysisError = ref<string | null>(null);
 
 // ─── Freeform rectangle draw tool ──────────────────────────────────────────
 //
@@ -2213,6 +2538,10 @@ function startAvwapEndDrag(avwapId: number, event: MouseEvent) {
 function handleCandleMouseDown(index: number, event: MouseEvent) {
   if (avwapModeActive.value) {
     handleCandleMouseDownForAvwap(index, event)
+    return
+  }
+  if (rangeDownloadModeActive.value) {
+    handleCandleMouseDownForRangeDownload(index, event)
     return
   }
   handleCandleMouseDownForVp(index, event)
@@ -2783,6 +3112,329 @@ function handleCandleMouseDownForVp(index: number, event: MouseEvent) {
 
   document.addEventListener('mousemove', handleMove)
   document.addEventListener('mouseup', handleUp)
+}
+
+// ─── Range Download tool ────────────────────────────────────────────────────
+//
+// Click "Range Download" to arm the tool, then mousedown on a candle and
+// drag to another candle to select a candle range — same click-drag
+// mechanic as the Volume Profile tool above, but instead of building a
+// histogram it just draws a plain selection box with a "download range"
+// button on top. Clicking it exports everything already on screen for that
+// span (OHLCV + EMA200, AVWAP points, any overlapping FRVP, and the
+// per-candle OI / Long-Short-Ratio samples) as a single JSON file — no
+// separate network fetch, since all of that data is already loaded into the
+// chart's own reactive state (oiPerCandle, lsRatioPerCandle, etc.).
+interface RangeDownloadBox {
+  id: number
+  startIndex: number
+  endIndex: number
+}
+
+const rangeDownloadModeActive = ref(false)
+const rangeDownloadBoxes = ref<RangeDownloadBox[]>([])
+let rangeDownloadIdCounter = 0
+
+const rangeDownloadDragging = ref(false)
+const rangeDownloadStartIndex = ref<number | null>(null)
+const rangeDownloadEndIndex = ref<number | null>(null)
+
+function toggleRangeDownloadMode() {
+  rangeDownloadModeActive.value = !rangeDownloadModeActive.value
+}
+
+function removeRangeDownloadBox(id: number) {
+  rangeDownloadBoxes.value = rangeDownloadBoxes.value.filter(b => b.id !== id)
+}
+
+function findRangeDownloadBox(id: number): RangeDownloadBox | undefined {
+  return rangeDownloadBoxes.value.find(b => b.id === id)
+}
+
+/**
+ * Drag the left edge of a placed range box to adjust startIndex — extends
+ * or shrinks the selection from the left after placement. Snapped to whole
+ * candles, same approach as the VP tool's edge handles (nothing to
+ * re-fetch here since the export is built on demand from state already in
+ * memory).
+ */
+function startRangeDownloadResizeLeft(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const box = findRangeDownloadBox(id)
+  if (!box) return
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    const raw = clientXToCandleIndex(moveEvent.clientX)
+    if (raw === null) return
+    const snapped = Math.round(raw)
+    box.startIndex = Math.max(0, Math.min(snapped, box.endIndex - 1))
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/** Drag the right edge of a placed range box to adjust endIndex — extends or shrinks the selection from the right after placement. */
+function startRangeDownloadResizeRight(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const box = findRangeDownloadBox(id)
+  if (!box) return
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    const raw = clientXToCandleIndex(moveEvent.clientX)
+    if (raw === null) return
+    const snapped = Math.max(0, Math.min(displayCandles.value.length - 1, Math.round(raw)))
+    box.endIndex = Math.max(box.startIndex + 1, snapped)
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/**
+ * Pixel geometry for a range box — same "high↔low of every candle in the
+ * span" framing as computeVolumeProfile's range bounds, just without the
+ * histogram, since this box only exists to mark a selection for export.
+ */
+function computeRangeDownloadBoxGeometry(startIndex: number, endIndex: number) {
+  const candles = displayCandles.value.slice(startIndex, endIndex + 1)
+  if (candles.length === 0) return null
+
+  let rangeLow = Infinity
+  let rangeHigh = -Infinity
+  for (const c of candles) {
+    if (c.low == null || c.high == null) continue
+    if (c.low < rangeLow) rangeLow = c.low
+    if (c.high > rangeHigh) rangeHigh = c.high
+  }
+  if (!isFinite(rangeLow) || !isFinite(rangeHigh) || rangeHigh <= rangeLow) return null
+
+  return {
+    leftX: candleX(startIndex) - candleWidth.value / 2,
+    rightX: candleX(endIndex) + candleWidth.value / 2,
+    rangeTop: priceToY(rangeHigh),
+    rangeBottom: priceToY(rangeLow),
+  }
+}
+
+/** All finalized (click-drag-completed) range boxes, recomputed reactively as price scale/zoom changes. */
+const renderedRangeDownloadBoxes = computed(() => {
+  return rangeDownloadBoxes.value
+    .map(b => {
+      const geo = computeRangeDownloadBoxGeometry(b.startIndex, b.endIndex)
+      return geo ? { ...geo, id: b.id, startIndex: b.startIndex, endIndex: b.endIndex } : null
+    })
+    .filter((b): b is NonNullable<typeof b> => b !== null)
+})
+
+/** Live preview of the box while the user is still dragging. */
+const draggingRangeDownloadPreview = computed(() => {
+  if (!rangeDownloadDragging.value || rangeDownloadStartIndex.value === null || rangeDownloadEndIndex.value === null) return null
+  const s = Math.min(rangeDownloadStartIndex.value, rangeDownloadEndIndex.value)
+  const e = Math.max(rangeDownloadStartIndex.value, rangeDownloadEndIndex.value)
+  if (e <= s) return null
+  return computeRangeDownloadBoxGeometry(s, e)
+})
+
+function handleCandleMouseDownForRangeDownload(index: number, event: MouseEvent) {
+  if (!rangeDownloadModeActive.value) return
+  // Stop this from bubbling into startChartDrag (panning) on the container.
+  event.preventDefault()
+  event.stopPropagation()
+
+  rangeDownloadDragging.value = true
+  rangeDownloadStartIndex.value = index
+  rangeDownloadEndIndex.value = index
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    if (!rangeDownloadDragging.value || !chartContainer.value) return
+    const rect = chartContainer.value.querySelector('svg')?.getBoundingClientRect()
+    if (!rect) return
+    const x = moveEvent.clientX - rect.left
+    const rawIndex = Math.round((x - 10 - candleWidth.value / 2) / (candleWidth.value + candleGap))
+    rangeDownloadEndIndex.value = Math.max(0, Math.min(displayCandles.value.length - 1, rawIndex))
+  }
+
+  const handleUp = () => {
+    if (rangeDownloadStartIndex.value !== null && rangeDownloadEndIndex.value !== null) {
+      const s = Math.min(rangeDownloadStartIndex.value, rangeDownloadEndIndex.value)
+      const e = Math.max(rangeDownloadStartIndex.value, rangeDownloadEndIndex.value)
+      if (e > s) {
+        rangeDownloadBoxes.value.push({ id: ++rangeDownloadIdCounter, startIndex: s, endIndex: e })
+      }
+    }
+    rangeDownloadDragging.value = false
+    rangeDownloadStartIndex.value = null
+    rangeDownloadEndIndex.value = null
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/**
+ * Builds the exportable payload for one Range Download box. Pulls straight
+ * from the chart's own reactive state rather than re-fetching anything:
+ *   - candles:            raw OHLCV + ema200, one entry per candle in range
+ *   - anchoredVwaps:      each placed AVWAP's mid/upper/lower points that
+ *                         fall inside this range (skipped if none do)
+ *   - fixedRangeVolumeProfiles: any placed FRVP whose own [start,end] span
+ *                         overlaps this range, with its own POC/buckets
+ *                         (its range is NOT clipped to the selection — a
+ *                         volume profile only means something over the
+ *                         span it was actually built from)
+ *   - each candle also carries its own openInterest and longShortRatio
+ *     sample (same as-of values already driving the OI/LS panels)
+ */
+function buildRangeExportPayload(id: number) {
+  const box = findRangeDownloadBox(id)
+  if (!box) return null
+  const { startIndex, endIndex } = box
+
+  const candles = displayCandles.value.slice(startIndex, endIndex + 1).map((c, i) => {
+    const idx = startIndex + i
+    const oi = oiPerCandle.value[idx] ?? null
+    const ls = lsRatioPerCandle.value[idx] ?? null
+    return {
+      index: idx,
+      openTime: c.openTime,
+      openTimeIso: c.openTime ? new Date(c.openTime).toISOString() : null,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: c.volume,
+      ema200: c.candleData?.ema200 ?? null,
+      openInterest: oi,
+      longShortRatio: ls ? { longAccount: ls.longAccount, shortAccount: ls.shortAccount } : null,
+    }
+  })
+
+  const anchoredVwapsInRange = anchoredVwapSeries.value
+    .map(a => {
+      const points = a.points.filter(p => p.index >= startIndex && p.index <= endIndex)
+      if (points.length === 0) return null
+      return {
+        id: a.id,
+        anchorIndex: a.anchorIndex,
+        isOpenEnded: a.isOpenEnded,
+        points: points.map(p => ({
+          index: p.index,
+          openTimeIso: displayCandles.value[p.index]?.openTime
+            ? new Date(displayCandles.value[p.index].openTime!).toISOString()
+            : null,
+          mid: p.mid,
+          upper: p.upper,
+          lower: p.lower,
+        })),
+      }
+    })
+    .filter((a): a is NonNullable<typeof a> => a !== null)
+
+  const fixedRangeVolumeProfilesInRange = volumeProfiles.value
+    .filter(meta => meta.startIndex <= endIndex && meta.endIndex >= startIndex)
+    .map(meta => {
+      const profile = computeVolumeProfile(meta.startIndex, meta.endIndex)
+      if (!profile) return null
+      return {
+        ownRange: { startIndex: meta.startIndex, endIndex: meta.endIndex },
+        rangeHighPrice: profile.rangeHighPrice,
+        rangeLowPrice: profile.rangeLowPrice,
+        pocPrice: profile.pocPrice,
+        totalVolume: profile.totalVolume,
+        buckets: profile.rows.map(r => ({
+          priceLow: r.priceLow,
+          priceHigh: r.priceHigh,
+          buyVolume: r.buyVolume,
+          sellVolume: r.sellVolume,
+          totalVolume: r.buyVolume + r.sellVolume,
+          isPoc: Math.abs((r.priceLow + r.priceHigh) / 2 - profile.pocPrice) < 1e-9,
+        })),
+      }
+    })
+    .filter((p): p is NonNullable<typeof p> => p !== null)
+
+  return {
+    symbol: props.symbol.toUpperCase(),
+    interval: props.interval,
+    generatedAt: new Date().toISOString(),
+    range: {
+      startIndex,
+      endIndex,
+      candleCount: candles.length,
+    },
+    candles,
+    anchoredVwaps: anchoredVwapsInRange,
+    fixedRangeVolumeProfiles: fixedRangeVolumeProfilesInRange,
+  }
+}
+
+function downloadRangeData(id: number) {
+  const payload = buildRangeExportPayload(id)
+  if (!payload) return
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${props.symbol.toLowerCase()}_range_${payload.range.startIndex}-${payload.range.endIndex}_${Date.now()}.json`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+/**
+ * "Analyze" on a Range Download box - runs the deterministic short-term
+ * analyzer (rangeAnalyze.ts) over the EXACT SAME payload downloadRangeData()
+ * would export for this box, and opens the result in the shared
+ * DialogComponent. No separate data path from the download.
+ */
+function analyzeRangeData(id: number) {
+  rangeAnalysisError.value = null
+  rangeAnalysisResult.value = null
+  showRangeAnalysis.value = true
+
+  const payload = buildRangeExportPayload(id)
+  if (!payload) {
+    rangeAnalysisError.value = 'No range data to analyze - place/select a valid range box first.'
+    return
+  }
+
+  rangeAnalysisLoading.value = true
+  // Deterministic + synchronous, but defer a tick so the dialog can paint
+  // its loading state before the (fast) computation runs.
+  setTimeout(() => {
+    try {
+      const input: RangeAnalysisInput = {
+        ...payload,
+        previewPosition: previewPosition.value
+          ? {
+              side: previewPosition.value.side,
+              entryPrice: previewPosition.value.entryPrice,
+              tpPrice: previewPosition.value.tpPrice,
+              slPrice: previewPosition.value.slPrice,
+            }
+          : null,
+      }
+      rangeAnalysisResult.value = analyzeRange(input)
+    } catch (err) {
+      console.error('Range analysis failed:', err)
+      rangeAnalysisError.value = err instanceof Error ? err.message : 'Range analysis failed.'
+    } finally {
+      rangeAnalysisLoading.value = false
+    }
+  }, 0)
 }
 
 /** Small pause between queued OI fetches so "Fill PZ VP" doesn't burst-fire one request per zone. */
@@ -3381,17 +4033,42 @@ function connectWebSocket() {
       const lastPropCandle = props.candles[props.candles.length - 1]
       if (!lastPropCandle) return
  
-      // Patch OHLC into a shallow copy of the last prop candle so all
-      // computed indicators (zones, SR, etc.) remain intact.
-      liveCandle.value = {
-        ...lastPropCandle,
-        openTime: k.t,
-        open:  o,
-        high:  h,
-        low:   l,
-        close: c,
-        volume: isNaN(v) ? lastPropCandle.volume : v,
+      if (k.t === lastPropCandle.openTime) {
+        // Same bar as the last CLOSED candle we already have — this is just
+        // an in-progress update to that same candle. Patch OHLC into a
+        // shallow copy so all computed indicators (zones, SR, etc.) remain
+        // intact. displayCandles() below will REPLACE the last candle with
+        // this, not append it.
+        liveCandle.value = {
+          ...lastPropCandle,
+          openTime: k.t,
+          open:  o,
+          high:  h,
+          low:   l,
+          close: c,
+          volume: isNaN(v) ? lastPropCandle.volume : v,
+        }
+      } else if (k.t > lastPropCandle.openTime) {
+        // The stream has rolled over to a genuinely new bar that isn't in
+        // props.candles yet (parent hasn't caught up). This really is a new
+        // candle — append it, but don't inherit analytic fields (support/
+        // resistance, zones, candleData, etc.) from the old bar since those
+        // don't apply to this new period.
+        const { candleData: _omitCandleData, ...lastPropCandleWithoutAnalytics } = lastPropCandle
+        liveCandle.value = {
+          ...lastPropCandleWithoutAnalytics,
+          openTime: k.t,
+          open:  o,
+          high:  h,
+          low:   l,
+          close: c,
+          volume: isNaN(v) ? 0 : v,
+          support: null,
+          resistance: null,
+          candleData: _omitCandleData
+        }
       }
+      // else: k.t < lastPropCandle.openTime — stale/out-of-order frame, ignore.
     } catch {
       // malformed frame — ignore
     }
@@ -3810,9 +4487,16 @@ function formatNotional(n: number): string {
  * All indices stay the same — only the last candle's OHLC values change.
  */
 const displayCandles = computed<CandleEntry[]>(() => {
+  const lastReal = props.candles[props.candles.length - 1]
+  const isUpdateToLastCandle = !!liveCandle.value && !!lastReal && liveCandle.value.openTime === lastReal.openTime
+
   const base = (!liveCandle.value || props.candles.length === 0)
     ? props.candles
-    : [...props.candles.slice(0, props.candles.length), liveCandle.value]
+    : isUpdateToLastCandle
+      // Same bar as the last candle — REPLACE it, don't append.
+      ? [...props.candles.slice(0, props.candles.length - 1), liveCandle.value]
+      // New bar not yet in props.candles — append as an extra candle.
+      : [...props.candles, liveCandle.value]
 
   if (backtestActive.value) {
     return base.slice(0, Math.min(backtestIndex.value + 1, base.length))
@@ -3895,6 +4579,52 @@ const previewSell = () => runPreview('SHORT', 'SELL')
 const clearPreview = () => {
   previewPosition.value = null
   previewError.value = null
+}
+
+/**
+ * Drag the preview position's TP or SL line vertically to manually adjust
+ * the price. Same vertical-shift math as the backtest position handles
+ * (backtestPriceShift), just applied to previewPosition instead of a
+ * specific backtest position id — there's only ever one preview at a time.
+ */
+function startPreviewTpDrag(event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const pos = previewPosition.value
+  if (!pos) return
+  const startY = event.clientY
+  const startTp = pos.tpPrice
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    if (!previewPosition.value) return
+    previewPosition.value.tpPrice = startTp + backtestPriceShift(startY, moveEvent.clientY)
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+function startPreviewSlDrag(event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const pos = previewPosition.value
+  if (!pos) return
+  const startY = event.clientY
+  const startSl = pos.slPrice
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    if (!previewPosition.value) return
+    previewPosition.value.slPrice = startSl + backtestPriceShift(startY, moveEvent.clientY)
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
 }
 
 // ─── Order-book impact estimate (real-time, walks bidsRaw/asksRaw) ────────────
@@ -4986,6 +5716,35 @@ const formatValue = (value: any): string => {
 .preview-stat.tp span:last-child { color: #26a69a; }
 .preview-stat.sl span:last-child { color: #ef5350; }
 
+.preview-price-input {
+  width: 90px;
+  padding: 2px 6px;
+  background: #0d0d0d;
+  border: 1px solid #333;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: monospace;
+}
+
+.preview-price-input:focus {
+  outline: none;
+  border-color: #64b5f6;
+}
+
+.preview-price-input.tp { color: #26a69a; border-color: rgba(38,166,154,0.4); }
+.preview-price-input.sl { color: #ef5350; border-color: rgba(239,83,80,0.4); }
+
+/* Hide native number-input spinner arrows so the field reads like the
+   plain price readout it replaced. */
+.preview-price-input::-webkit-outer-spin-button,
+.preview-price-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.preview-price-input[type="number"] {
+  -moz-appearance: textfield;
+}
+
 .preview-panel-close {
   margin-left: auto;
   background: none;
@@ -5017,6 +5776,29 @@ const formatValue = (value: any): string => {
   stroke-dasharray: 4,4;
   opacity: 0.6;
   pointer-events: none;
+}
+
+.preview-tp-line {
+  stroke: #26a69a;
+  stroke-width: 1;
+  stroke-dasharray: 4,4;
+  opacity: 0.85;
+  pointer-events: none;
+}
+.preview-sl-line {
+  stroke: #ef5350;
+  stroke-width: 1;
+  stroke-dasharray: 4,4;
+  opacity: 0.85;
+  pointer-events: none;
+}
+/* Invisible fat hit-area on top of the preview TP/SL lines so they're easy
+   to grab and drag without the visible line itself looking thick. */
+.preview-hit-line {
+  stroke: transparent;
+  stroke-width: 12;
+  cursor: ns-resize;
+  pointer-events: stroke;
 }
 
 /* ── Order book wall readout / labels ─────────────────────────────────── */
@@ -5060,6 +5842,69 @@ const formatValue = (value: any): string => {
 .candle.avwap-target {
   cursor: crosshair;
 }
+
+/* ── Range Download tool ──────────────────────────────────────────────── */
+.candle.range-download-target {
+  cursor: crosshair;
+}
+
+.range-download-boxes { pointer-events: none; }
+
+.range-dl-rect {
+  fill: rgba(251,191,36,0.06);
+  stroke: rgba(251,191,36,0.5);
+  stroke-width: 1;
+  stroke-dasharray: 4,3;
+}
+
+.range-dl-rect-preview {
+  fill: rgba(251,191,36,0.12);
+  stroke: rgba(251,191,36,0.7);
+}
+
+/* Invisible fat hit-area on each edge so a placed range box can be
+   extended/shrunk after the fact, without needing to redraw it. */
+.range-dl-edge-handle {
+  stroke: transparent;
+  stroke-width: 10;
+  cursor: ew-resize;
+  pointer-events: stroke;
+}
+
+.range-dl-summary-label {
+  fill: rgba(255,255,255,0.6);
+  font-size: 10px;
+  font-family: monospace;
+}
+
+.range-dl-close-btn {
+  fill: rgba(255,255,255,0.4);
+  font-size: 10px;
+  font-family: monospace;
+  cursor: pointer;
+  pointer-events: all;
+}
+.range-dl-close-btn:hover { fill: #ef5350; }
+
+.range-dl-download-btn {
+  fill: #fbbf24;
+  font-size: 11px;
+  font-weight: bold;
+  font-family: monospace;
+  cursor: pointer;
+  pointer-events: all;
+}
+.range-dl-download-btn:hover { fill: #fde68a; }
+
+.range-dl-analyze-btn {
+  fill: #60a5fa;
+  font-size: 11px;
+  font-weight: bold;
+  font-family: monospace;
+  cursor: pointer;
+  pointer-events: all;
+}
+.range-dl-analyze-btn:hover { fill: #93c5fd; }
 
 .volume-profiles { pointer-events: none; }
 
@@ -5258,6 +6103,173 @@ const formatValue = (value: any): string => {
 
 .frvp-hit { color: #26a69a; }
 .frvp-miss { color: #ef5350; }
+
+/* ── Range Download scalp analysis dialog ────────────────────────────── */
+.range-analysis {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 4px 2px 12px;
+  color: #ccc;
+  font-size: 13px;
+}
+
+.range-analysis-empty {
+  padding: 24px;
+  color: rgba(255,255,255,0.5);
+  font-size: 13px;
+  text-align: center;
+}
+
+.range-analysis-error { color: #ef5350; }
+
+.range-analysis-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 12px;
+  color: rgba(255,255,255,0.55);
+}
+
+.range-bias-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 18px;
+  border-radius: 8px;
+  border: 1px solid #444;
+  background: rgba(255,255,255,0.04);
+}
+
+.range-bias-label {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.range-bias-confidence {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.range-bias-caveat {
+  font-size: 11px;
+  color: rgba(255,255,255,0.45);
+  font-style: italic;
+}
+
+.range-bias-long { border-color: rgba(38,166,154,0.5); }
+.range-bias-long .range-bias-label { color: #26a69a; }
+.range-bias-short { border-color: rgba(239,83,80,0.5); }
+.range-bias-short .range-bias-label { color: #ef5350; }
+.range-bias-neutral { border-color: rgba(255,255,255,0.25); }
+.range-bias-neutral .range-bias-label { color: rgba(255,255,255,0.6); }
+
+.range-trade-card {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px 16px;
+  padding: 12px 16px;
+  border-radius: 6px;
+  border: 1px solid #333;
+  background: rgba(255,255,255,0.03);
+}
+
+.range-trade-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.range-trade-label {
+  color: rgba(255,255,255,0.5);
+}
+
+.range-entry-quality { font-weight: 600; }
+.range-eq-very_good, .range-eq-good { color: #26a69a; }
+.range-eq-fair { color: #d9a441; }
+.range-eq-poor, .range-eq-extended { color: #ef5350; }
+
+.range-section h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #eee;
+}
+
+.range-thesis {
+  margin: 0;
+  color: rgba(255,255,255,0.8);
+}
+
+.range-reason-list, .range-warning-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.range-warning-list { color: #d9a441; }
+
+.range-position-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid #444;
+  background: rgba(255,255,255,0.03);
+}
+
+.range-position-long { border-color: rgba(38,166,154,0.5); }
+.range-position-short { border-color: rgba(239,83,80,0.5); }
+
+.range-position-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.range-position-side {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #eee;
+}
+
+.range-position-alignment {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid #444;
+}
+.range-align-aligned { color: #26a69a; border-color: rgba(38,166,154,0.5); }
+.range-align-opposed { color: #ef5350; border-color: rgba(239,83,80,0.5); }
+.range-align-neutral { color: rgba(255,255,255,0.6); }
+
+.range-position-confidence {
+  font-size: 32px;
+  font-weight: 700;
+  color: #eee;
+}
+
+.range-position-confidence-label {
+  font-size: 12px;
+  font-weight: 400;
+  color: rgba(255,255,255,0.5);
+  margin-left: 8px;
+}
+
+.range-position-thesis {
+  margin: 0;
+  color: rgba(255,255,255,0.75);
+  font-size: 13px;
+}
 
 .frvp-narrative p {
   margin: 0;
