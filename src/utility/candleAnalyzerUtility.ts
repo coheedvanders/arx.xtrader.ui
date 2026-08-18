@@ -1,4 +1,4 @@
-import type { BidAskWallResult, BinanceDepthSnapshot, BookLevel, Candle, CandleData, CandleEntry, OverboughtOversoldAnalysis, PastVolumeAnalysis, PriceZone, PriceZoneEvaluation, ReactionData, VolumeAnalysis, ZoneAnalysis } from "@/core/interfaces";
+import type { BidAskWallResult, BinanceDepthSnapshot, BookLevel, Candle, CandleData, CandleEntry, OverboughtOversoldAnalysis, PastVolumeAnalysis, PriceZone, PriceZoneEvaluation, ReactionData, VolumeAnalysis, VolumeProfile, VolumeProfileBucket, ZoneAnalysis } from "@/core/interfaces";
 
 class CandlestickAnalyzer {
 
@@ -366,9 +366,117 @@ static buyerInterestScore(
         candlesAboveCount: 0,
         candlesBelowCount: 0,
         bidWall: 0,
-        askWall: 0
+        askWall: 0,
+        isAvwapPoint: false,
+        crossedAvwapPoint: false,
+        lastXCandleSpan: 0,
+        hasRecentPosition: false,
+        recentPositionSide: ""
     };
   }
+
+static getVolumeProfile(
+  candles: CandleEntry[],
+  numBuckets: number = 24,
+  valueAreaPercent: number = 0.7,
+): VolumeProfile | null {
+  if (candles.length === 0) return null
+
+  let rangeLow = Infinity
+  let rangeHigh = -Infinity
+  for (const c of candles) {
+    if (c.low == null || c.high == null) continue
+    if (c.low < rangeLow) rangeLow = c.low
+    if (c.high > rangeHigh) rangeHigh = c.high
+  }
+  if (!isFinite(rangeLow) || !isFinite(rangeHigh) || rangeHigh <= rangeLow) return null
+
+  const bucketHeight = (rangeHigh - rangeLow) / numBuckets
+  const rawBuckets = Array.from({ length: numBuckets }, (_, i) => ({
+    priceLow: rangeLow + i * bucketHeight,
+    priceHigh: rangeLow + (i + 1) * bucketHeight,
+    buyVolume: 0,
+    sellVolume: 0,
+  }))
+
+  for (const c of candles) {
+    const low = c.low
+    const high = c.high
+    const vol = c.volume ?? 0
+    if (low == null || high == null || vol <= 0 || high <= low) continue
+    const isBull = (c.close ?? 0) >= (c.open ?? 0)
+    for (const b of rawBuckets) {
+      const overlapLow = Math.max(low, b.priceLow)
+      const overlapHigh = Math.min(high, b.priceHigh)
+      if (overlapHigh > overlapLow) {
+        const frac = (overlapHigh - overlapLow) / (high - low)
+        const v = vol * frac
+        if (isBull) b.buyVolume += v
+        else b.sellVolume += v
+      }
+    }
+  }
+
+  let maxRowTotal = 0
+  let pocIndex = 0
+  rawBuckets.forEach((b, i) => {
+    const total = b.buyVolume + b.sellVolume
+    if (total > maxRowTotal) {
+      maxRowTotal = total
+      pocIndex = i
+    }
+  })
+
+  const buckets: VolumeProfileBucket[] = rawBuckets.map((b, i) => ({
+    priceLow: b.priceLow,
+    priceHigh: b.priceHigh,
+    buyVolume: b.buyVolume,
+    sellVolume: b.sellVolume,
+    totalVolume: b.buyVolume + b.sellVolume,
+    isPoc: i === pocIndex,
+  }))
+
+  const pocBucket = buckets[pocIndex]
+  const pocPrice = (pocBucket.priceLow + pocBucket.priceHigh) / 2
+  const totalBuyVolume = buckets.reduce((s, b) => s + b.buyVolume, 0)
+  const totalSellVolume = buckets.reduce((s, b) => s + b.sellVolume, 0)
+  const totalVolume = totalBuyVolume + totalSellVolume
+
+  // Value area: start at the POC and keep expanding outward to whichever
+  // neighboring side (above/below) has more volume, until the accumulated
+  // volume reaches valueAreaPercent of the total (standard TPO/VP method).
+  let vaLowIndex = pocIndex
+  let vaHighIndex = pocIndex
+  let vaVolume = pocBucket.totalVolume
+  const targetVolume = totalVolume * valueAreaPercent
+
+  while (vaVolume < targetVolume && (vaLowIndex > 0 || vaHighIndex < buckets.length - 1)) {
+    const belowVolume = vaLowIndex > 0 ? buckets[vaLowIndex - 1].totalVolume : -1
+    const aboveVolume = vaHighIndex < buckets.length - 1 ? buckets[vaHighIndex + 1].totalVolume : -1
+
+    if (aboveVolume >= belowVolume) {
+      vaHighIndex++
+      vaVolume += buckets[vaHighIndex].totalVolume
+    } else {
+      vaLowIndex--
+      vaVolume += buckets[vaLowIndex].totalVolume
+    }
+  }
+
+  return {
+    rangeLowPrice: rangeLow,
+    rangeHighPrice: rangeHigh,
+    buckets,
+    pocPrice,
+    pocBucket,
+    totalVolume,
+    totalBuyVolume,
+    totalSellVolume,
+    valueAreaHigh: buckets[vaHighIndex].priceHigh,
+    valueAreaLow: buckets[vaLowIndex].priceLow,
+    valueAreaVolumePercent: totalVolume > 0 ? vaVolume / totalVolume : 0,
+  }
+}
 
 static detectPriceMove(
     movingCandles: Candle[],

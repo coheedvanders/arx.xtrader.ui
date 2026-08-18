@@ -111,7 +111,14 @@ export interface FuturesSymbol{
   bidWall: number,
   askWall: number,
   g1CandleCount: number,
-  zoneSize: number
+  zoneSize: number,
+  crossedLastAvwap: boolean,
+  lastXCandleSpan: number,
+  positionSide:string,
+  tpPrice:number,
+  slPrice:number,
+  hasRecentPosition: boolean
+  recentPositionSide: string
 }
 
 export interface PastVolumeAnalysis{
@@ -119,6 +126,33 @@ export interface PastVolumeAnalysis{
     volumeTrend: string,
     spikeFlag:boolean,
     dominantDirection:string
+}
+
+export interface VolumeProfileBucket {
+  priceLow: number
+  priceHigh: number
+  buyVolume: number
+  sellVolume: number
+  totalVolume: number
+  /** True for whichever bucket carried the most volume (the POC bucket). */
+  isPoc: boolean
+}
+
+export interface VolumeProfile {
+  rangeLowPrice: number
+  rangeHighPrice: number
+  buckets: VolumeProfileBucket[]
+  /** Point of Control — price at the center of the highest-volume bucket. */
+  pocPrice: number
+  pocBucket: VolumeProfileBucket
+  totalVolume: number
+  totalBuyVolume: number
+  totalSellVolume: number
+  /** Top of the value area (buckets expanded out from the POC until valueAreaPercent of volume is covered). */
+  valueAreaHigh: number
+  valueAreaLow: number
+  /** Actual fraction of totalVolume captured in [valueAreaLow, valueAreaHigh] (>= valueAreaPercent, buckets are indivisible). */
+  valueAreaVolumePercent: number
 }
 
 export interface SimulationStats{
@@ -325,6 +359,11 @@ export interface CandleData {
   candlesBelowCount: number;
   bidWall: number;
   askWall: number;
+  isAvwapPoint: boolean
+  crossedAvwapPoint: boolean,
+  lastXCandleSpan: number;
+  hasRecentPosition: boolean
+  recentPositionSide: string
 }
 
 

@@ -28,7 +28,7 @@ const emits = defineEmits([
   "on-pre-close"
 ]);
 
-const PRE_CLOSE_THRESHOLD_SECONDS = 70; // 1 min 10 sec
+const PRE_CLOSE_THRESHOLD_SECONDS = 90; // 1 min 10 sec
 
 const wsCandle = ref<WebSocket | null>(null);
 const candles = ref<Candle[]>([]);

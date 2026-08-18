@@ -54,7 +54,7 @@
             {{ sym }}
         </div> -->
 
-        <!-- <CardComponent v-if="chocoMintoStore.isManualSimulation">
+        <CardComponent v-if="chocoMintoStore.isManualSimulation">
             <CardHeaderComponent>
                 Manual Simulation Stats
             </CardHeaderComponent>
@@ -77,7 +77,7 @@
                 <div>Estimated Margin Used: {{ estimatedMarginUsed.toFixed(2) }}</div>
                 <div>Estimated Balance: {{ estimatedBalance.toFixed(2) }} USDT</div>
             </CardBodyComponent>
-        </CardComponent> -->
+        </CardComponent>
     </div>
 
     <div class="text-center">
@@ -109,8 +109,8 @@
     <label>Cost</label>
     <InputComponent type="numeric" v-model="chocoMintoStore.orderCost"/>
     
-    <TrendRiderComponent ref="trendRiderRef"/>
-     <ConditionMetComponent/>
+    <!-- <TrendRiderComponent ref="trendRiderRef"/> -->
+     <ConditionMetComponent ref="conditionMetRef"/>
 
     <DialogComponent :model-value="UI_SHOW_REPLAY" width="95vw" @update:model-value="UI_SHOW_REPLAY = false">
         <DialogHeaderComponent>View Candle Entry Replay</DialogHeaderComponent>
@@ -221,7 +221,7 @@ const MAX_INIT_CANDLES = 500;
 const SUPPORT_AND_RESISTANCE_PERIOD_LENGTH = 10;
 
 const MARGIN = 1.5;
-const TP_ROI = 2;
+const TP_ROI = 3;
 const SL_ROI = 2.5;
 const STARTING_BALANCE = 300;
 const MAX_OPEN_POSITIONS = 20;
@@ -255,6 +255,7 @@ const simulationRunningBalance = ref(300)
 const completionCount = ref(0);
 
 const trendRiderRef = ref()
+const conditionMetRef = ref()
 
 var dates = [
     '1/19/2022',
@@ -377,7 +378,14 @@ async function initializeFutureSymbols(){
                     bidWall: 0,
                     askWall: 0,
                     g1CandleCount: 0,
-                    zoneSize: 0
+                    zoneSize: 0,
+                    crossedLastAvwap: false,
+                    lastXCandleSpan: 0,
+                    positionSide: "",
+                    tpPrice: 0,
+                    slPrice: 0,
+                    hasRecentPosition: false,
+                    recentPositionSide: ""
                 })
             }
         }
@@ -436,7 +444,9 @@ function symbolBasket_OnCompleted(){
     console.log("completionCount",completionCount.value);
     if(completionCount.value >= 4){
         notificationStore.showNotification("success","top-right","Scan Complete","The market scan has been completed.");
-        trendRiderRef.value.shoutMarketSentiment();
+        conditionMetRef.value.shoutAvCrosses();
+
+        completionCount.value = 0;
     }
 }
 

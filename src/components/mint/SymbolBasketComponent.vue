@@ -112,7 +112,7 @@ async function initializeFutureSymbolData(){
             currentFutureSumbol.value = futureSymbol;
             currentFutureSumbol.value.status = "processing"
 
-            //if(futureSymbol.symbol != "COWUSDT") continue;
+            //if(futureSymbol.symbol != "LTCUSDT") continue;
 
             await runPositionEntry(futureSymbol.symbol, futureSymbol.maxLeverage, true);
             
@@ -236,6 +236,13 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
         currentFutureSumbol.value!.changeZScore = currentCandle.candleData?.changePercentageZScore!
         currentFutureSumbol.value!.g1CandleCount = candles.filter(c => c.candleData && Math.abs(c.candleData.change_percentage_v) >= 1).length
         currentFutureSumbol.value!.zoneSize = currentCandle.candleData?.zoneSizePercentage!;
+        currentFutureSumbol.value!.crossedLastAvwap = currentCandle.candleData?.crossedAvwapPoint!;
+        currentFutureSumbol.value!.lastXCandleSpan = currentCandle.candleData?.lastXCandleSpan!;
+        currentFutureSumbol.value!.positionSide = currentCandle.side;
+        currentFutureSumbol.value!.tpPrice = currentCandle.tpPrice;
+        currentFutureSumbol.value!.slPrice = currentCandle.slPrice;
+        currentFutureSumbol.value!.hasRecentPosition = currentCandle.candleData?.hasRecentPosition!;
+        currentFutureSumbol.value!.recentPositionSide = currentCandle.candleData?.recentPositionSide!;
 
     if(chocoMintoStore.isManualSimulation){
         updateStoreFutureSymbolSimulationStats(symbol,candles);
@@ -464,6 +471,11 @@ async function updateCandleEntryWithLastCandle(symbol:string){
     currentFutureSumbol.value!.change = prevKlineEntry.candleData?.change_percentage_v!;
     currentFutureSumbol.value!.candlesAboveCount = prevKlineEntry.candleData?.candlesAboveCount!
     currentFutureSumbol.value!.candlesBelowCount = prevKlineEntry.candleData?.candlesBelowCount!
+
+    currentFutureSumbol.value!.crossedMa = prevKlineEntry.candleData?.crossedEma!
+    currentFutureSumbol.value!.changeZScore = prevKlineEntry.candleData?.changePercentageZScore!
+    currentFutureSumbol.value!.zoneSize = prevKlineEntry.candleData?.zoneSizePercentage!;
+    currentFutureSumbol.value!.crossedLastAvwap = prevKlineEntry.candleData?.crossedAvwapPoint!;
 
     if(isPrevCandleTriggeredOpen){
         //indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: isPrevCandleTriggeredOpen==true, prevKlineEntry.side=${prevKlineEntry.side}`);

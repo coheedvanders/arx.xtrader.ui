@@ -5,10 +5,10 @@
         
         <div class="divider"></div>
 
-        <div class="text-right">
+        <!-- <div class="text-right">
             <ButtonComponent :color="'primary'" rounded @click="openOrder('BUY')">BUY</ButtonComponent>
             <ButtonComponent :color="'danger'" rounded  @click="openOrder('SELL')">SELL</ButtonComponent>
-        </div>
+        </div> -->
 
         <CandleEntryVisualizerComponent :symbol="symbol" :candles="candleEntries" />
 

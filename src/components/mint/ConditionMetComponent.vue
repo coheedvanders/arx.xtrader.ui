@@ -15,10 +15,15 @@
           v-for="symbol in group.symbols"
           :key="symbol.symbol"
           class="symbol-card"
+          :class="{
+            'is-av-cross': symbol.crossedLastAvwap,
+            'is-recent-long': (symbol as any).hasRecentPosition && (symbol as any).recentPositionSide === 'LONG',
+            'is-recent-short': (symbol as any).hasRecentPosition && (symbol as any).recentPositionSide === 'SHORT',
+          }"
           @click="showEntryHistoryModal(symbol.symbol)"
         >
           <div class="symbol-main">
-            <span class="symbol-name">{{ symbol.symbol }} <span v-if="symbol.crossedMa">[x]</span></span>
+            <span class="symbol-name">{{ symbol.symbol }} <span v-if="symbol.crossedMa">[x]</span> <span v-if="symbol.crossedLastAvwap">[AV] - {{symbol.lastXCandleSpan.toFixed(2)}}%</span></span>
             <span class="usdt-value">${{ formatUsdt((symbol as any).usdtValue) }}</span>
           </div>
 
@@ -77,6 +82,7 @@ import DialogHeaderComponent from '../shared/dialog/DialogHeaderComponent.vue';
 import CandleEntryHistoryComponent from './CandleEntryHistoryComponent.vue';
 import type { CandleEntry } from '@/core/interfaces.ts';
 import { klineDbUtility } from '@/utility/klineDbUtility';
+import { OrderMakerUtility } from '@/utility/OrderMakerUtility.ts';
 
 const chocoMintoStore = useChocoMintoStore();
 
@@ -189,6 +195,44 @@ async function showEntryHistoryModal(symbol: string) {
   selectedSymbol.value = symbol;
   selectedSymbolCandleEntries.value = await klineDbUtility.getKlines(symbol);
 }
+
+async function shoutAvCrosses() {
+  var newPositions = chocoMintoStore.futureSymbols.filter(c => c.positionSide);
+
+  var message = "";
+
+  if(newPositions.length > 0){
+    message = `${newPositions.length} new positions detected!`
+
+    newPositions.forEach(async (futureSymbol) => {
+      var side = futureSymbol.positionSide == "LONG" ? "BUY" : "SELL";
+      await OrderMakerUtility.openOrder(futureSymbol.symbol,5,side,futureSymbol.tpPrice,futureSymbol.slPrice);
+    });
+  }
+
+  if (message && 'speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+
+    let count = 0;
+
+    const speak = (_message:string) => {
+
+      const utter = new SpeechSynthesisUtterance(_message);
+
+      utter.rate = 1;
+      utter.pitch = 1.2;
+      utter.volume = 1;
+
+      window.speechSynthesis.speak(utter);
+    };
+
+    speak(message);
+  }
+}
+
+defineExpose({
+  shoutAvCrosses
+})
 </script>
 
 <style scoped>
@@ -338,4 +382,33 @@ async function showEntryHistoryModal(symbol: string) {
 .ma-stack-label.is-ma100,
 .ma-stack-fill.is-ma100 { color: #3b82f6; }
 .ma-stack-fill.is-ma100 { background: #3b82f6; }
+
+.symbol-card.is-av-cross {
+  background: rgba(251, 146, 60, 0.12);
+  border: 1px solid rgba(251, 146, 60, 0.5);
+}
+.symbol-card.is-av-cross:hover {
+  background: rgba(251, 146, 60, 0.2);
+}
+
+.symbol-card.is-recent-long {
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.5);
+}
+.symbol-card.is-recent-long:hover {
+  background: rgba(34, 197, 94, 0.2);
+}
+
+.symbol-card.is-recent-short {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.5);
+}
+.symbol-card.is-recent-short:hover {
+  background: rgba(239, 68, 68, 0.2);
+}
+
+.av-cross-tag {
+  color: #fb923c;
+  font-weight: 700;
+}
 </style>
