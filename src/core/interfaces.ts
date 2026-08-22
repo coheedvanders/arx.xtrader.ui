@@ -118,7 +118,8 @@ export interface FuturesSymbol{
   tpPrice:number,
   slPrice:number,
   hasRecentPosition: boolean
-  recentPositionSide: string
+  recentPositionSide: string,
+  networkChain: string
 }
 
 export interface PastVolumeAnalysis{
@@ -257,6 +258,12 @@ export interface SimulationReport{
   loss_value:number
 }
 
+export interface TokenMapEntry {
+    contract: string
+    decimals: number
+    chain: string
+}
+
 export interface Position {
   ROI: number;
   adl: number;
@@ -363,7 +370,9 @@ export interface CandleData {
   crossedAvwapPoint: boolean,
   lastXCandleSpan: number;
   hasRecentPosition: boolean
-  recentPositionSide: string
+  recentPositionSide: string;
+  crossedAvwapCount: number;
+  avwapCount: number;
 }
 
 

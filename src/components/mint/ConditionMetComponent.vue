@@ -204,10 +204,10 @@ async function shoutAvCrosses() {
   if(newPositions.length > 0){
     message = `${newPositions.length} new positions detected!`
 
-    newPositions.forEach(async (futureSymbol) => {
-      var side = futureSymbol.positionSide == "LONG" ? "BUY" : "SELL";
-      await OrderMakerUtility.openOrder(futureSymbol.symbol,5,side,futureSymbol.tpPrice,futureSymbol.slPrice);
-    });
+    // newPositions.forEach(async (futureSymbol) => {
+    //   var side = futureSymbol.positionSide == "LONG" ? "BUY" : "SELL";
+    //   await OrderMakerUtility.openOrder(futureSymbol.symbol,5,side,futureSymbol.tpPrice,futureSymbol.slPrice);
+    // });
   }
 
   if (message && 'speechSynthesis' in window) {

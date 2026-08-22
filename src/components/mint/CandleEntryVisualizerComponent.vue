@@ -57,11 +57,60 @@
         <span>Cross TF EMA</span>
       </label>
 
+      <label class="checkbox-label">
+        <input
+          v-model="showMultiTf1h"
+          type="checkbox"
+        />
+        <span>1H Candles</span>
+      </label>
+
+      <label class="checkbox-label">
+        <input
+          v-model="showMultiTf4h"
+          type="checkbox"
+        />
+        <span>4H Candles</span>
+      </label>
+
+      <label class="checkbox-label">
+        <input
+          v-model="showMultiTf1d"
+          type="checkbox"
+        />
+        <span>1D Candles</span>
+      </label>
+
+      <button
+        v-if="multiTfScrubbedCount > 0"
+        @click="multiTfBarOverrides = {}"
+      >
+        Reset Scrubbed Candles ({{ multiTfScrubbedCount }})
+      </button>
+
       <button @click="showKeyLevels = true">show key levels</button>
 
       <button @click="showMaCrossing = true">See MA</button>
 
       <button @click="showAccumulationAnalysis = true">Accumulation Scan</button>
+
+      <!-- ── Wallet Movement (exchange inflow/outflow) tool ──────────────── -->
+      <button
+        class="tool-btn"
+        :class="{ 'tool-btn-active': showMovementPanel }"
+        @click="fetchWalletMovement"
+        title="Pulls exchange wallet inflow/outflow for this symbol across the visible candle range and plots it as a bar panel below the chart"
+      >
+        {{ movementLoading ? 'Loading Movement…' : 'See Movement' }}
+      </button>
+
+      <button
+        v-if="showMovementPanel"
+        class="tool-btn"
+        @click="showMovementPanel = false"
+      >
+        Hide Movement
+      </button>
 
       <!-- ── Volume Profile Fixed Range tool ─────────────────────────── -->
       <button
@@ -133,6 +182,38 @@
         Clear AVWAP ({{ anchoredVwaps.length }})
       </button>
 
+      <label class="checkbox-label">
+        <input
+          v-model="showAvwapBands"
+          type="checkbox"
+        />
+        <span>Show AVWAP Bands</span>
+      </label>
+
+      <div class="tool-dropdown" ref="pzAvwapDropdownRef">
+        <button
+          class="tool-btn"
+          @click="pzAvwapDropdownOpen = !pzAvwapDropdownOpen"
+          title="Auto-anchor one open-ended AVWAP at the start candle of each Price Zone (replaces any currently placed AVWAPs)"
+        >
+          Fill PZ AVWAP ▾
+        </button>
+        <div v-if="pzAvwapDropdownOpen" class="tool-dropdown-menu">
+          <button
+            class="tool-dropdown-item"
+            @click="fillPriceZonesWithAvwap('recent'); pzAvwapDropdownOpen = false"
+          >
+            Past 6 zones
+          </button>
+          <button
+            class="tool-dropdown-item"
+            @click="fillPriceZonesWithAvwap('all'); pzAvwapDropdownOpen = false"
+          >
+            All zones
+          </button>
+        </div>
+      </div>
+
       <!-- ── Range Download tool ─────────────────────────────────────────── -->
       <button
         class="tool-btn"
@@ -156,7 +237,7 @@
         class="tool-btn"
         :class="{ 'tool-btn-active': rangeInvestigateModeActive }"
         @click="toggleRangeInvestigateMode"
-        title="Click to enable, then click-drag from one candle to another to select a range. An 'Investigate' button appears on the box - explains WHY that range moved the way it did (organic flow, squeeze/liquidation, single whale trade, or thin liquidity) and predicts continuation vs pullback vs reversal for the next price zone."
+        title="Click to enable, then click-drag from one candle to another to select a range. An 'Investigate' button appears on the box - explains WHY that range moved the way it did (organic flow, squeeze/liquidation, single whale trade, or thin liquidity), factors in exchange inflow/outflow as supply-side confluence, and predicts continuation vs pullback vs reversal for the next price zone."
       >
         {{ rangeInvestigateModeActive ? 'Range Investigate: pick a range…' : 'Range Investigate' }}
       </button>
@@ -167,6 +248,24 @@
         @click="rangeInvestigateBoxes = []"
       >
         Clear Investigate Boxes ({{ rangeInvestigateBoxes.length }})
+      </button>
+
+      <!-- ── Summarize Movement tool ─────────────────────────────────────── -->
+      <button
+        class="tool-btn"
+        :class="{ 'tool-btn-active': summarizeModeActive }"
+        @click="toggleSummarizeMode"
+        title="Click to enable, then click-drag from one candle to another to select a range. A 'Summarize' button appears on the box - totals exchange wallet inflow/outflow across that range and shows a per-candle horizontal bar chart breakdown in a dialog."
+      >
+        {{ summarizeModeActive ? 'Summarize Movement: pick a range…' : 'Summarize Movement' }}
+      </button>
+
+      <button
+        v-if="summarizeBoxes.length > 0"
+        class="tool-btn"
+        @click="summarizeBoxes = []"
+      >
+        Clear Summarize Boxes ({{ summarizeBoxes.length }})
       </button>
 
       <!-- ── Freeform rectangle draw tool ──────────────────────────────── -->
@@ -784,6 +883,78 @@
           Vol max {{ formatNotional(maxVolumeInView) }}
         </text>
 
+        <!-- Wallet Movement panel background + separator (own section below volume) -->
+        <template v-if="panelLayout.movement">
+          <rect
+            x="0"
+            :y="panelLayout.movement.top"
+            :width="svgWidth"
+            :height="panelLayout.movement.bottom - panelLayout.movement.top"
+            class="indicator-panel-bg"
+          />
+          <line
+            x1="0"
+            :x2="svgWidth"
+            :y1="panelLayout.movement.top"
+            :y2="panelLayout.movement.top"
+            class="indicator-panel-separator"
+          />
+        </template>
+
+        <!-- Wallet Movement Bars — inflow (green) stacked above outflow (red), own section -->
+        <g v-if="showMovementPanel" class="movement-bars">
+          <template v-for="bar in movementBars" :key="`movement-${bar.index}`">
+            <rect
+              v-if="bar.inflowHeight > 0"
+              :x="bar.x"
+              :y="bar.inflowY"
+              :width="bar.width"
+              :height="bar.inflowHeight"
+              class="movement-bar movement-bar-inflow"
+              @click="openMovementDetail(bar.index)"
+            >
+              <title>Inflow — click for detail</title>
+            </rect>
+            <rect
+              v-if="bar.outflowHeight > 0"
+              :x="bar.x"
+              :y="bar.outflowY"
+              :width="bar.width"
+              :height="bar.outflowHeight"
+              class="movement-bar movement-bar-outflow"
+              @click="openMovementDetail(bar.index)"
+            >
+              <title>Outflow — click for detail</title>
+            </rect>
+          </template>
+        </g>
+
+        <!-- Wallet Movement panel max label / status -->
+        <text
+          v-if="showMovementPanel && maxMovementInView > 0 && panelLayout.movement && !movementLoading"
+          :x="6"
+          :y="panelLayout.movement.top + 14"
+          class="movement-panel-label"
+        >
+          Movement max {{ formatNotional(maxMovementInView) }} · inflow green / outflow red
+        </text>
+        <text
+          v-if="showMovementPanel && movementLoading && panelLayout.movement"
+          :x="6"
+          :y="panelLayout.movement.top + 14"
+          class="movement-panel-label"
+        >
+          Loading wallet movement…
+        </text>
+        <text
+          v-if="showMovementPanel && movementError && panelLayout.movement"
+          :x="6"
+          :y="panelLayout.movement.top + 14"
+          class="movement-panel-label movement-panel-label-error"
+        >
+          Movement: {{ movementError }}
+        </text>
+
         <!-- OI panel background + separator (own section below volume) -->
         <template v-if="panelLayout.oi">
           <rect
@@ -1033,6 +1204,15 @@
               B
             </text>
 
+            <text
+              v-if="candle.candleData?.crossedAvwapPoint"
+              :x="candleX(i)"
+              :y="priceToY(candle.low!) + 65"
+              class="pattern-label"
+            >
+              [V]
+            </text>
+
           <g v-if="candle.patternTrack === 'lh'" class="lower-high-indicator">
             <circle
               :cx="candleX(i)"
@@ -1046,6 +1226,92 @@
               class="pattern-label"
             >
               LH
+            </text>
+          </g>
+        </g>
+
+        <!-- Multi-TF candles (1H/4H/1D), drawn faded behind the base candles.
+             Each bar's right edge can be dragged backward to "scrub" the
+             higher-TF candle back to a partial/in-progress state for
+             backtesting — e.g. what did this 4H candle look like 5 base
+             candles before it actually closed. -->
+        <g v-if="showMultiTf1h || showMultiTf4h || showMultiTf1d" class="multi-tf-candles">
+          <g
+            v-for="bar in multiTfCandleRenderBars"
+            :key="bar.key"
+            :class="['multi-tf-candle', bar.tf, { bull: bar.isBull, bear: !bar.isBull, partial: bar.isPartial }]"
+          >
+            <line
+              :x1="bar.wickX" :y1="bar.wickY1"
+              :x2="bar.wickX" :y2="bar.wickY2"
+              class="multi-tf-wick"
+              :style="{ stroke: bar.color }"
+            />
+            <rect
+              :x="bar.x"
+              :y="bar.bodyY"
+              :width="bar.width"
+              :height="bar.bodyHeight"
+              class="multi-tf-body"
+              :class="{ 'multi-tf-body-partial': bar.isPartial }"
+              :style="{ fill: bar.color, stroke: bar.color }"
+            />
+
+            <!-- Invisible fat hit-area on the right edge: drag to scrub
+                 backward, drag back to the natural end (or double-click)
+                 to snap back to the full closed candle. -->
+            <line
+              :x1="bar.handleX" :x2="bar.handleX"
+              :y1="bar.handleTop" :y2="bar.handleBottom"
+              class="multi-tf-edge-handle"
+              @mousedown="startMultiTfBarResize(bar.tf, bar.startIndex, bar.naturalEndIndex, $event)"
+              @dblclick="resetMultiTfBar(bar.tf, bar.startIndex)"
+            />
+
+            <text
+              v-if="bar.isPartial"
+              :x="bar.handleX + 4"
+              :y="bar.wickY1 - 4"
+              class="multi-tf-partial-label"
+              :style="{ fill: bar.color }"
+            >
+              {{ bar.tf.toUpperCase() }} {{ bar.candleCount }}/{{ bar.totalCandleCount }}
+            </text>
+          </g>
+        </g>
+
+        <!-- Multi-TF lead-in candles: higher-TF candles that closed entirely
+             before the first loaded base candle, drawn as their own
+             base-candle-width bars prepended to the left of the chart
+             (oldest → newest), e.g. [4h][4h][4h][4h][first 15m candle]... -->
+        <g v-if="multiTfPrependRenderBars.length > 0" class="multi-tf-prepend-candles">
+          <g
+            v-for="bar in multiTfPrependRenderBars"
+            :key="bar.key"
+            :class="['multi-tf-prepend-candle', bar.tf, { bull: bar.isBull, bear: !bar.isBull }]"
+          >
+            <line
+              :x1="bar.wickX" :y1="bar.wickY1"
+              :x2="bar.wickX" :y2="bar.wickY2"
+              class="multi-tf-prepend-wick"
+              :style="{ stroke: bar.color }"
+            />
+            <rect
+              :x="bar.x"
+              :y="bar.bodyY"
+              :width="bar.width"
+              :height="bar.bodyHeight"
+              class="multi-tf-prepend-body"
+              :style="{ fill: bar.color, stroke: bar.color }"
+            />
+            <text
+              v-if="bar.isFirstOfLane"
+              :x="bar.x"
+              :y="bar.wickY1 - 4"
+              class="multi-tf-prepend-label"
+              :style="{ fill: bar.color }"
+            >
+              {{ bar.tf.toUpperCase() }}
             </text>
           </g>
         </g>
@@ -1077,7 +1343,8 @@
               'vp-target': vpModeActive,
               'avwap-target': avwapModeActive,
               'range-download-target': rangeDownloadModeActive,
-              'range-investigate-target': rangeInvestigateModeActive
+              'range-investigate-target': rangeInvestigateModeActive,
+              'summarize-target': summarizeModeActive
             }"
             @click="handleCandleClick(i)"
             @mousedown="handleCandleMouseDown(i, $event)"
@@ -1272,6 +1539,17 @@
               @click="removeVolumeProfile(profile.id)"
             >
               ✕ remove
+            </text>
+
+            <!-- buy/sell % footer, anchored under the bottom of the range box -->
+            <text
+              :x="profile.leftX + 4"
+              :y="profile.rangeBottom + 14"
+              class="vp-stats-label"
+            >
+              <tspan class="vp-stats-buy">B {{ profile.buyPct.toFixed(1) }}%</tspan>
+              <tspan class="vp-stats-sep"> / </tspan>
+              <tspan class="vp-stats-sell">S {{ profile.sellPct.toFixed(1) }}%</tspan>
             </text>
             <text
               :x="(candleX(profile.endIndex) + candleWidth / 2) - 4"
@@ -1543,6 +1821,75 @@
           />
         </g>
 
+        <!-- Summarize Movement tool overlay -->
+        <g class="summarize-boxes">
+          <g
+            v-for="box in renderedSummarizeBoxes"
+            :key="`summarize-${box.id}`"
+            class="summarize-box"
+          >
+            <rect
+              :x="box.leftX"
+              :y="box.rangeTop"
+              :width="box.rightX - box.leftX"
+              :height="box.rangeBottom - box.rangeTop"
+              class="summarize-rect"
+            />
+
+            <!-- Left/right edge resize handles, same as Range Download/Investigate. -->
+            <line
+              :x1="box.leftX" :x2="box.leftX"
+              :y1="box.rangeTop" :y2="box.rangeBottom"
+              class="summarize-edge-handle"
+              @mousedown="startSummarizeResizeLeft(box.id, $event)"
+            />
+            <line
+              :x1="box.rightX" :x2="box.rightX"
+              :y1="box.rangeTop" :y2="box.rangeBottom"
+              class="summarize-edge-handle"
+              @mousedown="startSummarizeResizeRight(box.id, $event)"
+            />
+
+            <text
+              :x="box.leftX + 4"
+              :y="box.rangeTop - 6"
+              class="summarize-label"
+            >
+              Range {{ box.endIndex - box.startIndex + 1 }} candles
+            </text>
+
+            <text
+              :x="box.rightX - 4"
+              :y="box.rangeTop - 6"
+              class="summarize-close-btn"
+              text-anchor="end"
+              @click="removeSummarizeBox(box.id)"
+            >
+              ✕ remove
+            </text>
+
+            <text
+              :x="(box.leftX + box.rightX) / 2"
+              :y="box.rangeTop - 20"
+              class="summarize-btn"
+              text-anchor="middle"
+              @click="summarizeMovementRange(box.id)"
+            >
+              📊 Summarize
+            </text>
+          </g>
+
+          <!-- live drag preview -->
+          <rect
+            v-if="draggingSummarizePreview"
+            :x="draggingSummarizePreview.leftX"
+            :y="draggingSummarizePreview.rangeTop"
+            :width="draggingSummarizePreview.rightX - draggingSummarizePreview.leftX"
+            :height="draggingSummarizePreview.rangeBottom - draggingSummarizePreview.rangeTop"
+            class="summarize-rect summarize-rect-preview"
+          />
+        </g>
+
         <!-- Freeform rectangle draw tool overlay -->
         <g class="draw-rectangles">
           <g
@@ -1712,7 +2059,7 @@
           >
             <!-- shaded band between upper/lower -->
             <polygon
-              v-if="avwap.points.length > 1"
+              v-if="showAvwapBands && avwap.points.length > 1"
               :points="avwapBandPolygon(avwap.points)"
               class="avwap-band-fill"
               :style="{ fill: avwap.color }"
@@ -1720,7 +2067,7 @@
 
             <!-- upper band -->
             <polyline
-              v-if="avwap.points.length > 1"
+              v-if="showAvwapBands && avwap.points.length > 1"
               :points="avwapLinePoints(avwap.points, 'upper')"
               class="avwap-band-line"
               :style="{ stroke: avwap.color }"
@@ -1728,7 +2075,7 @@
 
             <!-- lower band -->
             <polyline
-              v-if="avwap.points.length > 1"
+              v-if="showAvwapBands && avwap.points.length > 1"
               :points="avwapLinePoints(avwap.points, 'lower')"
               class="avwap-band-line"
               :style="{ stroke: avwap.color }"
@@ -2496,6 +2843,28 @@
               <span class="range-trade-label">Distance from EMA200</span>
               <span>{{ rangeInvestigateResult.metrics.distanceFromEma200Percent != null ? rangeInvestigateResult.metrics.distanceFromEma200Percent.toFixed(2) + '%' : '—' }}</span>
             </div>
+            <div class="range-trade-row">
+              <span class="range-trade-label">Inflow / Outflow</span>
+              <span>{{ formatNotional(rangeInvestigateResult.metrics.totalInflow) }} / {{ formatNotional(rangeInvestigateResult.metrics.totalOutflow) }}</span>
+            </div>
+            <div class="range-trade-row">
+              <span class="range-trade-label">Flow vs baseline</span>
+              <span>
+                <template v-if="rangeInvestigateResult.metrics.flowSpike === 'INFLOW_SPIKE'">
+                  Inflow ~{{ rangeInvestigateResult.metrics.inflowVsBaselineRatio?.toFixed(1) }}x spike
+                </template>
+                <template v-else-if="rangeInvestigateResult.metrics.flowSpike === 'OUTFLOW_SPIKE'">
+                  Outflow ~{{ rangeInvestigateResult.metrics.outflowVsBaselineRatio?.toFixed(1) }}x spike
+                </template>
+                <template v-else>—</template>
+              </span>
+            </div>
+            <div class="range-trade-row">
+              <span class="range-trade-label">Flow confluence</span>
+              <span :class="`investigate-flow-${rangeInvestigateResult.metrics.flowConfluence.toLowerCase()}`">
+                {{ rangeInvestigateResult.metrics.flowConfluence }}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -2520,6 +2889,120 @@
 
       <div v-else class="range-analysis-empty">
         Draw a Range Investigate box on the chart, then click "🔍 Investigate".
+      </div>
+    </div>
+  </DialogComponent>
+
+  <!-- Wallet Movement detail dialog -->
+  <DialogComponent v-model="showMovementDetail" :width="'700px'">
+    <DialogHeaderComponent>
+      {{ props.symbol.toUpperCase() }} · Wallet Movement<template v-if="selectedMovementCandleIndex !== null"> — Candle {{ selectedMovementCandleIndex + 1 }}</template>
+    </DialogHeaderComponent>
+
+    <div class="movement-detail-body" style="max-height:80vh;overflow:auto;">
+      <div v-if="selectedMovementCandle" class="movement-detail-meta">
+        <span>Open: {{ new Date(selectedMovementCandle.openTime!).toISOString() }}</span>
+        <span>Close: {{ new Date(selectedMovementCandle.openTime! + intervalToMs(props.interval)).toISOString() }}</span>
+      </div>
+
+      <div v-if="selectedMovementBucket" class="movement-detail-summary">
+        <div class="movement-detail-summary-item movement-inflow-total">
+          Inflow total: {{ formatNotional(selectedMovementBucket.inflow) }}
+        </div>
+        <div class="movement-detail-summary-item movement-outflow-total">
+          Outflow total: {{ formatNotional(selectedMovementBucket.outflow) }}
+        </div>
+        <div class="movement-detail-summary-item">
+          Net: {{ formatNotional(selectedMovementBucket.inflow - selectedMovementBucket.outflow) }}
+        </div>
+      </div>
+
+      <div v-if="selectedMovementBucket && selectedMovementBucket.records.length > 0" class="movement-detail-list">
+        <div
+          v-for="(rec, i) in selectedMovementBucket.records"
+          :key="`movement-rec-${i}`"
+          :class="['movement-detail-row', rec.type === 'INFLOW' ? 'movement-row-inflow' : 'movement-row-outflow']"
+        >
+          <span :class="['side-badge', rec.type === 'INFLOW' ? 'side-long' : 'side-short']">{{ rec.type }}</span>
+          <span class="movement-detail-amount">{{ rec.amount.toLocaleString(undefined, { maximumFractionDigits: 6 }) }} {{ rec.symbol }}</span>
+          <span class="movement-detail-addr">{{ rec.from_address.slice(0, 8) }}…{{ rec.from_address.slice(-6) }} → {{ rec.to_address.slice(0, 8) }}…{{ rec.to_address.slice(-6) }}</span>
+          <span class="movement-detail-time">{{ rec.timestamp }}</span>
+          <a
+            class="movement-detail-tx"
+            :href="`https://etherscan.io/tx/${rec.tx_hash}`"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            tx ↗
+          </a>
+        </div>
+      </div>
+
+      <div v-else class="movement-detail-empty">
+        No wallet movement recorded for this candle.
+      </div>
+    </div>
+  </DialogComponent>
+
+  <!-- Summarize Movement dialog -->
+  <DialogComponent v-model="showMovementSummary" :width="'820px'">
+    <DialogHeaderComponent>
+      {{ props.symbol.toUpperCase() }} · Summarize Movement
+      <template v-if="movementSummaryResult"> — {{ movementSummaryResult.candleCount }} candles</template>
+    </DialogHeaderComponent>
+
+    <div class="movement-summary-body" style="max-height:80vh;overflow:auto;">
+      <div v-if="movementSummaryResult" class="movement-summary">
+        <div class="range-meta-row">
+          <span>Symbol: {{ movementSummaryResult.symbol }}</span>
+          <span>Interval: {{ movementSummaryResult.interval }}</span>
+          <span>Range: {{ movementSummaryResult.rangeStartTimeIso }} → {{ movementSummaryResult.rangeEndTimeIso }}</span>
+        </div>
+
+        <!-- Overall totals -->
+        <div class="movement-detail-summary movement-summary-totals">
+          <div class="movement-detail-summary-item movement-inflow-total">
+            Total Inflow: {{ formatNotional(movementSummaryResult.totalInflow) }}
+          </div>
+          <div class="movement-detail-summary-item movement-outflow-total">
+            Total Outflow: {{ formatNotional(movementSummaryResult.totalOutflow) }}
+          </div>
+          <div class="movement-detail-summary-item">
+            Net: {{ movementSummaryResult.net >= 0 ? '+' : '' }}{{ formatNotional(movementSummaryResult.net) }}
+          </div>
+        </div>
+
+        <!-- Single horizontal bar chart: total inflow vs total outflow -->
+        <div v-if="movementSummaryResult.maxTotal > 0" class="movement-summary-chart">
+          <div class="movement-summary-bar-row">
+            <span class="movement-summary-bar-label">Inflow</span>
+            <div class="movement-summary-bar-track">
+              <div
+                class="movement-summary-bar-fill movement-summary-bar-inflow"
+                :style="{ width: (movementSummaryResult.totalInflow / movementSummaryResult.maxTotal * 100) + '%' }"
+              />
+            </div>
+            <span class="movement-summary-bar-value movement-inflow-total">{{ formatNotional(movementSummaryResult.totalInflow) }}</span>
+          </div>
+          <div class="movement-summary-bar-row">
+            <span class="movement-summary-bar-label">Outflow</span>
+            <div class="movement-summary-bar-track">
+              <div
+                class="movement-summary-bar-fill movement-summary-bar-outflow"
+                :style="{ width: (movementSummaryResult.totalOutflow / movementSummaryResult.maxTotal * 100) + '%' }"
+              />
+            </div>
+            <span class="movement-summary-bar-value movement-outflow-total">{{ formatNotional(movementSummaryResult.totalOutflow) }}</span>
+          </div>
+        </div>
+
+        <div v-else class="movement-detail-empty">
+          No wallet movement recorded across this range. Try "See Movement" first to load data for the visible candles.
+        </div>
+      </div>
+
+      <div v-else class="movement-detail-empty">
+        No range selected.
       </div>
     </div>
   </DialogComponent>
@@ -2563,7 +3046,7 @@
 
 <script setup lang="ts">
 import type { CandleEntry, FuturesSymbol } from '@/core/interfaces';
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 // NOTE: adjust this import path to wherever OrderMakerUtility actually lives in your project
 import { OrderMakerUtility } from '@/utility/OrderMakerUtility';
 // NOTE: adjust this import path to wherever useNotificationStore actually lives in your project
@@ -2626,6 +3109,19 @@ interface BinanceDepthSnapshot {
   asks: string[][]
 }
 
+// ─── Wallet movement (exchange inflow/outflow) API shape ──────────────────────
+// GET {WALLET_MOVEMENT_API_BASE}/api/movement?symbol=...&start=ISO&end=ISO
+// See whale_tracker_api.py — returns a flat array of raw transfers, newest first.
+interface WalletMovement {
+  amount: number
+  from_address: string
+  to_address: string
+  symbol: string
+  timestamp: string
+  tx_hash: string
+  type: 'INFLOW' | 'OUTFLOW'
+}
+
 // ─── Props ────────────────────────────────────────────────────────────────────
 /** Most recent candle where price crossed the anchored VWAP — set upstream, same as candleData.isAvwapPoint. `direction` is which way price crossed it; `side` is whether the crossing candle itself closed bullish or bearish. */
 interface CrossedAvwapPoint {
@@ -2656,6 +3152,9 @@ const candleWidth = ref(8)
 const connectVolumeSpikesvSpikes = ref(true)
 const showVolume = ref(true)
 const showOiBar = ref(false)
+const showMovementPanel = ref(false)
+const showMovementDetail = ref(false)
+const selectedMovementCandleIndex = ref<number | null>(null)
 const showEma = ref(true)
 const showMa = ref(false)
 const candleGap = 5
@@ -2860,6 +3359,131 @@ function startPriceLineDrag(id: number, event: MouseEvent) {
   }
   document.addEventListener('mousemove', handleMove)
   document.addEventListener('mouseup', handleUp)
+}
+
+// ─── Rectangle / Line persistence (per symbol) ─────────────────────────────
+//
+// Rectangles are drawn/stored in raw SVG pixel space (rect.x/width), which
+// only means anything relative to the CURRENT candleX() layout — reopening
+// the chart (fresh props.candles, possibly a different candleWidth zoom)
+// gives a different pixel grid entirely. So instead of persisting pixels,
+// each rectangle's left/right edges are converted to an absolute time
+// anchor (interpolated from the first loaded candle's openTime + the
+// interval, same inverse math candleX() itself uses) before being written
+// to localStorage, then converted back to pixels against whatever candle
+// layout is active when the symbol is reopened. Price lines don't have this
+// problem — they span the full chart width, so only price + label matter.
+const DRAWING_STORAGE_PREFIX = 'candleVisualizer.drawings.'
+
+function drawingStorageKey(symbol: string): string {
+  return `${DRAWING_STORAGE_PREFIX}${symbol.toUpperCase()}`
+}
+
+interface StoredRectangle {
+  leftTime: number
+  rightTime: number
+  priceHigh: number
+  priceLow: number
+}
+interface StoredLine {
+  price: number
+  label: string
+}
+interface StoredDrawings {
+  rectangles: StoredRectangle[]
+  lines: StoredLine[]
+}
+
+/** Pixel-x → absolute time, using the same linear layout candleX() uses (fractional, not snapped to a candle). Null if no candles are loaded yet to anchor against. */
+function xToTimeAnchor(x: number): number | null {
+  const first = displayCandles.value[0]
+  if (!first || first.openTime == null) return null
+  const pixelPerCandle = candleWidth.value + candleGap
+  const fractionalIndex = (x - 10 - candleWidth.value / 2) / pixelPerCandle
+  return first.openTime + fractionalIndex * intervalToMs(props.interval)
+}
+
+/** Inverse of xToTimeAnchor — absolute time → pixel-x against the CURRENT candle layout. */
+function timeAnchorToX(time: number): number | null {
+  const first = displayCandles.value[0]
+  if (!first || first.openTime == null) return null
+  const pixelPerCandle = candleWidth.value + candleGap
+  const fractionalIndex = (time - first.openTime) / intervalToMs(props.interval)
+  return fractionalIndex * pixelPerCandle + candleWidth.value / 2 + 10
+}
+
+/** Guards the save watchers below so clearing/restoring drawings on a symbol switch doesn't itself get persisted as "this symbol has no drawings" before the real load has run. */
+let drawingPersistenceReady = false
+/** Small debounce so dragging a rectangle/line doesn't write to localStorage on every mousemove. */
+let persistDrawingsTimer: ReturnType<typeof setTimeout> | null = null
+
+function persistDrawings() {
+  if (!drawingPersistenceReady) return
+  if (persistDrawingsTimer !== null) clearTimeout(persistDrawingsTimer)
+  persistDrawingsTimer = setTimeout(() => {
+    try {
+      const rectangles: StoredRectangle[] = []
+      for (const r of drawnRectangles.value) {
+        const leftTime = xToTimeAnchor(r.x)
+        const rightTime = xToTimeAnchor(r.x + r.width)
+        if (leftTime == null || rightTime == null) continue // no candles loaded to anchor against — skip rather than lose the time reference
+        rectangles.push({ leftTime, rightTime, priceHigh: r.priceHigh, priceLow: r.priceLow })
+      }
+      const lines: StoredLine[] = priceLines.value.map(l => ({ price: l.price, label: l.label }))
+      const payload: StoredDrawings = { rectangles, lines }
+      localStorage.setItem(drawingStorageKey(props.symbol), JSON.stringify(payload))
+    } catch {
+      // localStorage unavailable/full — drawings just won't persist this session
+    }
+  }, 400)
+}
+
+watch(drawnRectangles, persistDrawings, { deep: true })
+watch(priceLines, persistDrawings, { deep: true })
+
+/** Loads whatever was saved for `symbol`, converting stored time anchors back to pixels against the candle layout that's active right now. Requires displayCandles to already have data — callers wait for that first. */
+function restoreDrawingsForSymbol(symbol: string) {
+  drawnRectangles.value = []
+  priceLines.value = []
+  try {
+    const raw = localStorage.getItem(drawingStorageKey(symbol))
+    if (raw) {
+      const stored: StoredDrawings = JSON.parse(raw)
+      for (const r of stored.rectangles ?? []) {
+        const x = timeAnchorToX(r.leftTime)
+        const rightX = timeAnchorToX(r.rightTime)
+        if (x == null || rightX == null) continue
+        drawnRectangles.value.push({
+          id: ++rectIdCounter,
+          x,
+          width: Math.max(4, rightX - x),
+          priceHigh: r.priceHigh,
+          priceLow: r.priceLow,
+        })
+      }
+      for (const l of stored.lines ?? []) {
+        priceLines.value.push({ id: ++priceLineIdCounter, price: l.price, label: l.label })
+      }
+    }
+  } catch {
+    // corrupt/unavailable localStorage — just start with a clean chart for this symbol
+  }
+  drawingPersistenceReady = true
+}
+
+/** Runs restoreDrawingsForSymbol as soon as candles for the (possibly just-switched) symbol are actually loaded, since the time↔pixel conversion needs at least one candle to anchor against. */
+function restoreDrawingsWhenReady(symbol: string) {
+  drawingPersistenceReady = false // block saves while we clear/reload below
+  if (displayCandles.value.length > 0) {
+    restoreDrawingsForSymbol(symbol)
+    return
+  }
+  const stop = watch(displayCandles, (candles) => {
+    if (candles.length > 0) {
+      stop()
+      restoreDrawingsForSymbol(symbol)
+    }
+  })
 }
 
 // ─── Price range tool ───────────────────────────────────────────────────────
@@ -3120,6 +3744,13 @@ const anchoredVwaps = ref<AnchoredVwap[]>([])
 /** id of the anchored VWAP whose end-handle is currently being dragged, if any — used to dim/highlight it while adjusting. */
 const avwapEndDraggingId = ref<number | null>(null)
 
+/** "Fill PZ AVWAP" dropdown (past 6 zones / all zones) open/closed state, plus the wrapper ref used to detect outside clicks. */
+const pzAvwapDropdownOpen = ref(false)
+const pzAvwapDropdownRef = ref<HTMLElement | null>(null)
+
+/** Toggles the shaded band + upper/lower lines on every placed AVWAP; the mid line always stays visible. */
+const showAvwapBands = ref(true)
+
 function toggleAvwapMode() {
   avwapModeActive.value = !avwapModeActive.value
 }
@@ -3265,7 +3896,46 @@ function startAvwapEndDrag(avwapId: number, event: MouseEvent) {
   document.addEventListener('mouseup', handleUp)
 }
 
-/** Single mousedown entry point for a candle — routes to whichever click-driven tool is currently armed. */
+/**
+ * "Fill PZ AVWAP" — auto-anchors one Anchored VWAP at the start candle of
+ * every Price Zone, instead of hand-clicking each zone's opening candle.
+ * Walks displayCandles the same way fillPriceZonesWithVolumeProfile does to
+ * find each zone's startIndex (grouped by candle.priceZone), then replaces
+ * whatever AVWAPs are currently placed with a fresh one per zone.
+ *
+ * `scope` controls how many zones get filled:
+ *   - 'recent' → only the 6 most recent zones (keeps the chart from getting
+ *     buried in overlapping open-ended lines when there are many zones)
+ *   - 'all'    → every zone currently on the chart
+ *
+ * Each placed AVWAP is left open-ended (endIndex: null) — same as a normal
+ * single-click placement — so every zone's VWAP keeps extending forward to
+ * the latest candle rather than stopping at its own zone's end. Purely
+ * synchronous (computeAnchoredVwapPoints has no network dependency, unlike
+ * the VP fill's OI lookups), so all zones appear at once.
+ */
+function fillPriceZonesWithAvwap(scope: 'recent' | 'all') {
+  const anchorIndices: number[] = []
+  let currentZone: CandleEntry['priceZone'] | null = null
+
+  for (let i = 0; i < displayCandles.value.length; i++) {
+    const candle = displayCandles.value[i]
+    if (candle.priceZone && (!currentZone || JSON.stringify(currentZone) !== JSON.stringify(candle.priceZone))) {
+      currentZone = candle.priceZone
+      anchorIndices.push(i)
+    }
+  }
+
+  const selected = scope === 'recent' ? anchorIndices.slice(-6) : anchorIndices
+
+  anchoredVwaps.value = selected.map(anchorIndex => ({
+    id: ++avwapIdCounter,
+    anchorIndex,
+    endIndex: null,
+  }))
+}
+
+
 function handleCandleMouseDown(index: number, event: MouseEvent) {
   if (rangeInvestigateAddingResultRangeId.value !== null) {
     handleCandleMouseDownForResultRange(rangeInvestigateAddingResultRangeId.value, index, event)
@@ -3281,6 +3951,10 @@ function handleCandleMouseDown(index: number, event: MouseEvent) {
   }
   if (rangeInvestigateModeActive.value) {
     handleCandleMouseDownForRangeInvestigate(index, event)
+    return
+  }
+  if (summarizeModeActive.value) {
+    handleCandleMouseDownForSummarize(index, event)
     return
   }
   handleCandleMouseDownForVp(index, event)
@@ -3400,7 +4074,7 @@ function clientXToCandleIndex(clientX: number): number | null {
   const rect = chartContainer.value.querySelector('svg')?.getBoundingClientRect()
   if (!rect) return null
   const x = clientX - rect.left
-  const rawIndex = (x - 10 - candleWidth.value / 2) / (candleWidth.value + candleGap)
+  const rawIndex = (x - 10 - candleWidth.value / 2) / (candleWidth.value + candleGap) - multiTfPrependOffsetSlots.value
   return Math.max(0, rawIndex)
 }
 
@@ -4507,6 +5181,7 @@ async function investigateRangeData(id: number) {
       const idx = startIndex + i
       const oi = oiPerCandle.value[idx] ?? null
       const ls = lsRatioPerCandle.value[idx] ?? null
+      const movement = movementPerCandle.value[idx]
       return {
         index: idx,
         openTime: c.openTime ?? null,
@@ -4519,6 +5194,8 @@ async function investigateRangeData(id: number) {
         ema200: c.candleData?.ema200 ?? null,
         openInterest: oi,
         longShortRatio: ls ? { longAccount: ls.longAccount, shortAccount: ls.shortAccount } : null,
+        inflow: movement?.inflow ?? 0,
+        outflow: movement?.outflow ?? 0,
       }
     })
 
@@ -4531,6 +5208,18 @@ async function investigateRangeData(id: number) {
     const baselineOiBefore = startIndex > 0 ? (oiPerCandle.value[startIndex - 1] ?? null) : null
     const baselineLs = startIndex > 0 ? lsRatioPerCandle.value[startIndex - 1] : null
     const baselineLongAccountBefore = baselineLs ? baselineLs.longAccount : null
+    // Same lookback window as volume/OI above, but for wallet inflow/outflow — only
+    // meaningful once movementPerCandle has actually been populated (wallet movement fetched).
+    const baselineMovementBuckets = baselineStart < startIndex
+      ? movementPerCandle.value.slice(baselineStart, startIndex)
+      : []
+    const hasMovementData = movementPerCandle.value.some(b => b.records.length > 0)
+    const baselineAvgInflow = hasMovementData && baselineMovementBuckets.length
+      ? baselineMovementBuckets.reduce((s, b) => s + b.inflow, 0) / baselineMovementBuckets.length
+      : null
+    const baselineAvgOutflow = hasMovementData && baselineMovementBuckets.length
+      ? baselineMovementBuckets.reduce((s, b) => s + b.outflow, 0) / baselineMovementBuckets.length
+      : null
 
     // Exact time span of the selected range, for the aggTrades/funding fetches.
     const rangeStartMs = rangeCandles[0].openTime ?? null
@@ -4558,6 +5247,8 @@ async function investigateRangeData(id: number) {
       baselineAvgVolume,
       baselineOiBefore,
       baselineLongAccountBefore,
+      baselineAvgInflow,
+      baselineAvgOutflow,
       fundingRate,
       largeTrades,
       previewPosition: previewPosition.value
@@ -4585,6 +5276,7 @@ function mapInvestigateCandlesForExport(startIndex: number, endIndex: number) {
     const idx = startIndex + i
     const oi = oiPerCandle.value[idx] ?? null
     const ls = lsRatioPerCandle.value[idx] ?? null
+    const movement = movementPerCandle.value[idx]
     return {
       index: idx,
       openTime: c.openTime ?? null,
@@ -4597,6 +5289,8 @@ function mapInvestigateCandlesForExport(startIndex: number, endIndex: number) {
       ema200: c.candleData?.ema200 ?? null,
       openInterest: oi,
       longShortRatio: ls ? { longAccount: ls.longAccount, shortAccount: ls.shortAccount } : null,
+      inflow: movement?.inflow ?? 0,
+      outflow: movement?.outflow ?? 0,
     }
   })
 }
@@ -4871,16 +5565,20 @@ function computeVolumeProfile(startIndex: number, endIndex: number) {
     }
   })
 
-  // Profile is anchored just to the right of the selected range's last candle.
-  const rightEdgeX = candleX(endIndex) + candleWidth.value / 2 + 4
+  // Profile is drawn *inside* the selected range box, bars growing rightward
+  // from the box's left edge so they sit over the candles instead of
+  // floating off to the right of the chart.
+  const leftEdgeX = candleX(startIndex) - candleWidth.value / 2
+  const boxRightX = candleX(endIndex) + candleWidth.value / 2
+  const barMaxWidth = Math.min(VP_MAX_BAR_WIDTH, Math.max(boxRightX - leftEdgeX - 4, 0))
 
   const rows = buckets.map(b => {
     const total = b.buyVolume + b.sellVolume
-    const totalWidth = maxRowTotal > 0 ? (total / maxRowTotal) * VP_MAX_BAR_WIDTH : 0
+    const totalWidth = maxRowTotal > 0 ? (total / maxRowTotal) * barMaxWidth : 0
     const buyWidth = total > 0 ? totalWidth * (b.buyVolume / total) : 0
     const sellWidth = totalWidth - buyWidth
     return {
-      x: rightEdgeX,
+      x: leftEdgeX + 2,
       y: priceToY(b.priceHigh),
       height: Math.max(priceToY(b.priceLow) - priceToY(b.priceHigh), 0.5),
       buyWidth,
@@ -4894,13 +5592,17 @@ function computeVolumeProfile(startIndex: number, endIndex: number) {
 
   const pocBucket = buckets[pocIndex]
   const pocPrice = (pocBucket.priceLow + pocBucket.priceHigh) / 2
-  const totalVolume = buckets.reduce((s, b) => s + b.buyVolume + b.sellVolume, 0)
+  const totalBuyVolume = buckets.reduce((s, b) => s + b.buyVolume, 0)
+  const totalSellVolume = buckets.reduce((s, b) => s + b.sellVolume, 0)
+  const totalVolume = totalBuyVolume + totalSellVolume
+  const buyPct = totalVolume > 0 ? (totalBuyVolume / totalVolume) * 100 : 0
+  const sellPct = totalVolume > 0 ? (totalSellVolume / totalVolume) * 100 : 0
 
   return {
     startIndex,
     endIndex,
-    leftX: candleX(startIndex) - candleWidth.value / 2,
-    rightX: rightEdgeX + VP_MAX_BAR_WIDTH,
+    leftX: leftEdgeX,
+    rightX: boxRightX,
     rangeTop: priceToY(rangeHigh),
     rangeBottom: priceToY(rangeLow),
     rangeHighPrice: rangeHigh,
@@ -4909,6 +5611,10 @@ function computeVolumeProfile(startIndex: number, endIndex: number) {
     pocY: priceToY(pocPrice),
     pocPrice,
     totalVolume,
+    totalBuyVolume,
+    totalSellVolume,
+    buyPct,
+    sellPct,
   }
 }
 
@@ -6104,13 +6810,32 @@ watch(() => [props.symbol, props.interval], () => {
 })
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
+
+/** Closes the "Fill PZ AVWAP" dropdown when clicking anywhere outside it. */
+function handlePzAvwapDropdownOutsideClick(event: MouseEvent) {
+  if (!pzAvwapDropdownOpen.value) return
+  if (pzAvwapDropdownRef.value && !pzAvwapDropdownRef.value.contains(event.target as Node)) {
+    pzAvwapDropdownOpen.value = false
+  }
+}
+
 onMounted(() => {
   scrollToRight()
   connectWebSocket()
   connectDepthWebSocket()
   plotInitialAvwapPoint()
   if (showCrossTfEma.value) fetchCrossTfEma()
+  tryShowCachedMovement()
   nowTickTimer = setInterval(() => { nowTick.value = Date.now() }, 1_000)
+  document.addEventListener('mousedown', handlePzAvwapDropdownOutsideClick)
+  restoreDrawingsWhenReady(props.symbol)
+})
+
+// Re-load this symbol's saved rectangles/lines (and drop the previous
+// symbol's) whenever the chart is pointed at a different pair — same
+// per-symbol scoping as the rest of the persisted drawing state.
+watch(() => props.symbol, (symbol) => {
+  restoreDrawingsWhenReady(symbol)
 })
 
 onUnmounted(() => {
@@ -6120,6 +6845,7 @@ onUnmounted(() => {
     clearInterval(nowTickTimer)
     nowTickTimer = null
   }
+  document.removeEventListener('mousedown', handlePzAvwapDropdownOutsideClick)
 })
 
 // ─── Existing computed / helpers (unchanged, but now use displayCandles) ──────
@@ -6142,6 +6868,8 @@ const otherProps = computed(() => {
 
 const minPrice = computed(() => {
   if (priceRangeMin.value !== 0) return priceRangeMin.value
+  // Multi-TF bars are aggregated directly from displayCandles, so their
+  // highs/lows are always a subset of the base range already covered here.
   return Math.min(...displayCandles.value.map(c => c.low!)) * 0.98
 })
 
@@ -6153,7 +6881,7 @@ const maxPrice = computed(() => {
 const priceDelta = computed(() => maxPrice.value - minPrice.value)
 
 const svgWidth = computed(() => {
-  return displayCandles.value.length * (candleWidth.value + candleGap) + 200
+  return (displayCandles.value.length + multiTfPrependOffsetSlots.value) * (candleWidth.value + candleGap) + 200
 })
 
 const gridPrices = computed(() => {
@@ -6357,7 +7085,7 @@ const CROSS_TF_EMA_TIMEFRAMES = ['1h', '4h', '1d'] as const
 type CrossTfEmaTimeframe = typeof CROSS_TF_EMA_TIMEFRAMES[number]
 
 const CROSS_TF_EMA_PERIOD = 200
-const CROSS_TF_EMA_LIMIT = 500
+const CROSS_TF_EMA_LIMIT = 1000
 
 const CROSS_TF_EMA_COLORS: Record<CrossTfEmaTimeframe, string> = {
   '1h': '#42a5f5',
@@ -6498,6 +7226,395 @@ const crossTfEmaLines = computed(() => {
   })
 })
 
+// ─── Multi-TF candle overlay (1H/4H/1D) ────────────────────────────────────
+// Renders higher-timeframe candles faded behind the base chart, using the
+// same per-timeframe colors as the cross-TF EMA lines so the two overlays
+// read as one consistent "higher timeframe" language: bull = solid color,
+// bear = a lighter tint of that same color.
+
+interface MultiTfCandlePoint {
+  openTime: number
+  closeTime: number
+  open: number
+  high: number
+  low: number
+  close: number
+}
+
+const MULTI_TF_CANDLE_TIMEFRAMES = ['1h', '4h', '1d'] as const
+type MultiTfCandleTimeframe = typeof MULTI_TF_CANDLE_TIMEFRAMES[number]
+const MULTI_TF_CANDLE_LIMIT = 500
+
+const MULTI_TF_CANDLE_COLORS: Record<MultiTfCandleTimeframe, string> = CROSS_TF_EMA_COLORS
+
+/** Mixes a hex color toward white by `amount` (0-1) to get a "lighter" bear shade. */
+function lightenHexColor(hex: string, amount: number): string {
+  const clean = hex.replace('#', '')
+  const num = parseInt(clean, 16)
+  const r = Math.round(((num >> 16) & 0xff) + (255 - ((num >> 16) & 0xff)) * amount)
+  const g = Math.round(((num >> 8) & 0xff) + (255 - ((num >> 8) & 0xff)) * amount)
+  const b = Math.round((num & 0xff) + (255 - (num & 0xff)) * amount)
+  return `rgb(${r}, ${g}, ${b})`
+}
+
+const MULTI_TF_CANDLE_LIGHT_COLORS: Record<MultiTfCandleTimeframe, string> = {
+  '1h': lightenHexColor(CROSS_TF_EMA_COLORS['1h'], 0.55),
+  '4h': lightenHexColor(CROSS_TF_EMA_COLORS['4h'], 0.55),
+  '1d': lightenHexColor(CROSS_TF_EMA_COLORS['1d'], 0.55),
+}
+
+const showMultiTf1h = ref(false)
+const showMultiTf4h = ref(false)
+const showMultiTf1d = ref(false)
+
+const MULTI_TF_CANDLE_ACTIVE_REFS: Record<MultiTfCandleTimeframe, Ref<boolean>> = {
+  '1h': showMultiTf1h,
+  '4h': showMultiTf4h,
+  '1d': showMultiTf1d,
+}
+
+function isMultiTfCandleActive(tf: MultiTfCandleTimeframe): boolean {
+  return MULTI_TF_CANDLE_ACTIVE_REFS[tf].value
+}
+
+const multiTfCandleSeries = ref<Record<MultiTfCandleTimeframe, MultiTfCandlePoint[]>>({
+  '1h': [],
+  '4h': [],
+  '1d': [],
+})
+const multiTfCandleLoading = ref<Record<MultiTfCandleTimeframe, boolean>>({ '1h': false, '4h': false, '1d': false })
+const multiTfCandleError = ref<Record<MultiTfCandleTimeframe, string | null>>({ '1h': null, '4h': null, '1d': null })
+
+async function fetchMultiTfCandlesForTimeframe(tf: MultiTfCandleTimeframe): Promise<MultiTfCandlePoint[]> {
+  const url = `${REST_BASE}/fapi/v1/klines?symbol=${props.symbol.toUpperCase()}&interval=${tf}&limit=${MULTI_TF_CANDLE_LIMIT}`
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`request failed (${res.status})`)
+  const data = await res.json()
+  if (!Array.isArray(data)) return []
+  return data.map((k: any[]) => ({
+    openTime: Number(k[0]),
+    closeTime: Number(k[6]),
+    open: parseFloat(k[1]),
+    high: parseFloat(k[2]),
+    low: parseFloat(k[3]),
+    close: parseFloat(k[4]),
+  }))
+}
+
+/** Fetches (or re-fetches) a single timeframe's candles, independent of the other two checkboxes. */
+async function fetchMultiTfCandles(tf: MultiTfCandleTimeframe) {
+  if (!props.symbol) return
+  multiTfCandleLoading.value = { ...multiTfCandleLoading.value, [tf]: true }
+  multiTfCandleError.value = { ...multiTfCandleError.value, [tf]: null }
+  try {
+    const points = await fetchMultiTfCandlesForTimeframe(tf)
+    multiTfCandleSeries.value = { ...multiTfCandleSeries.value, [tf]: points }
+  } catch (err) {
+    multiTfCandleError.value = { ...multiTfCandleError.value, [tf]: err instanceof Error ? err.message : 'failed to load candles' }
+    multiTfCandleSeries.value = { ...multiTfCandleSeries.value, [tf]: [] }
+  } finally {
+    multiTfCandleLoading.value = { ...multiTfCandleLoading.value, [tf]: false }
+  }
+}
+
+// Each checkbox fetches its own timeframe independently the first time it's
+// turned on, and whenever the symbol changes while it's already on.
+watch(showMultiTf1h, (active) => { if (active) fetchMultiTfCandles('1h') })
+watch(showMultiTf4h, (active) => { if (active) fetchMultiTfCandles('4h') })
+watch(showMultiTf1d, (active) => { if (active) fetchMultiTfCandles('1d') })
+watch(() => props.symbol, () => {
+  MULTI_TF_CANDLE_TIMEFRAMES.forEach(tf => {
+    if (isMultiTfCandleActive(tf)) fetchMultiTfCandles(tf)
+  })
+})
+
+/**
+ * Groups the displayed (base-timeframe) candles into contiguous index spans
+ * that fall under the same higher-timeframe candle, and pairs each span with
+ * that higher-TF candle's OHLC. One rendered bar = one higher-TF candle,
+ * drawn as wide as the base candles it covers.
+ */
+/**
+ * Groups the displayed (base-timeframe) candles into contiguous index spans
+ * that fall under the same higher-timeframe period. OHLC is deliberately
+ * NOT carried here anymore — it's recomputed from the base candles at
+ * render time (see aggregateBaseCandlesOhlc), so that dragging a bar's
+ * right edge backward can recompute a "partially formed" OHLC instead of
+ * always showing the fully-closed higher-TF candle.
+ */
+function multiTfCandleBars(tf: MultiTfCandleTimeframe) {
+  const series = multiTfCandleSeries.value[tf]
+  const candles = displayCandles.value
+  const bars: Array<{ startIndex: number; endIndex: number }> = []
+  if (series.length === 0 || candles.length === 0) return bars
+
+  let sIdx = 0
+  let bucketStart = -1
+  let bucketSeriesIdx = -1
+
+  for (let i = 0; i < candles.length; i++) {
+    const openTime = candles[i].openTime
+    if (openTime == null) continue
+    while (sIdx + 1 < series.length && series[sIdx + 1].openTime <= openTime) sIdx++
+    if (openTime < series[sIdx].openTime) continue // before any fetched higher-TF data
+
+    if (sIdx !== bucketSeriesIdx) {
+      if (bucketSeriesIdx !== -1) {
+        bars.push({ startIndex: bucketStart, endIndex: i - 1 })
+      }
+      bucketSeriesIdx = sIdx
+      bucketStart = i
+    }
+  }
+  if (bucketSeriesIdx !== -1) {
+    bars.push({ startIndex: bucketStart, endIndex: candles.length - 1 })
+  }
+  return bars
+}
+
+const multiTfCandleBarsByTf = computed(() => {
+  const empty = { '1h': [], '4h': [], '1d': [] } as Record<MultiTfCandleTimeframe, ReturnType<typeof multiTfCandleBars>>
+  const result = { ...empty }
+  MULTI_TF_CANDLE_TIMEFRAMES.forEach(tf => {
+    if (isMultiTfCandleActive(tf)) result[tf] = multiTfCandleBars(tf)
+  })
+  return result
+})
+
+/**
+ * Aggregates the base-timeframe candles in [startIndex, endIndex] into a
+ * single OHLC — open from the first candle, close from the last, high/low
+ * across the whole span. Used both for the "full" (natural) higher-TF bar
+ * and for a partial/backtest-scrubbed slice of it.
+ */
+function aggregateBaseCandlesOhlc(startIndex: number, endIndex: number) {
+  const candles = displayCandles.value.slice(startIndex, endIndex + 1)
+  if (candles.length === 0) return null
+  let high = -Infinity
+  let low = Infinity
+  for (const c of candles) {
+    if (c.high != null && c.high > high) high = c.high
+    if (c.low != null && c.low < low) low = c.low
+  }
+  const open = candles[0].open
+  const close = candles[candles.length - 1].close
+  if (open == null || close == null || !isFinite(high) || !isFinite(low)) return null
+  return { open, high, low, close }
+}
+
+// Per-bar "scrub back" overrides for backtesting: key is `${tf}-${startIndex}`,
+// value is the candle index the user dragged the right edge back to. Absent
+// key = show the bar's full, naturally-closed span.
+const multiTfBarOverrides = ref<Record<string, number>>({})
+
+const multiTfScrubbedCount = computed(() => Object.keys(multiTfBarOverrides.value).length)
+
+function multiTfBarKey(tf: MultiTfCandleTimeframe, startIndex: number): string {
+  return `${tf}-${startIndex}`
+}
+
+/** Resets a scrubbed bar back to its full, fully-closed span. */
+function resetMultiTfBar(tf: MultiTfCandleTimeframe, startIndex: number) {
+  const key = multiTfBarKey(tf, startIndex)
+  if (key in multiTfBarOverrides.value) {
+    const next = { ...multiTfBarOverrides.value }
+    delete next[key]
+    multiTfBarOverrides.value = next
+  }
+}
+
+/**
+ * Drag the right edge of a multi-TF bar backward to see what that
+ * higher-timeframe candle looked like N base candles earlier — same
+ * edge-resize interaction as the Range Download tool, but clamped so it
+ * can only pull back toward startIndex, never extend past the bar's
+ * natural (fully-closed) endIndex.
+ */
+function startMultiTfBarResize(tf: MultiTfCandleTimeframe, startIndex: number, naturalEndIndex: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const key = multiTfBarKey(tf, startIndex)
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    const raw = clientXToCandleIndex(moveEvent.clientX)
+    if (raw === null) return
+    const snapped = Math.max(startIndex, Math.min(naturalEndIndex, Math.round(raw)))
+    if (snapped >= naturalEndIndex) {
+      resetMultiTfBar(tf, startIndex)
+    } else {
+      multiTfBarOverrides.value = { ...multiTfBarOverrides.value, [key]: snapped }
+    }
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/** Pixel-space render data for every multi-TF bar across all three timeframes. */
+const multiTfCandleRenderBars = computed(() => {
+  const out: Array<{
+    key: string
+    tf: MultiTfCandleTimeframe
+    startIndex: number
+    naturalEndIndex: number
+    effectiveEndIndex: number
+    isPartial: boolean
+    candleCount: number
+    totalCandleCount: number
+    x: number
+    width: number
+    wickX: number
+    wickY1: number
+    wickY2: number
+    bodyY: number
+    bodyHeight: number
+    handleX: number
+    handleTop: number
+    handleBottom: number
+    isBull: boolean
+    color: string
+  }> = []
+
+  MULTI_TF_CANDLE_TIMEFRAMES.forEach(tf => {
+    multiTfCandleBarsByTf.value[tf].forEach(bar => {
+      const key = multiTfBarKey(tf, bar.startIndex)
+      const override = multiTfBarOverrides.value[key]
+      const effectiveEndIndex = override !== undefined
+        ? Math.max(bar.startIndex, Math.min(bar.endIndex, override))
+        : bar.endIndex
+      const ohlc = aggregateBaseCandlesOhlc(bar.startIndex, effectiveEndIndex)
+      if (!ohlc) return
+
+      const x1 = candleX(bar.startIndex) - candleWidth.value / 2
+      const x2 = candleX(effectiveEndIndex) + candleWidth.value / 2
+      const inset = Math.min(3, (x2 - x1) / 6)
+      const isBull = ohlc.close >= ohlc.open
+      const openY = priceToY(ohlc.open)
+      const closeY = priceToY(ohlc.close)
+
+      out.push({
+        key,
+        tf,
+        startIndex: bar.startIndex,
+        naturalEndIndex: bar.endIndex,
+        effectiveEndIndex,
+        isPartial: effectiveEndIndex < bar.endIndex,
+        candleCount: effectiveEndIndex - bar.startIndex + 1,
+        totalCandleCount: bar.endIndex - bar.startIndex + 1,
+        x: x1 + inset,
+        width: Math.max(x2 - x1 - inset * 2, 1),
+        wickX: (x1 + x2) / 2,
+        wickY1: priceToY(ohlc.high),
+        wickY2: priceToY(ohlc.low),
+        bodyY: Math.min(openY, closeY),
+        bodyHeight: Math.max(Math.abs(closeY - openY), 1),
+        handleX: x2,
+        handleTop: priceToY(ohlc.high) - 4,
+        handleBottom: priceToY(ohlc.low) + 4,
+        isBull,
+        color: isBull ? MULTI_TF_CANDLE_COLORS[tf] : MULTI_TF_CANDLE_LIGHT_COLORS[tf],
+      })
+    })
+  })
+  return out
+})
+
+// ─── Multi-TF "lead-in" candles ────────────────────────────────────────────
+// Unlike multiTfCandleRenderBars above (which stretches one higher-TF candle
+// across however many base candles it overlaps — used for the portion of the
+// higher-TF candle that overlaps the currently-loaded base range), these are
+// the higher-TF candles that closed BEFORE the very first loaded base candle.
+// There's no base candle to stretch across, so instead they're drawn as their
+// own single-width bars (same width as a base candle) prepended to the left
+// of the chart, oldest → newest, ending right before base index 0:
+//   [4h][4h][4h][4h][gap][first base candle][base][base]...
+// This gives a quick read on higher-TF structure/levels leading into the
+// currently-visible range without guessing from a stretched wrap-candle.
+// Every fetched higher-TF candle that closes before the first loaded base
+// candle is shown (bounded only by how much history fetchMultiTfCandles
+// pulled back — MULTI_TF_CANDLE_LIMIT candles per timeframe), not a fixed
+// count — so scrolling further back in time naturally reveals more of them.
+const MULTI_TF_PREPEND_LANE_ORDER: MultiTfCandleTimeframe[] = ['1d', '4h', '1h']
+const MULTI_TF_PREPEND_LANE_GAP_SLOTS = 1 // empty slot(s) between adjacent lanes
+
+/** Every higher-TF candle (per active tf) that closes before the first loaded base candle, oldest-first. */
+const multiTfPrependLaneInfo = computed(() => {
+  const base = displayCandles.value
+  const lanes: Array<{ tf: MultiTfCandleTimeframe; points: MultiTfCandlePoint[]; startSlot: number }> = []
+  if (base.length === 0 || base[0].openTime == null) return { lanes, totalSlots: 0 }
+
+  const earliestOpenTime = base[0].openTime!
+  let slotCursor = 0
+  MULTI_TF_PREPEND_LANE_ORDER.forEach(tf => {
+    if (!isMultiTfCandleActive(tf)) return
+    const series = multiTfCandleSeries.value[tf]
+    const points = series.filter(p => p.closeTime <= earliestOpenTime)
+    if (points.length === 0) return
+    lanes.push({ tf, points, startSlot: slotCursor })
+    slotCursor += points.length + MULTI_TF_PREPEND_LANE_GAP_SLOTS
+  })
+
+  const totalSlots = lanes.length > 0 ? slotCursor - MULTI_TF_PREPEND_LANE_GAP_SLOTS : 0
+  return { lanes, totalSlots }
+})
+
+/** Extra slot-widths reserved on the left of the chart (1 trailing gap slot before base index 0, only when there's something to prepend). */
+const multiTfPrependOffsetSlots = computed(() => {
+  const { totalSlots, lanes } = multiTfPrependLaneInfo.value
+  return lanes.length > 0 ? totalSlots + 1 : 0
+})
+
+/** Pixel-space render data for the prepended higher-TF lead-in candles. */
+const multiTfPrependRenderBars = computed(() => {
+  const out: Array<{
+    key: string
+    tf: MultiTfCandleTimeframe
+    x: number
+    width: number
+    wickX: number
+    wickY1: number
+    wickY2: number
+    bodyY: number
+    bodyHeight: number
+    isBull: boolean
+    color: string
+    isFirstOfLane: boolean
+  }> = []
+
+  const offsetSlots = multiTfPrependOffsetSlots.value
+
+  multiTfPrependLaneInfo.value.lanes.forEach(lane => {
+    lane.points.forEach((p, i) => {
+      const slot = lane.startSlot + i
+      const pseudoIndex = slot - offsetSlots // negative — candleX() re-adds the offset internally
+      const isBull = p.close >= p.open
+      const openY = priceToY(p.open)
+      const closeY = priceToY(p.close)
+      const cx = candleX(pseudoIndex)
+
+      out.push({
+        key: `prepend-${lane.tf}-${p.openTime}`,
+        tf: lane.tf,
+        x: cx - candleWidth.value / 2,
+        width: candleWidth.value,
+        wickX: cx,
+        wickY1: priceToY(p.high),
+        wickY2: priceToY(p.low),
+        bodyY: Math.min(openY, closeY),
+        bodyHeight: Math.max(Math.abs(closeY - openY), 1),
+        isBull,
+        color: isBull ? MULTI_TF_CANDLE_COLORS[lane.tf] : MULTI_TF_CANDLE_LIGHT_COLORS[lane.tf],
+        isFirstOfLane: i === 0,
+      })
+    })
+  })
+
+  return out
+})
+
 const volumeSpikePoints = computed(() => {
   const points: string[] = []
   for (let i = 0; i < displayCandles.value.length; i++) {
@@ -6582,6 +7699,7 @@ const PANEL_GAP = 10
 const panelLayout = computed(() => {
   let cursor = svgHeight // bottom edge of the price chart — panels start here
   let volume: { top: number; bottom: number } | null = null
+  let movement: { top: number; bottom: number } | null = null
   let oi: { top: number; bottom: number } | null = null
   let ls: { top: number; bottom: number } | null = null
 
@@ -6589,6 +7707,12 @@ const panelLayout = computed(() => {
     const top = cursor + PANEL_GAP
     const bottom = top + VOLUME_PANEL_HEIGHT
     volume = { top, bottom }
+    cursor = bottom
+  }
+  if (showMovementPanel.value) {
+    const top = cursor + PANEL_GAP
+    const bottom = top + MOVEMENT_PANEL_HEIGHT
+    movement = { top, bottom }
     cursor = bottom
   }
   if (showOiBar.value) {
@@ -6604,7 +7728,7 @@ const panelLayout = computed(() => {
     cursor = bottom
   }
 
-  return { volume, oi, ls, totalHeight: cursor }
+  return { volume, movement, oi, ls, totalHeight: cursor }
 })
 
 /** Full SVG canvas height — price chart height plus whichever indicator panels are currently active. Since the SVG has no viewBox/CSS scaling, 1 unit here is 1 rendered pixel, so growing this is safe and doesn't distort price-chart math (which still keys off the constant `svgHeight`). */
@@ -6644,6 +7768,465 @@ const volumeBars = computed(() => {
     }
   })
 })
+
+// ─── Wallet Movement panel (exchange inflow/outflow) ───────────────────────────
+//
+// Backed by whale_tracker_api.py (Flask), which scans ERC-20 Transfer events
+// touching known exchange hot wallets and classifies each as INFLOW (token ->
+// exchange, possible sell pressure) or OUTFLOW (exchange -> token, possible
+// accumulation). Fetched once per "See Movement" click across the whole
+// visible candle range (via ?start=&end=), then bucketed client-side into
+// one entry per candle by matching each transfer's timestamp against that
+// candle's [openTime, openTime + intervalMs) window — same as-of technique
+// as oiPerCandle below, just bucketed instead of forward-filled since
+// movement is sparse/event-based rather than a continuous series.
+// NOTE: adjust this to wherever your whale_tracker_api.py Flask app is served
+const WALLET_MOVEMENT_API_BASE = 'http://127.0.0.1:5000'
+
+const walletMovements = ref<WalletMovement[]>([])
+const movementLoading = ref(false)
+const movementError = ref<string | null>(null)
+
+interface MovementCacheEntry {
+  movements: WalletMovement[]
+  startMs: number
+  endMs: number
+  cachedAt: number
+}
+
+// Cache of the last successful movement fetch per symbol+interval, persisted
+// to localStorage so switching back to a pair/timeframe you've already
+// pulled movement for — or just reloading the page — shows it immediately
+// instead of making you press "See Movement" again.
+const MOVEMENT_CACHE_STORAGE_KEY = 'candleVisualizer.movementCache.v1'
+const MOVEMENT_CACHE_MAX_ENTRIES = 20 // oldest entries (by cachedAt) get evicted past this
+
+function loadMovementCacheFromStorage(): Record<string, MovementCacheEntry> {
+  try {
+    const raw = localStorage.getItem(MOVEMENT_CACHE_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {} // corrupt entry, storage disabled (private browsing), etc. — start fresh
+  }
+}
+
+const movementCache = ref<Record<string, MovementCacheEntry>>(loadMovementCacheFromStorage())
+
+/** Writes the current cache to localStorage, trimming to the most-recently-cached entries so it can't grow unbounded. */
+function persistMovementCache() {
+  const entries = Object.entries(movementCache.value)
+  const trimmedEntries = entries
+    .sort((a, b) => b[1].cachedAt - a[1].cachedAt)
+    .slice(0, MOVEMENT_CACHE_MAX_ENTRIES)
+  const trimmed = Object.fromEntries(trimmedEntries)
+  if (trimmedEntries.length < entries.length) movementCache.value = trimmed
+  try {
+    localStorage.setItem(MOVEMENT_CACHE_STORAGE_KEY, JSON.stringify(trimmed))
+  } catch (err) {
+    // Quota exceeded or storage unavailable — the in-memory cache still
+    // works for the rest of this session, it just won't survive a reload.
+    console.warn('[movement cache] failed to persist to localStorage', err)
+  }
+}
+
+function movementCacheKey(symbol: string, interval: string): string {
+  return `${symbol.toUpperCase()}|${interval}`
+}
+
+async function fetchWalletMovement(options: { silent?: boolean } = {}) {
+  if (!props.symbol || displayCandles.value.length === 0) return
+  if (!options.silent) showMovementPanel.value = true
+  movementLoading.value = true
+  movementError.value = null
+  try {
+    const first = displayCandles.value[0]
+    const last = displayCandles.value[displayCandles.value.length - 1]
+    if (first.openTime == null || last.openTime == null) throw new Error('candles are missing openTime')
+
+    // The last displayed candle may still be live/in-progress, in which case
+    // openTime + intervalMs (its scheduled close) is a timestamp in the
+    // future. Etherscan's getblocknobytime can't resolve a block for a time
+    // that hasn't happened yet ("Block timestamp too far in the future"), so
+    // clamp end to "now" — never send a future end timestamp.
+    const rawEndMs = last.openTime + intervalToMs(props.interval)
+    const endMs = Math.min(rawEndMs, Date.now())
+
+    const startIso = new Date(first.openTime).toISOString()
+    const endIso = new Date(endMs).toISOString()
+    const url = `${WALLET_MOVEMENT_API_BASE}/api/movement?symbol=${encodeURIComponent(props.symbol.toUpperCase())}&start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`
+
+    const res = await fetch(url)
+    const body = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(body?.error || `request failed (${res.status})`)
+
+    walletMovements.value = Array.isArray(body) ? body : []
+    movementCache.value = {
+      ...movementCache.value,
+      [movementCacheKey(props.symbol, props.interval)]: {
+        movements: walletMovements.value,
+        startMs: first.openTime,
+        endMs,
+        cachedAt: Date.now(),
+      },
+    }
+    persistMovementCache()
+  } catch (err) {
+    // A background (silent) refresh failing shouldn't blank out or flag an
+    // error over movement data that's already on screen from cache — just
+    // leave the cached bars as-is and try again next time. Only surface the
+    // error when the user actually asked for a fresh load.
+    if (!options.silent) {
+      movementError.value = err instanceof Error ? err.message : 'failed to load wallet movement'
+      walletMovements.value = []
+    }
+  } finally {
+    movementLoading.value = false
+  }
+}
+
+/**
+ * Shows cached wallet movement for the current symbol+interval immediately
+ * (no network wait, no button press) if we have any — including across page
+ * reloads, since the cache is persisted to localStorage — then quietly
+ * refetches in the background to fill in anything that's happened since it
+ * was cached. No-op (leaves the panel exactly as it is) when there's nothing
+ * cached yet.
+ */
+function tryShowCachedMovement() {
+  if (!props.symbol) return
+  const cached = movementCache.value[movementCacheKey(props.symbol, props.interval)]
+  if (!cached) return
+  walletMovements.value = cached.movements
+  movementError.value = null
+  showMovementPanel.value = true
+  fetchWalletMovement({ silent: true })
+}
+
+interface MovementBucket {
+  inflow: number
+  outflow: number
+  records: WalletMovement[]
+}
+
+/** One bucket per displayed candle — sums inflow/outflow and keeps the raw records for the detail dialog. */
+const movementPerCandle = computed<MovementBucket[]>(() => {
+  const buckets: MovementBucket[] = displayCandles.value.map(() => ({ inflow: 0, outflow: 0, records: [] }))
+  if (walletMovements.value.length === 0) return buckets
+
+  const intervalMs = intervalToMs(props.interval)
+  for (const mv of walletMovements.value) {
+    const ts = new Date(mv.timestamp).getTime()
+    if (isNaN(ts)) continue
+
+    for (let i = displayCandles.value.length - 1; i >= 0; i--) {
+      const c = displayCandles.value[i]
+      if (c.openTime == null) continue
+      if (ts >= c.openTime && ts < c.openTime + intervalMs) {
+        const bucket = buckets[i]
+        if (mv.type === 'INFLOW') bucket.inflow += mv.amount
+        else bucket.outflow += mv.amount
+        bucket.records.push(mv)
+        break
+      }
+    }
+  }
+  return buckets
+})
+
+/** Highest single-candle (inflow + outflow) total currently in view — used to scale bar heights. */
+const maxMovementInView = computed(() => {
+  let max = 0
+  for (const b of movementPerCandle.value) {
+    const total = b.inflow + b.outflow
+    if (total > max) max = total
+  }
+  return max
+})
+
+const MOVEMENT_PANEL_HEIGHT = 90
+const MOVEMENT_PANEL_MAX_RATIO = 0.9
+const movementPanelUsableHeight = MOVEMENT_PANEL_HEIGHT * MOVEMENT_PANEL_MAX_RATIO
+
+/**
+ * One stacked bar per candle, anchored to the bottom of its own panel like
+ * volumeBars — total height scaled by (inflow + outflow) vs the max in view,
+ * split into a green inflow segment (top) and a red outflow segment
+ * (bottom, picking up exactly where inflow left off).
+ */
+const movementBars = computed(() => {
+  if (maxMovementInView.value <= 0 || !panelLayout.value.movement) return []
+  const panelBottom = panelLayout.value.movement.bottom
+
+  return movementPerCandle.value.map((bucket, i) => {
+    const total = bucket.inflow + bucket.outflow
+    const x = candleX(i) - candleWidth.value / 2
+    const width = candleWidth.value
+
+    if (total <= 0) {
+      return { index: i, x, width, inflowY: panelBottom, inflowHeight: 0, outflowY: panelBottom, outflowHeight: 0 }
+    }
+
+    const totalHeight = (total / maxMovementInView.value) * movementPanelUsableHeight
+    const inflowHeight = (bucket.inflow / total) * totalHeight
+    const outflowHeight = totalHeight - inflowHeight
+
+    return {
+      index: i,
+      x,
+      width,
+      inflowY: panelBottom - totalHeight,
+      inflowHeight,
+      outflowY: panelBottom - totalHeight + inflowHeight,
+      outflowHeight,
+    }
+  })
+})
+
+/** Opens the movement detail dialog for a given candle index, if it actually has any recorded movement. */
+function openMovementDetail(index: number) {
+  const bucket = movementPerCandle.value[index]
+  if (!bucket || bucket.records.length === 0) return
+  selectedMovementCandleIndex.value = index
+  showMovementDetail.value = true
+}
+
+const selectedMovementBucket = computed<MovementBucket | null>(() =>
+  selectedMovementCandleIndex.value !== null ? movementPerCandle.value[selectedMovementCandleIndex.value] : null
+)
+const selectedMovementCandle = computed<CandleEntry | null>(() =>
+  selectedMovementCandleIndex.value !== null ? displayCandles.value[selectedMovementCandleIndex.value] : null
+)
+
+// Symbol/interval changed: show cached movement for the new pair/timeframe
+// immediately if we have it (refreshing quietly in the background); if we
+// don't have it cached but the panel was already open, fall back to a
+// normal fresh fetch so it doesn't just sit there showing the old pair's data.
+watch(() => [props.symbol, props.interval], () => {
+  const hadCache = movementCache.value[movementCacheKey(props.symbol, props.interval)] !== undefined
+  if (hadCache) {
+    tryShowCachedMovement()
+  } else if (showMovementPanel.value) {
+    fetchWalletMovement()
+  }
+})
+
+// ─── Summarize Movement tool ────────────────────────────────────────────────
+//
+// Same click-drag box mechanic as Range Download/Range Investigate, kept as
+// its own independent tool/state. Instead of exporting or running the
+// driver-classification engine, the box's "📊 Summarize" button just totals
+// movementPerCandle's inflow/outflow across the selected span and opens a
+// dialog with the totals plus a per-candle horizontal bar chart — no
+// network fetch, since it's built entirely from wallet movement data
+// already loaded via "See Movement" / fetchWalletMovement.
+interface SummarizeBox {
+  id: number
+  startIndex: number
+  endIndex: number
+}
+
+const summarizeModeActive = ref(false)
+const summarizeBoxes = ref<SummarizeBox[]>([])
+let summarizeIdCounter = 0
+
+const summarizeDragging = ref(false)
+const summarizeStartIndex = ref<number | null>(null)
+const summarizeEndIndex = ref<number | null>(null)
+
+function toggleSummarizeMode() {
+  summarizeModeActive.value = !summarizeModeActive.value
+}
+
+function removeSummarizeBox(id: number) {
+  summarizeBoxes.value = summarizeBoxes.value.filter(b => b.id !== id)
+  if (currentSummarizeBoxId.value === id) currentSummarizeBoxId.value = null
+}
+
+function findSummarizeBox(id: number): SummarizeBox | undefined {
+  return summarizeBoxes.value.find(b => b.id === id)
+}
+
+/** Drag the left edge of a placed summarize box to adjust startIndex, same as the Range Download/Investigate edge handles. */
+function startSummarizeResizeLeft(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const box = findSummarizeBox(id)
+  if (!box) return
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    const raw = clientXToCandleIndex(moveEvent.clientX)
+    if (raw === null) return
+    const snapped = Math.round(raw)
+    box.startIndex = Math.max(0, Math.min(snapped, box.endIndex - 1))
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/** Drag the right edge of a placed summarize box to adjust endIndex. */
+function startSummarizeResizeRight(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const box = findSummarizeBox(id)
+  if (!box) return
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    const raw = clientXToCandleIndex(moveEvent.clientX)
+    if (raw === null) return
+    const snapped = Math.max(0, Math.min(displayCandles.value.length - 1, Math.round(raw)))
+    box.endIndex = Math.max(box.startIndex + 1, snapped)
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/** Pixel geometry for a summarize box — identical framing to computeRangeDownloadBoxGeometry (high↔low of every candle in the span). */
+function computeSummarizeBoxGeometry(startIndex: number, endIndex: number) {
+  const candles = displayCandles.value.slice(startIndex, endIndex + 1)
+  if (candles.length === 0) return null
+
+  let rangeLow = Infinity
+  let rangeHigh = -Infinity
+  for (const c of candles) {
+    if (c.low == null || c.high == null) continue
+    if (c.low < rangeLow) rangeLow = c.low
+    if (c.high > rangeHigh) rangeHigh = c.high
+  }
+  if (!isFinite(rangeLow) || !isFinite(rangeHigh) || rangeHigh <= rangeLow) return null
+
+  return {
+    leftX: candleX(startIndex) - candleWidth.value / 2,
+    rightX: candleX(endIndex) + candleWidth.value / 2,
+    rangeTop: priceToY(rangeHigh),
+    rangeBottom: priceToY(rangeLow),
+  }
+}
+
+/** All finalized (click-drag-completed) summarize boxes, recomputed reactively as price scale/zoom changes. */
+const renderedSummarizeBoxes = computed(() => {
+  return summarizeBoxes.value
+    .map(b => {
+      const geo = computeSummarizeBoxGeometry(b.startIndex, b.endIndex)
+      return geo ? { ...geo, id: b.id, startIndex: b.startIndex, endIndex: b.endIndex } : null
+    })
+    .filter((b): b is NonNullable<typeof b> => b !== null)
+})
+
+/** Live preview of the box while the user is still dragging. */
+const draggingSummarizePreview = computed(() => {
+  if (!summarizeDragging.value || summarizeStartIndex.value === null || summarizeEndIndex.value === null) return null
+  const s = Math.min(summarizeStartIndex.value, summarizeEndIndex.value)
+  const e = Math.max(summarizeStartIndex.value, summarizeEndIndex.value)
+  if (e <= s) return null
+  return computeSummarizeBoxGeometry(s, e)
+})
+
+function handleCandleMouseDownForSummarize(index: number, event: MouseEvent) {
+  if (!summarizeModeActive.value) return
+  event.preventDefault()
+  event.stopPropagation()
+
+  summarizeDragging.value = true
+  summarizeStartIndex.value = index
+  summarizeEndIndex.value = index
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    if (!summarizeDragging.value || !chartContainer.value) return
+    const rect = chartContainer.value.querySelector('svg')?.getBoundingClientRect()
+    if (!rect) return
+    const x = moveEvent.clientX - rect.left
+    const rawIndex = Math.round((x - 10 - candleWidth.value / 2) / (candleWidth.value + candleGap))
+    summarizeEndIndex.value = Math.max(0, Math.min(displayCandles.value.length - 1, rawIndex))
+  }
+
+  const handleUp = () => {
+    if (summarizeStartIndex.value !== null && summarizeEndIndex.value !== null) {
+      const s = Math.min(summarizeStartIndex.value, summarizeEndIndex.value)
+      const e = Math.max(summarizeStartIndex.value, summarizeEndIndex.value)
+      if (e > s) {
+        summarizeBoxes.value.push({ id: ++summarizeIdCounter, startIndex: s, endIndex: e })
+      }
+    }
+    summarizeDragging.value = false
+    summarizeStartIndex.value = null
+    summarizeEndIndex.value = null
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+// Which box's summary is currently shown in the dialog.
+const showMovementSummary = ref(false)
+const currentSummarizeBoxId = ref<number | null>(null)
+const currentSummarizeBox = computed(() => {
+  if (currentSummarizeBoxId.value === null) return null
+  return findSummarizeBox(currentSummarizeBoxId.value) ?? null
+})
+
+interface MovementSummaryResult {
+  symbol: string
+  interval: string
+  candleCount: number
+  rangeStartTimeIso: string
+  rangeEndTimeIso: string
+  totalInflow: number
+  totalOutflow: number
+  net: number
+  maxTotal: number
+}
+
+/** Totals inflow/outflow across the box's candle span from movementPerCandle (already loaded, no fetch) — just the range totals, no per-candle breakdown. */
+const movementSummaryResult = computed<MovementSummaryResult | null>(() => {
+  const box = currentSummarizeBox.value
+  if (!box) return null
+
+  const buckets = movementPerCandle.value.slice(box.startIndex, box.endIndex + 1)
+  const candles = displayCandles.value.slice(box.startIndex, box.endIndex + 1)
+  if (buckets.length === 0) return null
+
+  let totalInflow = 0
+  let totalOutflow = 0
+  for (const bucket of buckets) {
+    totalInflow += bucket.inflow
+    totalOutflow += bucket.outflow
+  }
+
+  const first = candles[0]
+  const last = candles[candles.length - 1]
+  const rangeStartTimeIso = first?.openTime != null ? new Date(first.openTime).toISOString() : ''
+  const rangeEndTimeIso = last?.openTime != null ? new Date(last.openTime + intervalToMs(props.interval)).toISOString() : ''
+
+  return {
+    symbol: props.symbol.toUpperCase(),
+    interval: props.interval,
+    candleCount: buckets.length,
+    rangeStartTimeIso,
+    rangeEndTimeIso,
+    totalInflow,
+    totalOutflow,
+    net: totalInflow - totalOutflow,
+    maxTotal: Math.max(totalInflow, totalOutflow),
+  }
+})
+
+/** Opens the summary dialog for a given box — no fetch, just totals movementPerCandle over the selected span. */
+function summarizeMovementRange(id: number) {
+  currentSummarizeBoxId.value = id
+  showMovementSummary.value = true
+}
 
 // ─── Open Interest bar panel ────────────────────────────────────────────────
 //
@@ -6941,7 +8524,12 @@ const yToPrice = (y: number): number => {
 }
 
 const candleX = (index: number): number => {
-  return index * (candleWidth.value + candleGap) + candleWidth.value / 2 + 10
+  // multiTfPrependOffsetSlots shifts every index right by however many slots
+  // are reserved for prepended higher-TF lead-in candles (0 when none are
+  // active/available) — see the "Multi-TF lead-in candles" section. Passing
+  // a negative index (used only by multiTfPrependRenderBars) lands inside
+  // that reserved region instead of overlapping base index 0.
+  return (index + multiTfPrependOffsetSlots.value) * (candleWidth.value + candleGap) + candleWidth.value / 2 + 10
 }
 
 /**
@@ -7114,6 +8702,44 @@ const formatValue = (value: any): string => {
   background: rgba(100,149,237,0.25);
   border-color: #6495ed;
   color: #a9c2f7;
+}
+
+/* Simple click-toggled dropdown (e.g. "Fill PZ AVWAP ▾") — wrapper is
+   inline-block + relative so the menu can anchor directly under its button. */
+.tool-dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.tool-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 140px;
+  background: #1e1e1e;
+  border: 1px solid #444;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  overflow: hidden;
+}
+
+.tool-dropdown-item {
+  padding: 7px 12px;
+  border: none;
+  background: transparent;
+  color: #ccc;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tool-dropdown-item:hover {
+  background: rgba(255,255,255,0.1);
+  color: #fff;
 }
 
 /* ── Preview controls ──────────────────────────────────────────────────── */
@@ -7525,6 +9151,57 @@ const formatValue = (value: any): string => {
   font-family: monospace;
 }
 
+/* ── Summarize Movement tool ─────────────────────────────────────────────── */
+.candle.summarize-target {
+  cursor: crosshair;
+}
+
+.summarize-boxes { pointer-events: none; }
+
+.summarize-rect {
+  fill: rgba(45,212,191,0.06);
+  stroke: rgba(45,212,191,0.55);
+  stroke-width: 1;
+  stroke-dasharray: 4,3;
+}
+
+.summarize-rect-preview {
+  fill: rgba(45,212,191,0.12);
+  stroke: rgba(45,212,191,0.75);
+}
+
+.summarize-edge-handle {
+  stroke: transparent;
+  stroke-width: 10;
+  cursor: ew-resize;
+  pointer-events: stroke;
+}
+
+.summarize-label {
+  fill: rgba(255,255,255,0.6);
+  font-size: 10px;
+  font-family: monospace;
+}
+
+.summarize-close-btn {
+  fill: rgba(255,255,255,0.4);
+  font-size: 10px;
+  font-family: monospace;
+  cursor: pointer;
+  pointer-events: all;
+}
+.summarize-close-btn:hover { fill: #ef5350; }
+
+.summarize-btn {
+  fill: #2dd4bf;
+  font-size: 11px;
+  font-weight: bold;
+  font-family: monospace;
+  cursor: pointer;
+  pointer-events: all;
+}
+.summarize-btn:hover { fill: #5eead4; }
+
 .volume-profiles { pointer-events: none; }
 
 .vp-range-rect {
@@ -7595,6 +9272,16 @@ const formatValue = (value: any): string => {
 .vp-bias-long { fill: #26a69a; }
 .vp-bias-short { fill: #ef5350; }
 .vp-bias-neutral { fill: rgba(255,255,255,0.45); }
+
+.vp-stats-label {
+  font-size: 10px;
+  font-family: monospace;
+  font-weight: 600;
+}
+
+.vp-stats-buy { fill: #26a69a; }
+.vp-stats-sell { fill: #ef5350; }
+.vp-stats-sep { fill: rgba(255,255,255,0.4); }
 
 /* ── FRVP confluence analysis modal ──────────────────────────────────────
    NOTE: DialogComponent renders on a white background, so all text/border
@@ -7947,6 +9634,11 @@ const formatValue = (value: any): string => {
 
 .investigate-driver-unclear { border-color: rgba(0,0,0,0.2); }
 .investigate-driver-unclear .investigate-driver-label { color: rgba(0,0,0,0.55); }
+
+.investigate-flow-confirms { color: #1e8e7f; font-weight: 600; }
+.investigate-flow-absorption { color: #1e8e7f; font-weight: 600; }
+.investigate-flow-contradicts { color: #d6392f; font-weight: 600; }
+.investigate-flow-neutral { color: rgba(0,0,0,0.55); }
 
 .investigate-prediction-card {
   display: flex;
@@ -8422,6 +10114,63 @@ const formatValue = (value: any): string => {
 
 .oi-bars { pointer-events: none; }
 .oi-bar { fill: #ffd60a; opacity: 0.45; }
+
+.movement-bars { pointer-events: none; }
+.movement-bar { cursor: pointer; pointer-events: all; opacity: 0.85; }
+.movement-bar:hover { opacity: 1; }
+.movement-bar-inflow { fill: #26a69a; }
+.movement-bar-outflow { fill: #ef5350; }
+.movement-panel-label { fill: rgba(255,255,255,0.5); font-size: 10px; font-family: monospace; pointer-events: none; }
+.movement-panel-label-error { fill: #ef5350; }
+
+.movement-detail-body { color: #fff; }
+.movement-detail-meta { display: flex; gap: 1rem; font-size: 12px; color: #999; margin-bottom: 1rem; flex-wrap: wrap; }
+.movement-detail-summary { display: flex; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.movement-detail-summary-item { font-size: 13px; font-weight: 600; padding: 6px 10px; border-radius: 4px; background: #1a1a1a; border: 1px solid #333; color: #ddd; }
+.movement-inflow-total { color: #26a69a; border-color: #26a69a; }
+.movement-outflow-total { color: #ef5350; border-color: #ef5350; }
+.movement-detail-list { display: flex; flex-direction: column; gap: 6px; }
+.movement-detail-row { display: flex; align-items: center; gap: 10px; font-size: 12px; font-family: monospace; padding: 6px 8px; border-radius: 4px; background: #1a1a1a; border-left: 2px solid #333; flex-wrap: wrap; }
+.movement-row-inflow { border-left-color: #26a69a; }
+.movement-row-outflow { border-left-color: #ef5350; }
+.movement-detail-amount { color: #fff; font-weight: 600; min-width: 130px; }
+.movement-detail-addr { color: #999; }
+.movement-detail-time { color: #666; margin-left: auto; }
+.movement-detail-tx { color: #64b5f6; text-decoration: none; }
+.movement-detail-tx:hover { text-decoration: underline; }
+.movement-detail-empty { color: #999; font-size: 13px; padding: 1rem 0; text-align: center; }
+
+/* ── Summarize Movement dialog ───────────────────────────────────────────── */
+.movement-summary-body { color: #fff; }
+.range-meta-row { display: flex; gap: 1rem; font-size: 12px; color: #999; margin-bottom: 1rem; flex-wrap: wrap; font-family: monospace; }
+.movement-summary-totals { margin-bottom: 1rem; }
+
+.movement-summary-chart { display: flex; flex-direction: column; gap: 10px; }
+
+.movement-summary-bar-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 90px;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-family: monospace;
+}
+
+.movement-summary-bar-label { color: #999; }
+
+.movement-summary-bar-track {
+  height: 10px;
+  border-radius: 3px;
+  background: #1a1a1a;
+  overflow: hidden;
+}
+
+.movement-summary-bar-fill { height: 100%; }
+.movement-summary-bar-inflow { background: #26a69a; }
+.movement-summary-bar-outflow { background: #ef5350; }
+
+.movement-summary-bar-value { color: #ddd; font-weight: 600; text-align: right; }
+
 .oi-panel-label { fill: rgba(255, 214, 10, 0.55); font-size: 10px; font-family: monospace; pointer-events: none; }
 .oi-panel-label-error { fill: #ff8a80; }
 
@@ -8634,6 +10383,45 @@ const formatValue = (value: any): string => {
 
 .cross-tf-ema-line { opacity: 0.85; pointer-events: none; }
 .cross-tf-ema-label { font-size: 10px; font-family: monospace; font-weight: 600; pointer-events: none; }
+
+.multi-tf-candles { }
+.multi-tf-candle { opacity: 0.4; }
+.multi-tf-candle.bull { opacity: 0.5; }
+.multi-tf-candle.bear { opacity: 0.32; }
+.multi-tf-candle.partial { opacity: 0.65; }
+.multi-tf-wick { stroke-width: 1; pointer-events: none; }
+.multi-tf-body { stroke-width: 1; pointer-events: none; }
+.multi-tf-body-partial { stroke-dasharray: 3,2; }
+
+/* Invisible fat hit-area on the right edge — drag to scrub the bar's OHLC
+   back to an earlier point in its span, double-click to reset. */
+.multi-tf-edge-handle {
+  stroke: transparent;
+  stroke-width: 10;
+  cursor: ew-resize;
+  pointer-events: stroke;
+}
+
+.multi-tf-partial-label {
+  font-size: 9px;
+  font-family: monospace;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+/* Prepended lead-in candles — full opacity, same visual weight as a base
+   candle so they read as real (if coarser) price action, not a faded overlay. */
+.multi-tf-prepend-candles { }
+.multi-tf-prepend-candle { opacity: 0.9; }
+.multi-tf-prepend-wick { stroke-width: 1; pointer-events: none; }
+.multi-tf-prepend-body { stroke-width: 1; pointer-events: none; }
+.multi-tf-prepend-label {
+  font-size: 9px;
+  font-family: monospace;
+  font-weight: 600;
+  pointer-events: none;
+  text-anchor: start;
+}
 
 .grid-line { stroke: rgba(255,255,255,0.05); stroke-width: 1; }
 

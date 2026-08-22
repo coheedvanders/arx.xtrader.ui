@@ -5,8 +5,7 @@
     <SymbolSocketComponent 
         :symbol="MASTER_SYMBOL" 
         :interval="KLINE_INTERVAL" 
-        
-        @on-pre-close="onNewCandle"/>
+        @on-new-candle="onNewCandle"/>
 
     <div v-if="UI_STATE_INITIALIZING_FUTURE_SYMBOLS" class="text-center">
         {{ UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE }}
@@ -43,10 +42,10 @@
         <ButtonComponent @click="runDownloadConfluenceDates" rounded class="ml-sm">extract conf</ButtonComponent>
         
         <!-- <InputComponent type="numeric" v-model="chocoMintoStore.startingTimeStamp" /> -->
-        <!-- <div>{{ (new Date(botStartOn)).toLocaleString() }}</div>
+        <!-- <div>{{ (new Date(botStartOn)).toLocaleString() }}</div>-->
         <div>{{ (new Date(chocoMintoStore.startingTimeStamp)).toLocaleString() }}</div>
         <div>{{ (new Date(chocoMintoStore.endingTimeStamp)).toLocaleString() }}</div>
-        <div>{{ simulationStartTime }}</div> -->
+        <div>{{ simulationStartTime }}</div> 
 
         <!-- <div class="divider"></div>
         <div v-if="UI_SYMBOL_OF_INTEREST_MESAGE">{{ UI_SYMBOL_OF_INTEREST_MESAGE }}</div>
@@ -134,7 +133,7 @@
         <CandleEntryHistoryComponent :candle-entries="selectedSymbolCandleEntries"/>
     </DialogComponent>
 
-    <!-- <TableComponent>
+    <TableComponent>
         <template #header>
             <TableHeaderComponent>
                 <th>Start</th>
@@ -172,7 +171,7 @@
                 </tr>
             </TableBodyComponent>
         </template>
-    </TableComponent> -->
+    </TableComponent>
 
 </template>
 
@@ -209,6 +208,7 @@ import TableComponent from '../shared/table/TableComponent.vue';
 import type { forEach } from 'jszip'
 import TrendRiderComponent from './TrendRiderComponent.vue';
 import ConditionMetComponent from './ConditionMetComponent.vue';
+import { WalletSnifferUtility } from '@/utility/WalletSnifferUtility.ts';
 
 const chocoMintoStore = useChocoMintoStore();
 const notificationStore = useNotificationStore();
@@ -222,7 +222,7 @@ const SUPPORT_AND_RESISTANCE_PERIOD_LENGTH = 10;
 
 const MARGIN = 1.5;
 const TP_ROI = 3;
-const SL_ROI = 2.5;
+const SL_ROI = 3;
 const STARTING_BALANCE = 300;
 const MAX_OPEN_POSITIONS = 20;
 const TARGET_GAIN = 10;
@@ -249,7 +249,7 @@ const selectedSymbolCandleEntries = ref<CandleEntry[]>([])
 const selectedSymbol = ref("")
 
 const simulationReport = ref<SimulationReport[]>([])
-const simulationStartTime = ref("");
+const simulationStartTime = ref("1/1/2026");
 const simulationRunningBalance = ref(300)
 
 const completionCount = ref(0);
@@ -345,12 +345,19 @@ async function initializeFutureSymbols(){
         UI_STATE_INITIALIZING_FUTURE_SYMBOLS.value = true;
 
         var futureSymbols = await OrderMakerUtility.getFuturesSymbols(); 
+        var tokenMaps = await WalletSnifferUtility.getTokenMap();
+
         for (let i = 0; i <= futureSymbols.length - 1; i++) {
             var symbol = futureSymbols[i];
             UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE.value = `Processing: ${i + 1} / ${futureSymbols.length} [${symbol}]`;
 
             var maxLeverage = (await OrderMakerUtility.getMaxLeverage(symbol));
             if(maxLeverage >= 50){
+                var tokenMap = tokenMaps[symbol];
+
+                
+                if(!tokenMap || (tokenMap && tokenMap.chain != "ethereum")) continue;
+
                 chocoMintoStore.futureSymbols.push({
                     symbol,
                     maxLeverage,
@@ -385,7 +392,8 @@ async function initializeFutureSymbols(){
                     tpPrice: 0,
                     slPrice: 0,
                     hasRecentPosition: false,
-                    recentPositionSide: ""
+                    recentPositionSide: "",
+                    networkChain: tokenMap.chain
                 })
             }
         }
@@ -444,7 +452,7 @@ function symbolBasket_OnCompleted(){
     console.log("completionCount",completionCount.value);
     if(completionCount.value >= 4){
         notificationStore.showNotification("success","top-right","Scan Complete","The market scan has been completed.");
-        conditionMetRef.value.shoutAvCrosses();
+        //conditionMetRef.value.shoutAvCrosses();
 
         completionCount.value = 0;
     }

@@ -39,6 +39,10 @@ export interface RangeInvestigateCandleInput {
   ema200: number | null
   openInterest: number | null
   longShortRatio: { longAccount: number; shortAccount: number } | null
+  /** Exchange wallet inflow notional bucketed to this candle (token -> exchange, potential supply increasing). 0 if none recorded. */
+  inflow: number
+  /** Exchange wallet outflow notional bucketed to this candle (exchange -> token, potential supply decreasing). 0 if none recorded. */
+  outflow: number
 }
 
 /** One Binance aggTrade, already narrowed to the range's time window. */
@@ -73,6 +77,10 @@ export interface RangeInvestigateInput {
   fundingRate: number | null
   /** aggTrades inside the range's exact time span, already fetched by the caller. */
   largeTrades: LargeTradeInput[]
+  /** Average per-candle exchange inflow over the lookback window BEFORE the range started. Null if wallet movement data isn't loaded. */
+  baselineAvgInflow: number | null
+  /** Average per-candle exchange outflow over the lookback window BEFORE the range started. Null if wallet movement data isn't loaded. */
+  baselineAvgOutflow: number | null
   /** Active preview position, if any — used only to flag alignment, same convention as rangeAnalyze. */
   previewPosition?: RangeInvestigatePreviewPosition | null
 }
@@ -87,6 +95,22 @@ export type DominantDriver =
   | 'UNCLEAR'
 
 export type PredictionVerdict = 'CONTINUATION' | 'PULLBACK' | 'REVERSAL' | 'UNCLEAR'
+
+/** Whether exchange inflow or outflow spiked meaningfully above its recent baseline during the range. Not itself a buy/sell signal — see FlowConfluence. */
+export type FlowSpike = 'INFLOW_SPIKE' | 'OUTFLOW_SPIKE' | 'NONE'
+
+/**
+ * How the flow spike (if any) relates to the read already built from price + volume + OI.
+ * This is a confluence layer, not an independent signal:
+ *   CONFIRMS    — flow lines up with and strengthens the price/volume/OI read.
+ *   CONTRADICTS — flow runs against the price/volume/OI read (price still wins; this only
+ *                 flags reduced confidence / reversal risk, it never flips the direction).
+ *   ABSORPTION  — price is rising into an inflow spike (more potential supply) without
+ *                 breaking, i.e. buyers appear to be absorbing the extra supply. Bullish,
+ *                 but distinct from a clean CONFIRMS since supply pressure is elevated.
+ *   NEUTRAL     — no spike, or a spike that doesn't clearly align either way.
+ */
+export type FlowConfluence = 'CONFIRMS' | 'CONTRADICTS' | 'ABSORPTION' | 'NEUTRAL'
 
 export interface RangeInvestigateMetrics {
   direction: 'up' | 'down' | 'flat'
@@ -111,6 +135,14 @@ export interface RangeInvestigateMetrics {
   largestTradeShareOfVolume: number | null
   closePositionInRange: number | null // 0 = at range low, 1 = at range high
   distanceFromEma200Percent: number | null
+  totalInflow: number
+  totalOutflow: number
+  netFlow: number // totalInflow - totalOutflow; positive = net supply moving toward exchanges
+  inflowVsBaselineRatio: number | null
+  outflowVsBaselineRatio: number | null
+  flowSpike: FlowSpike
+  /** How the flow spike (if any) relates to the price/volume/OI read above — see FlowConfluence. */
+  flowConfluence: FlowConfluence
 }
 
 export interface RangeInvestigatePrediction {
@@ -155,6 +187,9 @@ function pct(from: number, to: number): number {
   if (from === 0) return 0
   return ((to - from) / from) * 100
 }
+
+/** How many multiples of the pre-range baseline an inflow/outflow total needs to hit before it counts as a "spike" (e.g. baseline ~1.2M -> range ~8M is a ~6.7x spike; 2.5x is the floor treated as meaningful). */
+const FLOW_SPIKE_RATIO = 2.5
 
 /** Normalize three raw scores into percentages that sum to 100. */
 function normalizeToPercent(a: number, b: number, c: number): [number, number, number] {
@@ -226,6 +261,62 @@ export function investigateRange(input: RangeInvestigateInput): RangeInvestigate
   const closePositionInRange = rangeHigh > rangeLow ? clamp((last.close - rangeLow) / (rangeHigh - rangeLow), 0, 1) : null
   const distanceFromEma200Percent = last.ema200 ? pct(last.ema200, last.close) : null
 
+  // ── Exchange inflow/outflow — supply-side confluence, NOT an independent signal ────────
+  // Inflow = potential exchange supply increasing. Outflow = potential exchange supply
+  // decreasing. This never overrides the price/volume/OI read above; it only strengthens,
+  // weakens, or flags a conflict against it (see FlowConfluence).
+  const totalInflow = candles.reduce((s, c) => s + (c.inflow ?? 0), 0)
+  const totalOutflow = candles.reduce((s, c) => s + (c.outflow ?? 0), 0)
+  const netFlow = totalInflow - totalOutflow
+  const avgInflowPerCandle = totalInflow / candles.length
+  const avgOutflowPerCandle = totalOutflow / candles.length
+  const inflowVsBaselineRatio =
+    input.baselineAvgInflow && input.baselineAvgInflow > 0 ? avgInflowPerCandle / input.baselineAvgInflow : null
+  const outflowVsBaselineRatio =
+    input.baselineAvgOutflow && input.baselineAvgOutflow > 0 ? avgOutflowPerCandle / input.baselineAvgOutflow : null
+
+  const isInflowSpike = totalInflow > 0 && inflowVsBaselineRatio != null && inflowVsBaselineRatio >= FLOW_SPIKE_RATIO
+  const isOutflowSpike = totalOutflow > 0 && outflowVsBaselineRatio != null && outflowVsBaselineRatio >= FLOW_SPIKE_RATIO
+
+  let flowSpike: FlowSpike = 'NONE'
+  if (isInflowSpike && isOutflowSpike) {
+    // Both spiked vs baseline (rare) — go with whichever side actually dominates this range.
+    flowSpike = totalInflow >= totalOutflow ? 'INFLOW_SPIKE' : 'OUTFLOW_SPIKE'
+  } else if (isInflowSpike) {
+    flowSpike = 'INFLOW_SPIKE'
+  } else if (isOutflowSpike) {
+    flowSpike = 'OUTFLOW_SPIKE'
+  }
+
+  // Read volume/OI the same "up/down/neutral" way the driver scoring below does, so the
+  // flow layer is judged against the same bar as everything else instead of its own scale.
+  // (volumeVsBaselineRatio, not the `volRatio` alias — that's declared later in the driver-scoring block.)
+  const volForFlowRead = volumeVsBaselineRatio ?? 1
+  const volumeParticipation: 'up' | 'down' | 'neutral' = volForFlowRead >= 1.3 ? 'up' : volForFlowRead < 0.8 ? 'down' : 'neutral'
+  const oiCondition: 'up' | 'down' | 'neutral' =
+    oiChangePercent == null ? 'neutral' : oiChangePercent >= 3 ? 'up' : oiChangePercent <= -3 ? 'down' : 'neutral'
+
+  // Confluence hierarchy: price action first, then volume, then OI, then flow last — flow
+  // only ever strengthens/weakens/conflicts with what those already established.
+  let flowConfluence: FlowConfluence = 'NEUTRAL'
+  if (direction === 'up') {
+    if (flowSpike === 'OUTFLOW_SPIKE' && volumeParticipation === 'up') {
+      flowConfluence = 'CONFIRMS' // price up + volume up + outflow spike -> strong bullish confluence
+    } else if (flowSpike === 'INFLOW_SPIKE' && volumeParticipation === 'up') {
+      flowConfluence = 'ABSORPTION' // price up + volume up + inflow spike -> bullish, buyers absorbing supply
+    } else if (flowSpike === 'INFLOW_SPIKE' && volumeParticipation !== 'up' && oiCondition !== 'up') {
+      flowConfluence = 'CONTRADICTS' // price up + volume down + OI down + inflow spike -> weak bullish / reversal risk
+    }
+  } else if (direction === 'down') {
+    if (flowSpike === 'INFLOW_SPIKE' && volumeParticipation === 'up') {
+      flowConfluence = 'CONFIRMS' // price down + volume up + inflow spike -> strong bearish confluence
+    } else if (flowSpike === 'OUTFLOW_SPIKE' && volumeParticipation === 'up') {
+      flowConfluence = 'CONTRADICTS' // price down + volume up + outflow spike -> conflicted; price still wins
+    } else if (flowSpike === 'OUTFLOW_SPIKE' && volumeParticipation !== 'up' && oiCondition !== 'up') {
+      flowConfluence = 'CONTRADICTS' // price down + volume down + OI down + outflow spike -> weakens bearish continuation
+    }
+  }
+
   const metrics: RangeInvestigateMetrics = {
     direction,
     priceMovePercent,
@@ -249,6 +340,13 @@ export function investigateRange(input: RangeInvestigateInput): RangeInvestigate
     largestTradeShareOfVolume,
     closePositionInRange,
     distanceFromEma200Percent,
+    totalInflow,
+    totalOutflow,
+    netFlow,
+    inflowVsBaselineRatio,
+    outflowVsBaselineRatio,
+    flowSpike,
+    flowConfluence,
   }
 
   // ── Driver classification ───────────────────────────────────────────────
@@ -304,6 +402,27 @@ export function investigateRange(input: RangeInvestigateInput): RangeInvestigate
     thinScore += 1
   }
 
+  // ── Flow confluence — strengthens/weakens the driver read above, never sets it alone ───
+  if (flowConfluence === 'CONFIRMS' && flowSpike === 'OUTFLOW_SPIKE') {
+    organicScore += 1.5
+    supportingSignals.push(`Exchange outflow spiked ~${outflowVsBaselineRatio!.toFixed(1)}x baseline while price and volume both rose — potential sell-side supply is thinning right alongside the rally. The flow data supports the bullish price action.`)
+  } else if (flowConfluence === 'CONFIRMS' && flowSpike === 'INFLOW_SPIKE') {
+    organicScore += 1.5
+    supportingSignals.push(`Exchange inflow spiked ~${inflowVsBaselineRatio!.toFixed(1)}x baseline while price fell on rising volume — potential sell-side supply increased right alongside the sell-off. The flow data confirms the bearish price action.`)
+  } else if (flowConfluence === 'ABSORPTION') {
+    organicScore += 0.5
+    supportingSignals.push(`Inflow spiked ~${inflowVsBaselineRatio!.toFixed(1)}x baseline even as price kept rising on rising volume — buyers appear to be absorbing the extra potential supply rather than being overwhelmed by it.`)
+  } else if (flowConfluence === 'CONTRADICTS' && direction === 'up') {
+    thinScore += 0.5
+    contradictingSignals.push(`Inflow spiked ~${inflowVsBaselineRatio!.toFixed(1)}x baseline while volume and Open Interest both faded — participation and positioning aren't confirming this rally, and potential supply is building against it. The move lacks strong confirmation and may be vulnerable to reversal.`)
+  } else if (flowConfluence === 'CONTRADICTS' && direction === 'down' && flowSpike === 'OUTFLOW_SPIKE') {
+    if (volumeParticipation === 'up') {
+      contradictingSignals.push(`Despite reduced potential exchange supply (outflow ~${outflowVsBaselineRatio!.toFixed(1)}x baseline), sellers are still controlling price on rising volume. The outflow is a bullish supply-side undertone, but price action hasn't confirmed it — a conflicted read.`)
+    } else {
+      contradictingSignals.push(`Bearish price action here is paired with declining participation, falling Open Interest, and an outflow spike (~${outflowVsBaselineRatio!.toFixed(1)}x baseline) — reduced potential exchange supply weakens the case for this bearish move continuing.`)
+    }
+  }
+
   const scores: { driver: DominantDriver; score: number }[] = [
     { driver: 'ORGANIC_FLOW', score: organicScore },
     { driver: 'SQUEEZE_LIQUIDATION', score: squeezeScore },
@@ -317,7 +436,7 @@ export function investigateRange(input: RangeInvestigateInput): RangeInvestigate
   const scoreSpread = top.score - (runnerUp?.score ?? 0)
   const driverConfidence = top.score <= 0 ? 30 : clamp(50 + scoreSpread * 12, 35, 92)
 
-  const whyItHappened = buildWhyNarrative(dominantDriver, metrics, input)
+  const whyItHappened = buildWhyNarrative(dominantDriver, metrics, input) + buildFlowNarrative(metrics)
 
   // ── Forward prediction: continuation vs pullback vs reversal ───────────
   let continuationScore = 1
@@ -363,6 +482,19 @@ export function investigateRange(input: RangeInvestigateInput): RangeInvestigate
   if (longAccountChangePercent != null && Math.abs(longAccountChangePercent) > 8) {
     if (direction === 'up' && longAccountChangePercent > 0) pullbackScore += 1
     if (direction === 'down' && longAccountChangePercent < 0) reversalScore += 1
+  }
+
+  // Flow confluence — same confluence layer as above, applied to the forward read. Never
+  // flips the verdict on its own; only nudges confidence toward/away from continuation.
+  if (flowConfluence === 'CONFIRMS') {
+    continuationScore += 1
+  } else if (flowConfluence === 'ABSORPTION') {
+    continuationScore += 0.5 // bullish, but supply pressure is elevated so the boost is smaller than a clean CONFIRMS
+  } else if (flowConfluence === 'CONTRADICTS' && direction === 'up') {
+    pullbackScore += 1
+    reversalScore += 0.5
+  } else if (flowConfluence === 'CONTRADICTS' && direction === 'down') {
+    pullbackScore += 1
   }
 
   const [continuationPercent, pullbackPercent, reversalPercent] = normalizeToPercent(
@@ -453,6 +585,28 @@ function buildWhyNarrative(driver: DominantDriver, m: RangeInvestigateMetrics, i
       return `${input.symbol} ${dirWord} ${movePct}% on volume that wasn't meaningfully above baseline. With this few participants involved, the move may say more about a temporarily thin order book than about any real shift in sentiment — these tend to mean-revert more often than they hold.`
     default:
       return `${input.symbol} ${dirWord} ${movePct}% over this range, but the available signals (volume, OI, taker flow) don't point clearly to one driver. Could be a mix of factors, or data availability (OI/trade history) is limited for this symbol/window — treat the read below with extra caution.`
+  }
+}
+
+/**
+ * One trailing sentence summarizing how exchange inflow/outflow relates to the driver read
+ * above — confirms, weakens, or is a non-factor. Appended to whyItHappened rather than
+ * replacing any of it, per the confluence hierarchy (price > volume > OI > flow).
+ */
+function buildFlowNarrative(m: RangeInvestigateMetrics): string {
+  switch (m.flowConfluence) {
+    case 'CONFIRMS':
+      return m.flowSpike === 'OUTFLOW_SPIKE'
+        ? ` Exchange outflow also spiked through the range, thinning potential sell-side supply in the same direction as the move — flow data lines up with and reinforces this read.`
+        : ` Exchange inflow also spiked through the range, adding potential sell-side supply in the same direction as the move — flow data lines up with and reinforces this read.`
+    case 'ABSORPTION':
+      return ` Exchange inflow spiked through the range too, but price kept climbing anyway — a sign buyers are absorbing the extra potential supply rather than being overwhelmed by it.`
+    case 'CONTRADICTS':
+      return m.flowSpike === 'INFLOW_SPIKE'
+        ? ` Worth flagging: exchange inflow spiked while participation and positioning faded, adding potential supply into an already-weakening move — that combination raises reversal risk.`
+        : ` Worth flagging: exchange outflow spiked even as price didn't confirm it — potential supply is thinning, which is a bullish undertone the price action hasn't backed up yet.`
+    default:
+      return m.flowSpike === 'NONE' ? '' : ` Exchange flow moved outside its usual range here, but it doesn't clearly line up with or against this move either way.`
   }
 }
 

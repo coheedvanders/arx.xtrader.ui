@@ -8,6 +8,8 @@ import { PnlUtility } from "./PnlUtility.ts";
 import CardComponent from "@/components/shared/card/CardComponent.vue";
 import CandleEntryVisualizerComponent from "@/components/mint/CandleEntryVisualizerComponent.vue";
 import RichTextEditorComponent from "@/components/shared/form/RichTextEditorComponent.vue";
+import { MatchMiss } from "vue-router/dist/experimental/index.mjs";
+import { forEach } from "jszip";
 
 export class SimulationUtility {
     static async initializePastCandleEntryData(symbol: string, interval:string,maxCandles:number, supportAndResistancePeriodLength: number){
@@ -76,6 +78,7 @@ export class SimulationUtility {
 
         var pointBearCandle: CandleEntry | null = null;
         var lastAvwap: PriceZone | null = null;
+        var priceZoneAvWaps = new Map<number, PriceZone>();
 
 
         for (let i = 1; i <= entryIndex; i++) {
@@ -234,6 +237,32 @@ export class SimulationUtility {
                     }
 
                     candle.closeAbsDistanceToZone = closeAbsDistanceToZone
+
+                    for (const [key, priceZone] of priceZoneAvWaps) {
+                        priceZoneAvWaps.set(key, candleAnalyzer.getAnchorVwap(movingCandles.filter(c => c.openTime >= key)));
+                    }
+
+                    if(candle.candleData.zoneInhabitantCount == 1){
+                        priceZoneAvWaps.set(candle.openTime, candleAnalyzer.getAnchorVwap(movingCandles.filter(c => c.openTime >= candle.openTime)));
+                    }
+
+                    if(priceZoneAvWaps.size >= 7){
+                        const firstKey = priceZoneAvWaps.keys().next().value;
+                        if (firstKey !== undefined) {
+                            priceZoneAvWaps.delete(firstKey);
+                        }
+                    }
+
+                    var crossedAvwapCounter = 0;
+                    for (const [key, avwapZone] of priceZoneAvWaps) {
+                        var _crossedAvwap = (candle.open < avwapZone!.mid && candle.close > avwapZone!.mid) || (candle.open > avwapZone!.mid && candle.close < avwapZone!.mid)
+                        if(_crossedAvwap){
+                            crossedAvwapCounter++;
+                        }
+                    }
+
+                    candle.candleData.crossedAvwapCount = crossedAvwapCounter;
+                    candle.candleData.avwapCount = priceZoneAvWaps.size;
                 }
 
                 //===============
@@ -463,6 +492,11 @@ export class SimulationUtility {
                             }
                         }
 
+                        var keyCandle = candle.candleData.avwapCount >= 5 && candle.candleData.crossedAvwapCount >= 4
+                        if(keyCandle){
+                            candle.isPoint = true;
+                        }
+                        
                         if(lastAvwap){
                             // var crossedAvwap = movingCandles.slice(-3).filter(c => c.candleData
                             //     && (
@@ -473,71 +507,6 @@ export class SimulationUtility {
 
                             var crossedAvwap = (candle.open < lastAvwap!.mid && candle.close > lastAvwap!.mid) || (candle.open > lastAvwap!.mid && candle.close < lastAvwap!.mid)
                             candle.candleData.crossedAvwapPoint = crossedAvwap
-                        }
-
-
-                        if(candle.candleData.crossedAvwapPoint && candle.candleData.conditionMet){
-                            var pastAvWaps = movingCandles.filter(c => c.openTime < candle.openTime && c.candleData && c.candleData.isAvwapPoint)
-                            if(priceZones.length >= 2){
-                                var pastZone = priceZones[priceZones.length - 2];
-                                var pastZoneCandles = movingCandles.filter(c => c.priceZone == pastZone);
-                                var pastZoneVolumeProfile = candleAnalyzer.getVolumeProfile(pastZoneCandles);
-                                if(pastAvWaps.length >= 1){
-                                    var _lastAvwapPointCandle = pastAvWaps[pastAvWaps.length - 1];
-                                    if(candle.candleData.side == "bull"){
-                                        if(_lastAvwapPointCandle.candleData!.side == "bear"
-                                            && candle.close < candle.priceZone.mid
-                                            && candle.close < pastZoneVolumeProfile!.pocPrice
-                                            && candle.candleData.zoneInhabitantCount >= 15
-                                            //&& movingCandles.slice(-10).filter(c => c.patternTrack == "hl" || c.patternTrack == "lh").length == 0
-                                            && _lastAvwapPointCandle.close < candle.close
-                                            && candle.candleData.change_percentage_v >= 0.33
-                                            && _lastAvwapPointCandle.volumeAnalysis!.zScore! > 3
-                                        ){
-                                            // var lowestAdjustedCloseAtr = Math.min(...movingCandles.filter(c => c.openTime >= _lastAvwapPointCandle.openTime && c.candleData && c.candleData.side == "bear").map(c => c.close_atr_adjusted)); 
-                                            // var tp = pastZoneVolumeProfile!.pocPrice
-                                            // var sl = lowestAdjustedCloseAtr
-                                            // var reward = tp - candle.close
-                                            // var risk = candle.close - sl
-
-                                            // if(risk > 0 && reward / risk >= 1.5){
-                                            //     candle.side = "LONG"
-                                            //     candle.margin = 5
-                                            //     candle.tpPrice = tp
-                                            //     if(_lastAvwapPointCandle.close_atr_abs_change > 1){
-                                            //         candle.tpPrice = tp + _lastAvwapPointCandle.candleData?.atr!
-                                            //     }
-                                            //     candle.slPrice = sl - (atr * 0.5)
-                                            // }
-                                        }
-                                    }else if(candle.candleData.side == "bear"){
-                                        if(_lastAvwapPointCandle.candleData!.side == "bull"
-                                            && candle.close > candle.priceZone.mid
-                                            && candle.close > pastZoneVolumeProfile!.pocPrice
-                                            && _lastAvwapPointCandle.open > _lastAvwapPointCandle.priceZone!.upper
-                                            && _lastAvwapPointCandle.priceZone == candle.priceZone
-                                            && candle.close > candle.priceZone.upper
-                                            && movingCandles.filter(c => c.priceZone == candle.priceZone && c.candleData && c.candleData.changePercentageZScore >= 3 && c.candleData.side == "bull").length == 0
-                                            && candle.candleData.zoneInhabitantCount >= 15
-                                            && movingCandles.slice(-10).filter(c => c.patternTrack == "hl").length == 0
-                                            && candle.close < _lastAvwapPointCandle.close
-                                        ){
-                                            var highestAdjustedCloseAtr = Math.max(...movingCandles.filter(c => c.openTime >= _lastAvwapPointCandle.openTime && c.candleData && c.candleData.side == "bull").map(c => c.close_atr_adjusted)); 
-                                            var tpS = pastZoneVolumeProfile!.pocPrice
-                                            var slS = highestAdjustedCloseAtr
-                                            var rewardS = candle.close - tpS
-                                            var riskS = slS - candle.close
-
-                                            if(riskS > 0 && rewardS / riskS >= 1.5){
-                                                candle.side = "SHORT"
-                                                candle.margin = 5
-                                                candle.tpPrice = tpS
-                                                candle.slPrice = slS + (atr * 2)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
                         }
 
                         var avwapPointCandles = movingCandles.filter(c => c.candleData && c.candleData.isAvwapPoint);
@@ -555,8 +524,6 @@ export class SimulationUtility {
                         candle.candleData.lastXCandleSpan = lastXCandleSpan;
                         //end
                     }
-
-                    
 
 
                     //======================================================================

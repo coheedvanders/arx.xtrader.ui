@@ -371,7 +371,9 @@ static buyerInterestScore(
         crossedAvwapPoint: false,
         lastXCandleSpan: 0,
         hasRecentPosition: false,
-        recentPositionSide: ""
+        recentPositionSide: "",
+        crossedAvwapCount: 0,
+        avwapCount: 0
     };
   }
 

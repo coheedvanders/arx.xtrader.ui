@@ -49,6 +49,7 @@ import { SimulationUtility } from '@/utility/simulationUtility';
 const chocoMintoStore = useChocoMintoStore();
 const notificationStore = useNotificationStore();
 const visitedSymbols = ref<Set<string>>(new Set()); 
+const isNewCandle = ref(false)
 
 const props = defineProps<{
   futureSymbols: FuturesSymbol[];
@@ -85,12 +86,13 @@ const calculatedMaxOpenPosition = computed(() => {
 watch(
   () => props.newCandleTriggerKey,
   async () => {
-    await initializeFutureSymbolData(); 
+    await onNewCandleSpawed()
   }
 );
 
 
 onMounted(async () => {
+    isNewCandle.value = false;
     await initializeFutureSymbolData();
 })
 
@@ -135,7 +137,7 @@ async function initializeFutureSymbolData(){
     chocoMintoStore.completedRunCount += 1;
 
     if(chocoMintoStore.isLive){
-        emit("onCompleted")
+        //emit("onCompleted")
     }
 }
 
@@ -147,7 +149,7 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
         var endTimeStr = computed(() => {
             const start = new Date(props.simulationStart);
             const end = new Date(start);
-            end.setDate(end.getDate() + 2);
+            end.setDate(end.getDate() + 5);
             end.setHours(23, 45, 0, 0);
             
             const month = end.getMonth() + 1;
@@ -287,8 +289,32 @@ function updateStoreFutureSymbolSimulationStats(symbol:string, candle:CandleEntr
     }
 }
 
-async function onNewCandleSpawed(){
+const recentCandleCache = new Map<string, Candle[]>()
+
+async function onNewCandleSpawed() {
     progressCounter.value = 0;
+
+    // Batch-fetch latest 2 candles for every symbol in parallel, once,
+    // instead of sequentially inside the loop below - this was the actual
+    // bottleneck (N sequential round-trips vs. one parallel batch).
+    const prefetchResults = await Promise.all(
+        props.futureSymbols.map(async (fs) => {
+            try {
+                const candles = await KlineUtility.getRecentKlines(fs.symbol, props.interval, 2)
+                return { symbol: fs.symbol, candles }
+            } catch (error) {
+                indexDBLogger.writeLog(
+                    `[new candle] Prefetch error for ${fs.symbol}: ${error instanceof Error ? error.message : String(error)}`
+                )
+                return { symbol: fs.symbol, candles: [] as Candle[] }
+            }
+        })
+    )
+
+    recentCandleCache.clear()
+    for (const r of prefetchResults) {
+        recentCandleCache.set(r.symbol, r.candles)
+    }
 
     for (let i = 0; i <= props.futureSymbols.length - 1; i++) {
         progressCounter.value = i + 1;
@@ -296,7 +322,8 @@ async function onNewCandleSpawed(){
         var futureSymbol = props.futureSymbols[i];
 
         try {
-            await updateCandleEntryWithLastCandle(futureSymbol.symbol);   
+            await updateCandleEntryWithLastCandle(futureSymbol.symbol);
+            //futureSymbol.status = "x"
         } catch (error) {
             const errorDetails = {
                 message: error instanceof Error ? error.message : String(error),
@@ -311,25 +338,27 @@ async function onNewCandleSpawed(){
 
     progressCounter.value = 0;
 
+    emit("onCompleted")
+
     props.futureSymbols.forEach(f => {
         f.status = "resetting..."
     });
 
     setTimeout(async () => {
         await initializeFutureSymbolData();
-        emit("onCompleted")
-    }, 500);
+    }, 5 * 60 * 1000);
 }
 
 async function updateCandleEntryWithLastCandle(symbol:string){
     var futureSymbol = props.futureSymbols.find(f => f.symbol == symbol)!;
 
-    futureSymbol.status = "retrieving kline"
+    //futureSymbol.status = "retrieving kline"
 
     var pastKlineEntries = await klineDbUtility.getKlines(symbol);
+    pastKlineEntries = pastKlineEntries.slice(0, -1);
     //pastKlineEntries = pastKlineEntries.filter(c => c.openTime < 1767786300000)
 
-    pastKlineEntries = pastKlineEntries.sort((a, b) => a.openTime - b.openTime)
+    //pastKlineEntries = pastKlineEntries.sort((a, b) => a.openTime - b.openTime)
 
     //indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: last item of pastKlineEntries: ${JSON.stringify(pastKlineEntries[pastKlineEntries.length - 1])}`);
 
@@ -339,8 +368,11 @@ async function updateCandleEntryWithLastCandle(symbol:string){
     //     return;
     // }
 
-    futureSymbol.status = "retrieving kline 2"
-    var latest2Candle = await KlineUtility.getRecentKlines(symbol,props.interval,2);
+    //futureSymbol.status = "retrieving kline 2"
+    var latest2Candle = recentCandleCache.get(symbol) ?? [];
+    if (latest2Candle.length < 2) {
+        throw new Error(`No cached recent candles for ${symbol} (prefetch failed or returned incomplete data)`)
+    }
     var previousCandle = latest2Candle[0];
     var xCurrentCandle = latest2Candle[1];
     
@@ -350,33 +382,33 @@ async function updateCandleEntryWithLastCandle(symbol:string){
     // indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: latest2Candle xCurrentCandle: ${JSON.stringify(xCurrentCandle)}`);
     // indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: latest2Candle previousCandle: ${JSON.stringify(previousCandle)}`);
 
-    var currentCandle: CandleEntry = {
-        ...xCurrentCandle,
-        close_atr_abs_change: 0,
-        close_atr_adjusted: 0,
-        symbol: symbol,
-        duration: 0,
-        status: '',
-        side: '',
-        tpPrice: 0,
-        slPrice: 0,
-        zoneAnalysis: null,
-        volumeAnalysis: null,
-        overboughSoldAnalysis: null,
-        pastVolumeAnalysis: null,
-        candleData: null,
-        priceZone: null,
-        priceZoneInteraction: null,
-        pnl: 0,
-        leverage: 0,
-        margin: 0,
-        entryFee: 0,
-        closeAbsDistanceToZone: null,
-        priceZoneEvaluation: null,
-        patternTrack: "",
-        isPoint: false,
-        isWeakening: false
-    }
+    // var currentCandle: CandleEntry = {
+    //     ...xCurrentCandle,
+    //     close_atr_abs_change: 0,
+    //     close_atr_adjusted: 0,
+    //     symbol: symbol,
+    //     duration: 0,
+    //     status: '',
+    //     side: '',
+    //     tpPrice: 0,
+    //     slPrice: 0,
+    //     zoneAnalysis: null,
+    //     volumeAnalysis: null,
+    //     overboughSoldAnalysis: null,
+    //     pastVolumeAnalysis: null,
+    //     candleData: null,
+    //     priceZone: null,
+    //     priceZoneInteraction: null,
+    //     pnl: 0,
+    //     leverage: 0,
+    //     margin: 0,
+    //     entryFee: 0,
+    //     closeAbsDistanceToZone: null,
+    //     priceZoneEvaluation: null,
+    //     patternTrack: "",
+    //     isPoint: false,
+    //     isWeakening: false
+    // }
 
     var entryCandle: CandleEntry = {
         ...previousCandle,
@@ -408,9 +440,9 @@ async function updateCandleEntryWithLastCandle(symbol:string){
 
     
     pastKlineEntries.push(entryCandle);
-    pastKlineEntries = pastKlineEntries.sort((a, b) => a.openTime - b.openTime)
+    //pastKlineEntries = pastKlineEntries.sort((a, b) => a.openTime - b.openTime)
 
-    futureSymbol.status = "supp res"
+    //futureSymbol.status = "supp res"
     var {support,resistance} = candleAnalyzer.computeSupportResistance(pastKlineEntries,props.supportAndResistancePeriodLength);
 
     entryCandle.support = support;
@@ -421,14 +453,12 @@ async function updateCandleEntryWithLastCandle(symbol:string){
 
     //await klineDbUtility.insertNewKline(symbol, entryCandle)
 
-    pastKlineEntries.push(currentCandle);
-
-    futureSymbol.status = "track swing"
+    //futureSymbol.status = "track swing"
     candleAnalyzer.trackSwingPatterns(pastKlineEntries);
 
-    pastKlineEntries = pastKlineEntries.slice(0, -1)
+    //pastKlineEntries = pastKlineEntries.slice(0, -1)
 
-    futureSymbol.status = "mark pos"
+    //futureSymbol.status = "mark pos"
     await SimulationUtility.markPositionEntries(
         props.margin,
         props.positionDurationMedian,
@@ -446,22 +476,22 @@ async function updateCandleEntryWithLastCandle(symbol:string){
 
     //indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: prevKlineEntry: ${JSON.stringify(prevKlineEntry)}`);
 
-    const pastKlineCandles: Candle[] = pastKlineEntries.map(e => ({
-        openTime: e.openTime,
-        open: e.open,
-        high: e.high,
-        low: e.low,
-        close: e.close,
-        volume: e.volume,
-        closeTime: e.closeTime,
-        closed: e.closed,
-        support: e.support,
-        resistance: e.resistance,
-        breakthrough_resistance: e.breakthrough_resistance,
-        breakthrough_support: e.breakthrough_support,
-    }));
+    // const pastKlineCandles: Candle[] = pastKlineEntries.map(e => ({
+    //     openTime: e.openTime,
+    //     open: e.open,
+    //     high: e.high,
+    //     low: e.low,
+    //     close: e.close,
+    //     volume: e.volume,
+    //     closeTime: e.closeTime,
+    //     closed: e.closed,
+    //     support: e.support,
+    //     resistance: e.resistance,
+    //     breakthrough_resistance: e.breakthrough_resistance,
+    //     breakthrough_support: e.breakthrough_support,
+    // }));
     
-    const pastVolumeAnalysis = candleAnalyzer.analyzePastVolumes(pastKlineCandles, pastKlineCandles.length - 1, 6);
+    //const pastVolumeAnalysis = candleAnalyzer.analyzePastVolumes(pastKlineCandles, pastKlineCandles.length - 1, 6);
 
     var isPrevCandleTriggeredOpen = prevKlineEntry.status == "OPEN"
     currentFutureSumbol.value!.conditionMet = prevKlineEntry.candleData?.conditionMet!;
@@ -476,6 +506,13 @@ async function updateCandleEntryWithLastCandle(symbol:string){
     currentFutureSumbol.value!.changeZScore = prevKlineEntry.candleData?.changePercentageZScore!
     currentFutureSumbol.value!.zoneSize = prevKlineEntry.candleData?.zoneSizePercentage!;
     currentFutureSumbol.value!.crossedLastAvwap = prevKlineEntry.candleData?.crossedAvwapPoint!;
+
+    currentFutureSumbol.value!.lastXCandleSpan = prevKlineEntry.candleData?.lastXCandleSpan!;
+    currentFutureSumbol.value!.positionSide = prevKlineEntry.side;
+    currentFutureSumbol.value!.tpPrice = prevKlineEntry.tpPrice;
+    currentFutureSumbol.value!.slPrice = prevKlineEntry.slPrice;
+    currentFutureSumbol.value!.hasRecentPosition = prevKlineEntry.candleData?.hasRecentPosition!;
+    currentFutureSumbol.value!.recentPositionSide = prevKlineEntry.candleData?.recentPositionSide!;
 
     if(isPrevCandleTriggeredOpen){
         //indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: isPrevCandleTriggeredOpen==true, prevKlineEntry.side=${prevKlineEntry.side}`);
@@ -492,22 +529,22 @@ async function updateCandleEntryWithLastCandle(symbol:string){
 
                 //indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: SHORT order created`);
             }else{
-                await tradeLogger.logSignal(
-                    symbol,
-                    "SELL",
-                    { lower: prevKlineEntry.support!.lower, upper: prevKlineEntry.support!.upper },
-                    { lower: prevKlineEntry.resistance!.lower, upper: prevKlineEntry.resistance!.upper },
-                    prevKlineEntry.close,
-                    { tp: prevKlineEntry.tpPrice, sl: prevKlineEntry.slPrice },
-                    prevKlineEntry.candleData!,
-                    prevKlineEntry.zoneAnalysis!,
-                    prevKlineEntry.margin,
-                    futureSymbol!.maxLeverage,
-                    PnlUtility.calculateTakerFee(prevKlineEntry.margin,futureSymbol!.maxLeverage),
-                    prevKlineEntry.volumeAnalysis!,
-                    pastKlineCandles[pastKlineCandles.length - 1].openTime,
-                    pastVolumeAnalysis
-                );
+                // await tradeLogger.logSignal(
+                //     symbol,
+                //     "SELL",
+                //     { lower: prevKlineEntry.support!.lower, upper: prevKlineEntry.support!.upper },
+                //     { lower: prevKlineEntry.resistance!.lower, upper: prevKlineEntry.resistance!.upper },
+                //     prevKlineEntry.close,
+                //     { tp: prevKlineEntry.tpPrice, sl: prevKlineEntry.slPrice },
+                //     prevKlineEntry.candleData!,
+                //     prevKlineEntry.zoneAnalysis!,
+                //     prevKlineEntry.margin,
+                //     futureSymbol!.maxLeverage,
+                //     PnlUtility.calculateTakerFee(prevKlineEntry.margin,futureSymbol!.maxLeverage),
+                //     prevKlineEntry.volumeAnalysis!,
+                //     pastKlineCandles[pastKlineCandles.length - 1].openTime,
+                //     pastVolumeAnalysis
+                // );
             }
 
             notificationStore.showNotification('success', 'top-right', "SELL", 'order has been created');
@@ -524,22 +561,22 @@ async function updateCandleEntryWithLastCandle(symbol:string){
                 
                 //indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: LONG order created`);
             }else{
-                await tradeLogger.logSignal(
-                    symbol,
-                    "BUY",
-                    { lower: prevKlineEntry.support!.lower, upper: prevKlineEntry.support!.upper },
-                    { lower: prevKlineEntry.resistance!.lower, upper: prevKlineEntry.resistance!.upper },
-                    prevKlineEntry.close,
-                    { tp: prevKlineEntry.tpPrice, sl: prevKlineEntry.slPrice },
-                    prevKlineEntry.candleData!,
-                    prevKlineEntry.zoneAnalysis!,
-                    prevKlineEntry.margin,
-                    futureSymbol!.maxLeverage,
-                    PnlUtility.calculateTakerFee(prevKlineEntry.margin,futureSymbol!.maxLeverage),
-                    prevKlineEntry.volumeAnalysis!,
-                    pastKlineCandles[pastKlineCandles.length - 1].openTime,
-                    pastVolumeAnalysis
-                );
+                // await tradeLogger.logSignal(
+                //     symbol,
+                //     "BUY",
+                //     { lower: prevKlineEntry.support!.lower, upper: prevKlineEntry.support!.upper },
+                //     { lower: prevKlineEntry.resistance!.lower, upper: prevKlineEntry.resistance!.upper },
+                //     prevKlineEntry.close,
+                //     { tp: prevKlineEntry.tpPrice, sl: prevKlineEntry.slPrice },
+                //     prevKlineEntry.candleData!,
+                //     prevKlineEntry.zoneAnalysis!,
+                //     prevKlineEntry.margin,
+                //     futureSymbol!.maxLeverage,
+                //     PnlUtility.calculateTakerFee(prevKlineEntry.margin,futureSymbol!.maxLeverage),
+                //     prevKlineEntry.volumeAnalysis!,
+                //     pastKlineCandles[pastKlineCandles.length - 1].openTime,
+                //     pastVolumeAnalysis
+                // );
             }
 
             notificationStore.showNotification('success', 'top-right', "BUY", 'order has been created');
@@ -549,7 +586,7 @@ async function updateCandleEntryWithLastCandle(symbol:string){
         await checkOpenPosition(symbol, prevKlineEntry,futureSymbol.maxLeverage);
     }
 
-    futureSymbol.status = "-"
+    //futureSymbol.status = "-"
 }
 
 async function checkOpenPosition(symbol:string,previousCandle:CandleEntry,maxLeverage:number){
