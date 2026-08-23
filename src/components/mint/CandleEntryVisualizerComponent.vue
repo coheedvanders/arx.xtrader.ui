@@ -1205,12 +1205,21 @@
             </text>
 
             <text
-              v-if="candle.candleData?.crossedAvwapPoint"
+              v-if="candle.candleData?.breakHighestAvWapMid || candle.candleData?.breakLowestAvWapMid"
               :x="candleX(i)"
               :y="priceToY(candle.low!) + 65"
               class="pattern-label"
             >
-              [V]
+              [brk]
+            </text>
+
+            <text
+              v-if="candle.candleData?.crossedEma"
+              :x="candleX(i)"
+              :y="priceToY(candle.low!) + 75"
+              class="pattern-label"
+            >
+              [X]
             </text>
 
           <g v-if="candle.patternTrack === 'lh'" class="lower-high-indicator">
@@ -1377,6 +1386,21 @@
                 r="4"
                 class="volume-spike-dot"
               />
+            </g>
+
+            <!-- Flow spike box — trailing 24-candle exchange wallet flow z-score spike, from FlowMovementScanner's IndexedDB cache. Drawn for every past candle that qualified, not just the most recent. -->
+            <g v-if="candle.candleData?.totalFlowMovementZScore! >= 3" class="flow-spike-indicator">
+              <rect
+                :x="candleX(i) - candleWidth / 2 - 3"
+                :y="priceToY(candle.high!) - 20"
+                :width="candleWidth + 6"
+                :height="11"
+                rx="2"
+                class="flow-spike-box"
+                :class="candle.candleData?.dominantFlowMovement"
+              >
+                <title>Exchange wallet flow spike (z ≥ {{ FLOW_SPIKE_Z_THRESHOLD }} over trailing {{ FLOW_SPIKE_LOOKBACK }} candles)</title>
+              </rect>
             </g>
 
             <g v-if="candle.volumeAnalysis?.zScore! > 3">
@@ -3063,6 +3087,8 @@ import DialogHeaderComponent from '../shared/dialog/DialogHeaderComponent.vue';
 import { useChocoMintoStore } from '@/stores/chocoMintoStore.ts';
 import { isElementAccessExpression } from 'typescript';
 import { candleAnalyzer } from '@/utility/candleAnalyzerUtility.ts';
+import { bucketFlowByCandle, detectFlowSpikes } from '@/utility/flowMovement.ts';
+import { getFlowMovement, saveFlowMovement, type FlowMovementDbEntry } from '@/utility/flowMovementDb.ts';
 
 var chocomintoStore = useChocoMintoStore();
 // ─── Binance kline stream message shape ───────────────────────────────────────
@@ -7910,13 +7936,17 @@ interface MovementBucket {
   records: WalletMovement[]
 }
 
-/** One bucket per displayed candle — sums inflow/outflow and keeps the raw records for the detail dialog. */
+/** One bucket per displayed candle — sums inflow/outflow and keeps the raw records for the detail dialog.
+ *  Sources from `walletMovements` (an explicit "See Movement" fetch, or its localStorage cache) when
+ *  available; falls back to `flowScannerMovements` (the flow scanner's IndexedDB cache) so the panel can
+ *  render immediately from whatever's already cached there, before any live fetch completes. */
 const movementPerCandle = computed<MovementBucket[]>(() => {
   const buckets: MovementBucket[] = displayCandles.value.map(() => ({ inflow: 0, outflow: 0, records: [] }))
-  if (walletMovements.value.length === 0) return buckets
+  const source = walletMovements.value.length > 0 ? walletMovements.value : flowScannerMovements.value
+  if (source.length === 0) return buckets
 
   const intervalMs = intervalToMs(props.interval)
-  for (const mv of walletMovements.value) {
+  for (const mv of source) {
     const ts = new Date(mv.timestamp).getTime()
     if (isNaN(ts)) continue
 
@@ -8010,6 +8040,203 @@ watch(() => [props.symbol, props.interval], () => {
   } else if (showMovementPanel.value) {
     fetchWalletMovement()
   }
+})
+
+// ─── Flow spike boxes (from FlowMovementScanner's IndexedDB cache) ─────────────
+//
+// Separate data path from the "See Movement" panel above — this reads
+// whatever FlowMovementScanner.vue last cached for this symbol in IndexedDB
+// (populated by its "Scan Movement" sweep across every futures symbol), so a
+// spike box can show up here without ever having pressed "See Movement" on
+// this chart. Uses the same rolling-window z-score engine as the scanner
+// (flowMovement.ts) but scores every displayed candle instead of just the
+// most recent one, so past spikes stay visible as you scroll/pan back.
+const flowScannerMovements = ref<FlowMovementDbEntry['movements']>([])
+const flowScannerBackfilling = ref(false)
+const FLOW_SPIKE_LOOKBACK = 24
+const FLOW_SPIKE_Z_THRESHOLD = 3
+
+async function loadFlowScannerCache() {
+  if (!props.symbol) return
+  try {
+    const cached = await getFlowMovement(props.symbol)
+    flowScannerMovements.value = cached?.movements ?? []
+
+    // Nothing shown for this symbol+interval yet (no "See Movement" fetch in
+    // flight/done, no localStorage movement cache to fall back on via
+    // tryShowCachedMovement) — but the flow scanner already has movement
+    // records for this symbol sitting in IndexedDB from its own sweep or a
+    // prior backfill. Show the bars from that immediately instead of making
+    // the user press "See Movement" and wait on a network round trip; the
+    // panel then quietly upgrades to a live, fully-covered fetch in the
+    // background (same pattern as tryShowCachedMovement below).
+    const hasLocalStorageCache = movementCache.value[movementCacheKey(props.symbol, props.interval)] !== undefined
+    if (!hasLocalStorageCache && walletMovements.value.length === 0 && flowScannerMovements.value.length > 0) {
+      showMovementPanel.value = true
+      fetchWalletMovement({ silent: true })
+    }
+  } catch (err) {
+    console.warn('[flow spike] failed to load cached scanner movement', err)
+    flowScannerMovements.value = []
+  }
+}
+
+/** Fetches wallet movement records for [startMs, endMs] — same endpoint/shape as fetchWalletMovement above, kept separate since this backfills the scanner's IndexedDB cache rather than the live "See Movement" panel. */
+async function fetchFlowScannerMovements(symbol: string, startMs: number, endMs: number): Promise<WalletMovement[]> {
+  if (endMs <= startMs) return []
+  const startIso = new Date(startMs).toISOString()
+  const endIso = new Date(Math.min(endMs, Date.now())).toISOString()
+  const url = `${WALLET_MOVEMENT_API_BASE}/api/movement?symbol=${encodeURIComponent(symbol.toUpperCase())}&start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`
+  const res = await fetch(url)
+  const body = await res.json().catch(() => null)
+  if (!res.ok) throw new Error(body?.error || `movement request failed (${res.status})`)
+  return Array.isArray(body) ? body : []
+}
+
+/** De-dupes by tx_hash where present, falling back to timestamp+type+amount for records that don't carry one. */
+function mergeFlowMovements(...groups: WalletMovement[][]): WalletMovement[] {
+  const seen = new Set<string>()
+  const merged: WalletMovement[] = []
+  for (const group of groups) {
+    for (const mv of group) {
+      const key = mv.tx_hash ? mv.tx_hash : `${mv.timestamp}|${mv.type}|${mv.amount}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      merged.push(mv)
+    }
+  }
+  return merged
+}
+
+/**
+ * FlowMovementScanner only fetches a short recent window per symbol (enough
+ * to check "is there a spike right now"), so its IndexedDB cache alone only
+ * covers the most recent ~60 candles. Older candles in this chart's own
+ * (possibly much longer) `displayCandles` range would otherwise have zero
+ * flow data and can never show a spike box — not because nothing happened,
+ * just because nobody ever fetched that far back for this symbol.
+ *
+ * This tops up the cache to cover the full currently-displayed candle range:
+ * fetches whatever's missing before (and, if relevant, after) what's already
+ * cached, merges it in, and persists the extended entry so the next time
+ * this symbol is opened — or the scanner revisits it — the wider range is
+ * already there. Runs quietly in the background; the panel keeps showing
+ * whatever's cached so far while this fills in.
+ *
+ * IMPORTANT: this writes to the exact same IndexedDB record
+ * (`symbolMovements`, keyed only by `symbol`) that FlowMovementScanner.vue's
+ * own sweep writes to — but this component gets mounted at whatever
+ * `props.interval` and `displayCandles` range the *parent* gives it (the
+ * main chart is very often 1h/4h/1d, not the scanner's fixed
+ * 15m/60-candle/24-lookback basis). If this function recomputed
+ * `hasSpike`/`zScore`/`totalFlowLast24` from its own `displayCandles` and
+ * saved them here, it would silently overwrite the scanner's real verdict
+ * for that symbol every time you happened to open its normal chart — which
+ * is exactly why the scanner's list ("3 recent spikes") stopped matching
+ * what showed up when browsing symbols individually. So: only ever extend
+ * the raw `movements`/`startMs`/`endMs` coverage here. The verdict fields
+ * are left untouched whenever a scanner-verified entry already exists, and
+ * are only ever set (to safe non-spike defaults) the first time a symbol
+ * with no cached entry at all gets opened directly — never upgraded to
+ * `hasSpike: true` outside of the scanner's own sweep.
+ */
+async function ensureFlowScannerCoverage() {
+  if (!props.symbol || displayCandles.value.length === 0) return
+  const first = displayCandles.value[0]
+  const last = displayCandles.value[displayCandles.value.length - 1]
+  if (first.openTime == null || last.openTime == null) return
+
+  const neededStartMs = first.openTime
+  const neededEndMs = Math.min(last.openTime + intervalToMs(props.interval), Date.now())
+
+  let cached: FlowMovementDbEntry | null = null
+  try {
+    cached = await getFlowMovement(props.symbol)
+  } catch (err) {
+    console.warn('[flow spike] failed to read cache before backfill', err)
+  }
+
+  const cachedStart = cached?.startMs ?? Infinity
+  const cachedEnd = cached?.endMs ?? -Infinity
+  const missingOlder = neededStartMs < cachedStart
+  const missingNewer = cached != null && neededEndMs > cachedEnd
+
+  if (cached && !missingOlder && !missingNewer) return // already fully covered
+
+  flowScannerBackfilling.value = true
+  try {
+    const fetches: Promise<WalletMovement[]>[] = []
+    if (missingOlder) fetches.push(fetchFlowScannerMovements(props.symbol, neededStartMs, cached ? cachedStart : neededEndMs))
+    if (missingNewer) fetches.push(fetchFlowScannerMovements(props.symbol, cachedEnd, neededEndMs))
+
+    const chunks = await Promise.all(fetches)
+    const merged = mergeFlowMovements(cached?.movements ?? [], ...chunks)
+
+    const mergedStartMs = Math.min(cachedStart, neededStartMs)
+    const mergedEndMs = Math.max(cachedEnd, neededEndMs)
+
+    // Verdict fields: NEVER recomputed from this component's own
+    // displayCandles/props.interval once a scanner-verified verdict exists —
+    // only FlowMovementScanner.vue's fixed-basis sweep is allowed to set
+    // these. If nothing's cached yet (this symbol has never been scanned),
+    // fall back to safe non-spike defaults rather than inventing a verdict
+    // on whatever interval this chart happens to be showing; the entry still
+    // gets created so `movements` is cached, it's just not marked as having
+    // a (scanner-confirmed) spike.
+    const intervalMs = cached?.scannerVerified ? cached!.intervalMs : intervalToMs(props.interval)
+    const totalFlowLast24 = cached?.scannerVerified ? cached!.totalFlowLast24 : 0
+    const zScore = cached?.scannerVerified ? cached!.zScore : null
+    const hasSpike = cached?.scannerVerified ? cached!.hasSpike : false
+    const scannerVerified = cached?.scannerVerified ?? false
+
+    const entry: FlowMovementDbEntry = {
+      symbol: props.symbol.toUpperCase(),
+      movements: merged,
+      startMs: mergedStartMs,
+      endMs: mergedEndMs,
+      intervalMs,
+      totalFlowLast24,
+      zScore,
+      hasSpike,
+      fetchedAt: Date.now(),
+      scannerVerified,
+    }
+    await saveFlowMovement(entry)
+    flowScannerMovements.value = merged
+  } catch (err) {
+    console.warn('[flow spike] failed to backfill cached scanner movement', err)
+  } finally {
+    flowScannerBackfilling.value = false
+  }
+}
+
+async function refreshFlowScannerData() {
+  await loadFlowScannerCache() // show whatever's cached immediately
+  await ensureFlowScannerCoverage() // then quietly fill in whatever's missing for the full visible range
+}
+onMounted(refreshFlowScannerData)
+watch(() => [props.symbol, props.interval], refreshFlowScannerData)
+// Parent extended `candles` further back in history (e.g. infinite scroll) — top up coverage for the newly-visible older range.
+watch(() => displayCandles.value[0]?.openTime, () => { ensureFlowScannerCoverage() })
+
+/** Same bucketing as movementPerCandle above, but sourced from the scanner's cached movements and reduced to a single total-flow number per displayed candle (direction doesn't matter for spike detection). */
+const flowScannerTotalPerCandle = computed<number[]>(() => {
+  if (flowScannerMovements.value.length === 0 || displayCandles.value.length === 0) return []
+  const windows = displayCandles.value.map(c => ({ openTime: c.openTime! }))
+  return bucketFlowByCandle(flowScannerMovements.value, windows, intervalToMs(props.interval))
+})
+
+/**
+ * Per-displayed-candle spike flag — index i is true when the trailing
+ * 24-candle flow window ending at i is a z-score spike **relative only to
+ * what came before it** (see detectFlowSpikes' causal baseline). Covers
+ * every candle, not just the latest, so past spikes still show a box when
+ * you scroll back — as long as `flowScannerMovements` actually has data that
+ * far back, which `ensureFlowScannerCoverage` above is responsible for.
+ */
+const flowSpikeFlags = computed<boolean[]>(() => {
+  if (flowScannerTotalPerCandle.value.length === 0) return []
+  return detectFlowSpikes(flowScannerTotalPerCandle.value, FLOW_SPIKE_LOOKBACK, FLOW_SPIKE_Z_THRESHOLD).flags
 })
 
 // ─── Summarize Movement tool ────────────────────────────────────────────────
@@ -10446,6 +10673,33 @@ const formatValue = (value: any): string => {
 
 .volume-spike-indicator { pointer-events: none; }
 .volume-spike-dot   { fill: #fbbf24; opacity: 0.9; }
+
+.flow-spike-indicator { pointer-events: none; }
+.flow-spike-box {
+  /* Fallback when dominantFlowMovement is null (tie or no data) — the
+     .INFLOW/.OUTFLOW rules below override fill/stroke when there IS a clear
+     dominant side. Must stay a compound selector on the SAME element as
+     .flow-spike-box (see the template) or it silently stops matching. */
+  fill: rgba(234, 179, 8, 0.12);
+  stroke: #eab308;
+  stroke-width: 1.5;
+  animation: flowSpikePulse 1.6s ease-in-out infinite;
+}
+
+.flow-spike-box.INFLOW{
+  fill: rgba(215, 252, 157, 0.781);
+  stroke: #54e62f !important;
+}
+
+.flow-spike-box.OUTFLOW{
+  fill: rgba(253, 103, 44, 0.781);
+  stroke: rgb(248, 96, 36) !important;
+}
+
+@keyframes flowSpikePulse {
+  0%, 100% { stroke-opacity: 0.55; filter: drop-shadow(0 0 1px #eab308); }
+  50%      { stroke-opacity: 1;    filter: drop-shadow(0 0 6px #eab308); }
+}
 .is-past-volume-good-dot { fill: #ffffff; opacity: 0.9; }
 .is-change-high-dot { fill: #3bd1ff; opacity: 0.9; }
 .price-move         { fill: #b130d1; opacity: 0.9; }

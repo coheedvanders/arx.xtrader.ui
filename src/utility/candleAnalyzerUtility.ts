@@ -373,9 +373,26 @@ static buyerInterestScore(
         hasRecentPosition: false,
         recentPositionSide: "",
         crossedAvwapCount: 0,
-        avwapCount: 0
+        avwapCount: 0,
+        totalFlowMovement: 0,
+        totalFlowMovementZScore: 0,
+        dominantFlowMovement: null,
+        breakHighestAvWapMid: false,
+        breakLowestAvWapMid: false
     };
   }
+
+static getZScore(subject: number, pastData: number[]): number | null {
+  const n = pastData.length
+  if (n === 0) return null
+
+  const mean = pastData.reduce((sum, v) => sum + v, 0) / n
+  const sqSum = pastData.reduce((sum, v) => sum + (v - mean) ** 2, 0)
+  const std = Math.sqrt(sqSum / n)
+  if (std === 0) return null
+
+  return (subject - mean) / std
+}
 
 static getVolumeProfile(
   candles: CandleEntry[],

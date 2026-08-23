@@ -108,6 +108,8 @@
     <label>Cost</label>
     <InputComponent type="numeric" v-model="chocoMintoStore.orderCost"/>
     
+    <FlowMovementScannerComponent ref="flowMovementScannerRef"/>
+
     <!-- <TrendRiderComponent ref="trendRiderRef"/> -->
      <ConditionMetComponent ref="conditionMetRef"/>
 
@@ -209,6 +211,7 @@ import type { forEach } from 'jszip'
 import TrendRiderComponent from './TrendRiderComponent.vue';
 import ConditionMetComponent from './ConditionMetComponent.vue';
 import { WalletSnifferUtility } from '@/utility/WalletSnifferUtility.ts';
+import FlowMovementScannerComponent from './FlowMovementScannerComponent.vue';
 
 const chocoMintoStore = useChocoMintoStore();
 const notificationStore = useNotificationStore();

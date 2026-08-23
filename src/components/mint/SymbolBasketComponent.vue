@@ -114,7 +114,7 @@ async function initializeFutureSymbolData(){
             currentFutureSumbol.value = futureSymbol;
             currentFutureSumbol.value.status = "processing"
 
-            //if(futureSymbol.symbol != "LTCUSDT") continue;
+            //if(futureSymbol.symbol != "COTIUSDT") continue;
 
             await runPositionEntry(futureSymbol.symbol, futureSymbol.maxLeverage, true);
             

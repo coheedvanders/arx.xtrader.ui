@@ -373,6 +373,11 @@ export interface CandleData {
   recentPositionSide: string;
   crossedAvwapCount: number;
   avwapCount: number;
+  totalFlowMovement: number;
+  totalFlowMovementZScore: number;
+  dominantFlowMovement: string | null
+  breakHighestAvWapMid: boolean;
+  breakLowestAvWapMid: boolean
 }
 
 
