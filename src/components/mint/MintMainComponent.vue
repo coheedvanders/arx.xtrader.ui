@@ -83,7 +83,25 @@
         Last Bal Check: {{ UI_BAL_CHECK }}
     </div>
 
-    <div class="row pa-md" v-if="isBotEnabled || chocoMintoStore.isManualSimulation">
+
+    <label>Cost</label>
+    <InputComponent type="numeric" v-model="chocoMintoStore.orderCost"/>
+
+    <!-- tab nav -->
+    <div class="pa-md text-left">
+        <ButtonComponent
+            v-for="tab in tabs"
+            :key="tab.id"
+            @click="activeTab = tab.id"
+            :color="activeTab === tab.id ? 'primary' : undefined"
+            rounded
+            class="mr-sm">
+            {{ tab.label }}
+        </ButtonComponent>
+    </div>
+
+    <!-- tab 1 -->
+    <div class="row pa-md" v-show="activeTab === 1" v-if="isBotEnabled || chocoMintoStore.isManualSimulation">
         <div class="text-center" v-if="UI_STATE_FORCE_CLOSE_MESSAGE != ''">
             {{ UI_STATE_FORCE_CLOSE_MESSAGE }}
         </div>
@@ -105,13 +123,63 @@
         </div>
     </div>
 
-    <label>Cost</label>
-    <InputComponent type="numeric" v-model="chocoMintoStore.orderCost"/>
-    
-    <FlowMovementScannerComponent ref="flowMovementScannerRef"/>
+    <!-- tab 2 -->
+    <div v-show="activeTab === 2">
+        <ThesisRecordComponent ref="thesisRecordRef" />
+    </div>
 
-    <!-- <TrendRiderComponent ref="trendRiderRef"/> -->
-     <ConditionMetComponent ref="conditionMetRef"/>
+    <!-- tab 3 -->
+    <div v-show="activeTab === 3">
+        <FlowMovementScannerComponent ref="flowMovementScannerRef"/>
+    </div>
+
+    <!-- tab 4 -->
+    <div v-show="activeTab === 4">
+        <!-- <TrendRiderComponent ref="trendRiderRef"/> -->
+        <ConditionMetComponent ref="conditionMetRef"/>
+    </div>
+
+    <div v-show="activeTab === 5">
+        <TableComponent>
+            <template #header>
+                <TableHeaderComponent>
+                    <th>Start</th>
+                    <th>End</th>
+                    <th>Starting Balance</th>
+                    <th>Ending Balance</th>
+                    <th>Margin Balance</th>
+                    <th>Result</th>
+                    <th>Open</th>
+                    <th>Won</th>
+                    <th>Loss</th>
+                    <th>Open Value</th>
+                    <th>Won Value</th>
+                    <th>Loss Value</th>
+                </TableHeaderComponent>
+            </template>
+
+            <template #body>
+                <TableBodyComponent>
+                    <tr v-for="(report, index) in simulationReport" :key="index">
+                        <td>{{ report.start }}</td>
+                        <td>{{ report.end }}</td>
+                        <td>{{ report.starting_balance.toFixed(2) }}</td>
+                        <td>{{ report.ending_balance.toFixed(2) }}</td>
+                        <td>{{ report.margin_balance.toFixed(2) }}</td>
+                        <td :class="report.result >= 0 ? 'text-green-500' : 'text-red-500'">
+                            {{ report.result.toFixed(2) }}
+                        </td>
+                        <td>{{ report.open }}</td>
+                        <td>{{ report.won }}</td>
+                        <td>{{ report.loss }}</td>
+                        <td>{{ report.open_value.toFixed(2) }}</td>
+                        <td>{{ report.won_value.toFixed(2) }}</td>
+                        <td>{{ report.loss_value.toFixed(2) }}</td>
+                    </tr>
+                </TableBodyComponent>
+            </template>
+        </TableComponent>
+    </div>
 
     <DialogComponent :model-value="UI_SHOW_REPLAY" width="95vw" @update:model-value="UI_SHOW_REPLAY = false">
         <DialogHeaderComponent>View Candle Entry Replay</DialogHeaderComponent>
@@ -134,46 +202,6 @@
         </DialogHeaderComponent>
         <CandleEntryHistoryComponent :candle-entries="selectedSymbolCandleEntries"/>
     </DialogComponent>
-
-    <TableComponent>
-        <template #header>
-            <TableHeaderComponent>
-                <th>Start</th>
-                <th>End</th>
-                <th>Starting Balance</th>
-                <th>Ending Balance</th>
-                <th>Margin Balance</th>
-                <th>Result</th>
-                <th>Open</th>
-                <th>Won</th>
-                <th>Loss</th>
-                <th>Open Value</th>
-                <th>Won Value</th>
-                <th>Loss Value</th>
-            </TableHeaderComponent>
-        </template>
-
-        <template #body>
-            <TableBodyComponent>
-                <tr v-for="(report, index) in simulationReport" :key="index">
-                    <td>{{ report.start }}</td>
-                    <td>{{ report.end }}</td>
-                    <td>{{ report.starting_balance.toFixed(2) }}</td>
-                    <td>{{ report.ending_balance.toFixed(2) }}</td>
-                    <td>{{ report.margin_balance.toFixed(2) }}</td>
-                    <td :class="report.result >= 0 ? 'text-green-500' : 'text-red-500'">
-                        {{ report.result.toFixed(2) }}
-                    </td>
-                    <td>{{ report.open }}</td>
-                    <td>{{ report.won }}</td>
-                    <td>{{ report.loss }}</td>
-                    <td>{{ report.open_value.toFixed(2) }}</td>
-                    <td>{{ report.won_value.toFixed(2) }}</td>
-                    <td>{{ report.loss_value.toFixed(2) }}</td>
-                </tr>
-            </TableBodyComponent>
-        </template>
-    </TableComponent>
 
 </template>
 
@@ -212,6 +240,7 @@ import TrendRiderComponent from './TrendRiderComponent.vue';
 import ConditionMetComponent from './ConditionMetComponent.vue';
 import { WalletSnifferUtility } from '@/utility/WalletSnifferUtility.ts';
 import FlowMovementScannerComponent from './FlowMovementScannerComponent.vue';
+import ThesisRecordComponent from './ThesisRecordComponent.vue';
 
 const chocoMintoStore = useChocoMintoStore();
 const notificationStore = useNotificationStore();
@@ -259,6 +288,15 @@ const completionCount = ref(0);
 
 const trendRiderRef = ref()
 const conditionMetRef = ref()
+
+const activeTab = ref(1)
+const tabs = [
+    { id: 1, label: 'Symbol Baskets' },
+    { id: 2, label: 'Thesis Record' },
+    { id: 3, label: 'Flow Movement Scanner' },
+    { id: 4, label: 'Condition Met' },
+    { id: 5, label: 'Simulation Result' }
+]
 
 var dates = [
     '1/19/2022',
@@ -396,7 +434,8 @@ async function initializeFutureSymbols(){
                     slPrice: 0,
                     hasRecentPosition: false,
                     recentPositionSide: "",
-                    networkChain: tokenMap.chain
+                    networkChain: tokenMap.chain,
+                    hasRecentCrossedMovementPoc: false
                 })
             }
         }

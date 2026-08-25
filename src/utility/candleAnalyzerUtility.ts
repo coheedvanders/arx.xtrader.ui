@@ -378,7 +378,11 @@ static buyerInterestScore(
         totalFlowMovementZScore: 0,
         dominantFlowMovement: null,
         breakHighestAvWapMid: false,
-        breakLowestAvWapMid: false
+        breakLowestAvWapMid: false,
+        crossedMovementPocCounter: 0,
+        hasRecentCrossedMovementPoc: false,
+        volatilityRatioChange: 0,
+        hasVolatilityRationSpike: false
     };
   }
 

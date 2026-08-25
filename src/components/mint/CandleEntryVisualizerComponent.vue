@@ -14,7 +14,20 @@
           v-model="showVolume"
           type="checkbox"
         />
-        <span>Show volume</span>
+        <span>Show property</span>
+      </label>
+
+      <label class="property-select-label">
+        <span>Plot property</span>
+        <select v-model="selectedPropertyPath" class="property-select">
+          <option
+            v-for="path in numericPropertyPaths"
+            :key="path"
+            :value="path"
+          >
+            {{ path }}
+          </option>
+        </select>
       </label>
 
       <label class="checkbox-label">
@@ -93,6 +106,57 @@
       <button @click="showMaCrossing = true">See MA</button>
 
       <button @click="showAccumulationAnalysis = true">Accumulation Scan</button>
+
+      <!-- ── Predict tool ─────────────────────────────────────────────────── -->
+      <div class="tool-dropdown" ref="predictDropdownRef">
+        <button
+          class="tool-btn"
+          :class="{ 'tool-btn-active': predictionResult !== null }"
+          @click="predictDropdownOpen = !predictDropdownOpen"
+          title="Projects the next N candles from the last M candles — factoring Open Interest, Long/Short ratio, cross-TF EMA alignment (1h/4h/1d), exchange inflow/outflow and bid/ask spread — through a Monte Carlo probabilistic simulation, then stretches the EMAs to continue along the predicted path"
+        >
+          {{ predictionRunning ? 'Predicting…' : 'Predict ▾' }}
+        </button>
+        <div v-if="predictDropdownOpen" class="tool-dropdown-menu predict-dropdown-menu">
+          <label class="predict-input-label">
+            <span>Past candles</span>
+            <input v-model.number="predictPastCandles" type="number" min="10" max="500" class="predict-number-input" />
+          </label>
+          <label class="predict-input-label">
+            <span>Predict candles</span>
+            <input v-model.number="predictFutureCandles" type="number" min="1" max="200" class="predict-number-input" />
+          </label>
+          <button class="tool-dropdown-item" @click="runPrediction">Run Prediction</button>
+          <div v-if="predictError" class="predict-error">{{ predictError }}</div>
+        </div>
+      </div>
+
+      <button
+        v-if="predictionResult"
+        class="tool-btn"
+        @click="clearPrediction"
+      >
+        Clear Prediction
+      </button>
+
+      <span
+        v-if="predictionResult"
+        class="predict-summary"
+        :class="predictionResult.direction.toLowerCase()"
+        :title="predictionTooltip"
+      >
+        Predict: {{ predictionResult.direction }} · {{ predictionResult.confidence.toFixed(0) }}%
+      </span>
+
+      <!-- ── Thesis review overlay ─────────────────────────────────────── -->
+      <button
+        class="tool-btn"
+        :class="{ 'tool-btn-active': showThesisOverlay }"
+        @click="toggleThesisOverlay"
+        title="Plots every recorded thesis for this symbol so you can check whether TP or SL was hit"
+      >
+        {{ loadingTheses ? 'Loading Theses…' : (showThesisOverlay ? 'Hide Thesis' : 'Show Thesis') }}
+      </button>
 
       <!-- ── Wallet Movement (exchange inflow/outflow) tool ──────────────── -->
       <button
@@ -210,6 +274,13 @@
             @click="fillPriceZonesWithAvwap('all'); pzAvwapDropdownOpen = false"
           >
             All zones
+          </button>
+          <button
+            class="tool-dropdown-item"
+            @click="fillFlowMovementPocWithAvwap(); pzAvwapDropdownOpen = false"
+            title="Anchor an AVWAP at every candle with a flow z-score spike (z ≥ 3); red = INFLOW, green = OUTFLOW"
+          >
+            Movement POC
           </button>
         </div>
       </div>
@@ -452,8 +523,12 @@
         <span v-if="lowestAskWall" class="wall-stat ask">
           Ask Wall {{ lowestAskWall.price.toFixed(4) }} ({{ formatNotional(lowestAskWall.price * lowestAskWall.qty) }})
         </span>
+        <span v-if="bidAskSpread" class="wall-stat spread">
+          Spread {{ bidAskSpread.abs.toFixed(4) }} ({{ bidAskSpread.percent.toFixed(3) }}%)
+        </span>
         <span class="wall-stat depth-count">
           Book: {{ bidsRaw.length }} bids / {{ asksRaw.length }} asks
+          · {{ bidDepthBars.length + askDepthBars.length }} shown
         </span>
       </div>
 
@@ -520,6 +595,14 @@
         @click="openOrderChecklist"
       >
         {{ placingOrder ? 'Placing…' : 'Place Order' }}
+      </button>
+      <button
+        class="preview-btn add-thesis"
+        :disabled="savingThesis"
+        @click="addThesis"
+        title="Snapshot the current candles plus this entry/TP/SL as a thesis, with your remarks, for later review"
+      >
+        {{ savingThesis ? 'Saving…' : 'Add Thesis' }}
       </button>
       <button class="preview-panel-close" @click="clearPreview">×</button>
     </div>
@@ -792,6 +875,33 @@
           </text>
         </g>
 
+        <!-- Recorded thesis review overlay — read-only TP/SL boxes for every
+             thesis saved for this symbol, so you can see at a glance whether
+             each one ran into TP or SL. Toggled by "Show/Hide Thesis". -->
+        <g v-if="showThesisOverlay" class="thesis-positions">
+          <rect
+            v-for="box in thesisPositionBoxes"
+            :key="box.id"
+            :x="box.x"
+            :y="box.y"
+            :width="box.width"
+            :height="box.height"
+            :class="['tp-sl-rect', `box-${box.type}`, `status-${box.status}`, 'thesis-rect']"
+          >
+            <title>{{ box.title }}</title>
+          </rect>
+
+          <text
+            v-for="pos in renderedThesisPositions"
+            :key="`thesis-label-${pos.id}`"
+            :x="candleX(pos.entryIndex) - candleWidth / 2 + 4"
+            :y="priceToY(pos.entryPrice) - 6"
+            :class="['thesis-position-label', pos.side === 'LONG' ? 'label-long' : 'label-short']"
+          >
+            {{ pos.side }} thesis @ {{ pos.entryPrice.toFixed(4) }} · {{ pos.status }}
+          </text>
+        </g>
+
         <!-- Volume Spike Connection Line -->
         <polyline
           v-if="connectVolumeSpikesvSpikes && volumeSpikePoints.length > 0"
@@ -829,6 +939,28 @@
           />
         </g>
 
+        <!-- Bid/Ask depth ladder — faded bars along the right edge, one per book level -->
+        <g class="depth-ladder">
+          <rect
+            v-for="(bar, i) in bidDepthBars"
+            :key="`depth-bid-${i}`"
+            :x="bar.x"
+            :y="bar.y - 1"
+            :width="bar.width"
+            height="2"
+            class="depth-bar depth-bar-bid"
+          />
+          <rect
+            v-for="(bar, i) in askDepthBars"
+            :key="`depth-ask-${i}`"
+            :x="bar.x"
+            :y="bar.y - 1"
+            :width="bar.width"
+            height="2"
+            class="depth-bar depth-bar-ask"
+          />
+        </g>
+
         <!-- Broken orange line when a candle's zone is fully inhabited (zoneInhabitantCount === 24) -->
         <g class="zone-full-lines">
           <line
@@ -860,8 +992,16 @@
           />
         </template>
 
-        <!-- Volume Bars — own section below the price chart, doesn't overlap candles -->
+        <!-- Dynamic numeric-property bars — reuses the original volume-bar panel geometry. -->
         <g v-if="showVolume" class="volume-bars">
+          <line
+            v-if="maxSelectedPropertyInView > 0"
+            x1="0"
+            :x2="svgWidth"
+            :y1="dynamicPropertyBaseline"
+            :y2="dynamicPropertyBaseline"
+            class="dynamic-property-baseline"
+          />
           <rect
             v-for="(bar, i) in volumeBars"
             :key="`volume-${i}`"
@@ -873,14 +1013,14 @@
           />
         </g>
 
-        <!-- Volume panel max label -->
+        <!-- Dynamic property max label -->
         <text
-          v-if="showVolume && maxVolumeInView > 0 && panelLayout.volume"
+          v-if="showVolume && maxSelectedPropertyInView > 0 && panelLayout.volume"
           :x="6"
           :y="panelLayout.volume.top + 14"
           class="volume-panel-label"
         >
-          Vol max {{ formatNotional(maxVolumeInView) }}
+          {{ selectedPropertyPath }} max {{ formatIndicatorValue(maxSelectedPropertyInView) }}
         </text>
 
         <!-- Wallet Movement panel background + separator (own section below volume) -->
@@ -1133,6 +1273,50 @@
           </template>
         </g>
 
+        <!-- Predicted Candles (probabilistic projection) -->
+        <g v-if="predictionResult" class="predicted-candles">
+          <polygon
+            v-if="predictedBandPoints"
+            :points="predictedBandPoints"
+            class="predicted-band"
+          />
+          <g
+            v-for="pc in predictedChartCandles"
+            :key="`predicted-${pc.index}`"
+            class="predicted-candle"
+            :class="{ bull: pc.close >= pc.open, bear: pc.close < pc.open }"
+          >
+            <line
+              :x1="candleX(pc.index)" :y1="priceToY(pc.high)"
+              :x2="candleX(pc.index)" :y2="priceToY(pc.low)"
+              class="predicted-wick"
+            />
+            <rect
+              :x="candleX(pc.index) - candleWidth / 2"
+              :y="priceToY(Math.max(pc.open, pc.close))"
+              :width="candleWidth"
+              :height="Math.max(Math.abs(pc.close - pc.open) / priceDelta * svgHeight, 1)"
+              class="predicted-body"
+            />
+          </g>
+        </g>
+
+        <!-- Predicted (stretched) EMA lines — dashed continuation of the live EMA/cross-TF EMA lines -->
+        <g v-if="predictionResult">
+          <polyline
+            v-for="line in predictedEmaLines"
+            :key="`predicted-ema-${line.tf}`"
+            :points="line.points"
+            class="predicted-ema-line"
+            :style="{ stroke: line.color }"
+            fill="none"
+            stroke-width="1.5"
+            stroke-dasharray="5,4"
+            stroke-linejoin="round"
+            stroke-linecap="round"
+          />
+        </g>
+
         <!-- Zone Labels -->
         <g class="zone-labels">
           <text
@@ -1205,13 +1389,31 @@
             </text>
 
             <text
-              v-if="candle.candleData?.breakHighestAvWapMid || candle.candleData?.breakLowestAvWapMid"
+              v-if="candle.candleData?.hasVolatilityRationSpike"
               :x="candleX(i)"
               :y="priceToY(candle.low!) + 65"
               class="pattern-label"
             >
-              [brk]
+              [VO]
             </text>
+
+            <!-- <text
+              v-if="candle.candleData?.breakHighestAvWapMid"
+              :x="candleX(i)"
+              :y="priceToY(candle.low!) + 65"
+              class="pattern-label"
+            >
+              [U]
+            </text>
+
+            <text
+              v-if="candle.candleData?.breakLowestAvWapMid"
+              :x="candleX(i)"
+              :y="priceToY(candle.low!) + 65"
+              class="pattern-label"
+            >
+              [D]
+            </text> -->
 
             <text
               v-if="candle.candleData?.crossedEma"
@@ -1389,7 +1591,7 @@
             </g>
 
             <!-- Flow spike box — trailing 24-candle exchange wallet flow z-score spike, from FlowMovementScanner's IndexedDB cache. Drawn for every past candle that qualified, not just the most recent. -->
-            <g v-if="candle.candleData?.totalFlowMovementZScore! >= 3" class="flow-spike-indicator">
+            <g v-if="candle.candleData?.totalFlowMovementZScore! >= 2.5" class="flow-spike-indicator">
               <rect
                 :x="candleX(i) - candleWidth / 2 - 3"
                 :y="priceToY(candle.high!) - 20"
@@ -3089,6 +3291,9 @@ import { isElementAccessExpression } from 'typescript';
 import { candleAnalyzer } from '@/utility/candleAnalyzerUtility.ts';
 import { bucketFlowByCandle, detectFlowSpikes } from '@/utility/flowMovement.ts';
 import { getFlowMovement, saveFlowMovement, type FlowMovementDbEntry } from '@/utility/flowMovementDb.ts';
+import { saveThesis as saveThesisRecord, getThesesForSymbol, type ThesisRecord } from '@/utility/thesisDb.ts';
+import { generateCandlePrediction, type CandlePredictionResult } from '@/utility/predictionProbability.ts';
+import type { PredictionCandleInput } from '@/utility/predictionProbability.ts';
 
 var chocomintoStore = useChocoMintoStore();
 // ─── Binance kline stream message shape ───────────────────────────────────────
@@ -3163,11 +3368,14 @@ interface Props {
   interval?: string
   /** Most recent AVWAP cross point, used to pre-fill the order checklist. */
   crossedAvwapPoint?: CrossedAvwapPoint | null
+  /** When true, the thesis overlay ("Show/Hide Thesis") is switched on as soon as the chart mounts — used when opening straight into a thesis review. */
+  initialShowThesis?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   symbol: 'btcusdt',
   interval: '15m',
+  initialShowThesis: false,
 })
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -3177,7 +3385,9 @@ const hoveredCandleIndex = ref<number | null>(null)
 const candleWidth = ref(8)
 const connectVolumeSpikesvSpikes = ref(true)
 const showVolume = ref(true)
-const showOiBar = ref(false)
+/** Numeric candle property currently plotted in the volume-style indicator panel. */
+const selectedPropertyPath = ref('volume')
+const showOiBar = ref(true)
 const showMovementPanel = ref(false)
 const showMovementDetail = ref(false)
 const selectedMovementCandleIndex = ref<number | null>(null)
@@ -3749,6 +3959,8 @@ interface AnchoredVwap {
   id: number
   anchorIndex: number
   endIndex: number | null
+  /** Fixed color override (e.g. from "Fill PZ AVWAP > Movement POC"). When unset, anchoredVwapSeries falls back to the AVWAP_COLORS rotation. */
+  color?: string
 }
 
 interface AnchoredVwapPoint {
@@ -3764,6 +3976,13 @@ interface AnchoredVwapPoint {
 const AVWAP_BAND_MULTIPLIER = candleAnalyzer.getAnchorVwapBandMultiplier()
 const AVWAP_COLORS = ['#facc15', '#38bdf8', '#f472b6', '#a78bfa', '#4ade80', '#fb923c']
 
+/** Fixed line colors for "Fill PZ AVWAP > Movement POC", keyed by the anchor candle's dominantFlowMovement. */
+const MOVEMENT_POC_INFLOW_COLOR = '#ef5350'  // INFLOW  -> red
+const MOVEMENT_POC_OUTFLOW_COLOR = '#26a69a' // OUTFLOW -> green
+
+/** Fixed line color for "Fill PZ AVWAP > All zones" — faded violet, so it reads distinctly from the AVWAP_COLORS rotation. */
+const ALL_ZONES_AVWAP_COLOR = '#9c88b4'
+
 let avwapIdCounter = 0
 const avwapModeActive = ref(false)
 const anchoredVwaps = ref<AnchoredVwap[]>([])
@@ -3774,8 +3993,17 @@ const avwapEndDraggingId = ref<number | null>(null)
 const pzAvwapDropdownOpen = ref(false)
 const pzAvwapDropdownRef = ref<HTMLElement | null>(null)
 
+// ─── Predict tool state ───────────────────────────────────────────────────
+const predictDropdownOpen = ref(false)
+const predictDropdownRef = ref<HTMLElement | null>(null)
+const predictPastCandles = ref(48)
+const predictFutureCandles = ref(24)
+const predictionResult = ref<CandlePredictionResult | null>(null)
+const predictionRunning = ref(false)
+const predictError = ref<string | null>(null)
+
 /** Toggles the shaded band + upper/lower lines on every placed AVWAP; the mid line always stays visible. */
-const showAvwapBands = ref(true)
+const showAvwapBands = ref(false)
 
 function toggleAvwapMode() {
   avwapModeActive.value = !avwapModeActive.value
@@ -3844,7 +4072,7 @@ const anchoredVwapSeries = computed(() => {
       isOpenEnded: a.endIndex === null,
       anchorPrice: points[0]?.mid ?? anchorCandle?.close ?? 0,
       endPrice: lastPoint?.mid ?? anchorCandle?.close ?? 0,
-      color: AVWAP_COLORS[i % AVWAP_COLORS.length],
+      color: a.color ?? AVWAP_COLORS[i % AVWAP_COLORS.length],
       points,
     }
   })
@@ -3958,7 +4186,53 @@ function fillPriceZonesWithAvwap(scope: 'recent' | 'all') {
     id: ++avwapIdCounter,
     anchorIndex,
     endIndex: null,
+    color: scope === 'all' ? ALL_ZONES_AVWAP_COLOR : undefined,
   }))
+}
+
+/**
+ * Builds one open-ended AnchoredVwap per candle whose trailing exchange
+ * wallet flow z-score spiked (candleData.totalFlowMovementZScore >=
+ * FLOW_SPIKE_Z_THRESHOLD), i.e. the same candles the flow-spike box
+ * indicator lights up on. Each entry is colored by that candle's
+ * dominantFlowMovement: INFLOW -> red, OUTFLOW -> green; anything else
+ * (tie/no data) is left uncolored so anchoredVwapSeries falls back to the
+ * normal AVWAP_COLORS rotation. Pure — does not touch anchoredVwaps itself,
+ * so callers can either replace or append.
+ */
+function buildFlowMovementPocAvwaps(): AnchoredVwap[] {
+  const anchorIndices: number[] = []
+
+  for (let i = 0; i < displayCandles.value.length; i++) {
+    const candle = displayCandles.value[i]
+    if ((candle.candleData?.totalFlowMovementZScore ?? 0) >= FLOW_SPIKE_Z_THRESHOLD) {
+      anchorIndices.push(i)
+    }
+  }
+
+  return anchorIndices.map(anchorIndex => {
+    const dominant = displayCandles.value[anchorIndex].candleData?.dominantFlowMovement
+    return {
+      id: ++avwapIdCounter,
+      anchorIndex,
+      endIndex: null,
+      color: dominant === 'INFLOW'
+        ? MOVEMENT_POC_INFLOW_COLOR
+        : dominant === 'OUTFLOW'
+          ? MOVEMENT_POC_OUTFLOW_COLOR
+          : undefined,
+    }
+  })
+}
+
+/** "Fill PZ AVWAP > Movement POC" button — replaces any currently placed AVWAPs, same as the other Fill PZ AVWAP options. */
+function fillFlowMovementPocWithAvwap() {
+  anchoredVwaps.value = buildFlowMovementPocAvwaps()
+}
+
+/** On load, auto-add the Movement POC AVWAPs on top of whatever plotInitialAvwapPoint placed, so the chart opens with flow-spike AVWAPs already plotted instead of requiring a manual "Movement POC" click. */
+function plotInitialFlowMovementPocAvwaps() {
+  anchoredVwaps.value.push(...buildFlowMovementPocAvwaps())
 }
 
 
@@ -6345,6 +6619,54 @@ const lowestAskWall = computed<BookLevel | null>(() => {
   return large.reduce((best, l) => (l.price < best.price ? l : best))
 })
 
+// ─── Bid/ask spread + depth ladder (faded bars along the right edge) ────────
+// bidsRaw/asksRaw already hold the full snapshot (up to DEPTH_SNAPSHOT_LIMIT
+// levels per side), so there's plenty of depth here — this just renders it.
+
+const bestBid = computed<BookLevel | null>(() => bidsRaw.value[0] ?? null)
+const bestAsk = computed<BookLevel | null>(() => asksRaw.value[0] ?? null)
+
+const bidAskSpread = computed(() => {
+  if (!bestBid.value || !bestAsk.value) return null
+  const abs = bestAsk.value.price - bestBid.value.price
+  const mid = (bestAsk.value.price + bestBid.value.price) / 2
+  return { abs, percent: mid > 0 ? (abs / mid) * 100 : 0 }
+})
+
+/** Max width, in px, a full-size depth bar can stretch in from the right edge. */
+const DEPTH_BAR_MAX_WIDTH = 170
+
+/** Only render levels currently within the visible price range — still typically
+ * hundreds of rows on a real book, which is what actually shows up as bars. */
+const visibleBidLevels = computed(() => bidsRaw.value.filter(l => l.price >= minPrice.value && l.price <= maxPrice.value))
+const visibleAskLevels = computed(() => asksRaw.value.filter(l => l.price >= minPrice.value && l.price <= maxPrice.value))
+
+/** Normalize bar widths against the deepest level on either side in view, so the
+ * biggest wall in frame reaches the full bar width and everything else scales off it. */
+const depthLadderMaxQty = computed(() => {
+  const qtys = [...visibleBidLevels.value, ...visibleAskLevels.value].map(l => l.qty)
+  return qtys.length ? Math.max(...qtys) : 1
+})
+
+function buildDepthBars(levels: BookLevel[]) {
+  return levels.map(l => {
+    const width = Math.max(1.5, (l.qty / depthLadderMaxQty.value) * DEPTH_BAR_MAX_WIDTH)
+    return {
+      price: l.price,
+      qty: l.qty,
+      y: priceToY(l.price),
+      width,
+      x: svgWidth.value - width,
+    }
+  })
+}
+
+/** Faded bars for every visible bid level — anchored to the right edge, one per price tick. */
+const bidDepthBars = computed(() => buildDepthBars(visibleBidLevels.value))
+
+/** Faded bars for every visible ask level — anchored to the right edge, one per price tick. */
+const askDepthBars = computed(() => buildDepthBars(visibleAskLevels.value))
+
 function intervalToMs(interval: string): number {
   const unit = interval.slice(-1)
   const value = parseInt(interval.slice(0, -1), 10)
@@ -6408,6 +6730,8 @@ interface PreviewPosition {
   tpPrice: number
   slPrice: number
   margin: number
+  /** openTime (ms) of the candle the preview was measured against — lets a saved thesis re-anchor itself on the chart later. */
+  entryOpenTime?: number | null
 }
 
 const PREVIEW_MARGIN_STORAGE_KEY = 'candleVisualizer.previewMargin'
@@ -6482,6 +6806,7 @@ async function runPreview(side: 'LONG' | 'SHORT', apiSide: 'BUY' | 'SELL') {
       tpPrice: tpSl.tp_price,
       slPrice: tpSl.sl_price,
       margin: previewMargin.value,
+      entryOpenTime: referenceCandle.openTime ?? null,
     }
   } catch (error) {
     console.error('Preview TP/SL calculation failed:', error)
@@ -6635,6 +6960,182 @@ async function placeOrder() {
     placingOrder.value = false
   }
 }
+
+// ─── Thesis recording (snapshot entry/TP/SL + candles + remarks) ──────────
+//
+// "Add Thesis" snapshots whatever position is currently previewed/placed
+// (entry, TP, SL) along with the candles on screen right now, prompts for
+// a short remark, and stores the whole thing in IndexedDB via thesisDb.ts.
+// "Show/Hide Thesis" later reloads every saved thesis for this symbol and
+// plots it as a read-only TP/SL box so you can see whether it ran into TP
+// or SL, the same way the backtest position boxes work.
+const savingThesis = ref(false)
+const showThesisOverlay = ref(false)
+const loadingTheses = ref(false)
+const thesisRecords = ref<ThesisRecord[]>([])
+
+/** Snapshots the current preview position + visible candles as a new thesis, after prompting for remarks. */
+async function addThesis() {
+  const pos = previewPosition.value
+  if (!pos || !props.symbol) {
+    useNotificationStore().showNotification(
+      'warning',
+      'top-right',
+      'No Position',
+      'Preview or place a position (entry, TP, SL) before adding a thesis.'
+    )
+    return
+  }
+
+  const remarks = window.prompt('Add thesis remarks / notes:', '')
+  if (remarks === null) return // user cancelled the prompt
+
+  savingThesis.value = true
+  try {
+    // displayCandles entries carry nested reactive fields (e.g. candleData)
+    // that are still live Vue Proxies even after a shallow `{ ...c }` copy —
+    // IndexedDB's structured-clone algorithm can't serialize a Proxy, which
+    // is what throws "could not be cloned". Round-tripping through
+    // JSON strips all reactivity and leaves a plain, cloneable snapshot.
+    const candlesSnapshot = JSON.parse(JSON.stringify(displayCandles.value))
+
+    await saveThesisRecord({
+      symbol: props.symbol,
+      side: pos.side,
+      entryPrice: pos.entryPrice,
+      tpPrice: pos.tpPrice,
+      slPrice: pos.slPrice,
+      entryOpenTime: pos.entryOpenTime ?? null,
+      createdAt: Date.now(),
+      remarks: remarks.trim(),
+      candles: candlesSnapshot,
+    })
+    useNotificationStore().showNotification('success', 'top-right', 'Thesis', 'Thesis recorded.')
+    if (showThesisOverlay.value) await loadThesisOverlay()
+  } catch (error) {
+    console.error('Failed to save thesis:', error)
+    useNotificationStore().showNotification('error', 'top-right', 'Thesis', 'Failed to save the thesis. Please try again.')
+  } finally {
+    savingThesis.value = false
+  }
+}
+
+/** Loads every saved thesis for this symbol from IndexedDB. */
+async function loadThesisOverlay() {
+  if (!props.symbol) return
+  loadingTheses.value = true
+  try {
+    thesisRecords.value = await getThesesForSymbol(props.symbol)
+  } catch (error) {
+    console.error('Failed to load thesis records:', error)
+    useNotificationStore().showNotification('error', 'top-right', 'Thesis', 'Failed to load recorded theses.')
+  } finally {
+    loadingTheses.value = false
+  }
+}
+
+/** Toggles the thesis overlay, loading records from IndexedDB the first time it's switched on. */
+async function toggleThesisOverlay() {
+  showThesisOverlay.value = !showThesisOverlay.value
+  if (showThesisOverlay.value) {
+    await loadThesisOverlay()
+  }
+}
+
+/**
+ * Finds the display-candle index closest to a thesis's saved entryOpenTime.
+ * Falls back to 0 (oldest visible candle) when the exact candle has since
+ * scrolled out of `displayCandles` or no openTime was recorded.
+ */
+function thesisEntryIndex(thesis: ThesisRecord): number {
+  if (thesis.entryOpenTime == null) return 0
+  const idx = displayCandles.value.findIndex(c => c.openTime === thesis.entryOpenTime)
+  if (idx !== -1) return idx
+  // Not an exact match (e.g. candle history has shifted) — use the first
+  // candle at or after the thesis's entry time, else fall back to the start.
+  const fallback = displayCandles.value.findIndex(c => (c.openTime ?? 0) >= (thesis.entryOpenTime ?? 0))
+  return fallback !== -1 ? fallback : 0
+}
+
+/**
+ * Walks forward from a thesis's entry candle through every currently
+ * visible candle to determine whether TP or SL was hit first. Same
+ * approach/status strings as evaluateBacktestPosition, just run over the
+ * full displayCandles range instead of being capped at backtestIndex.
+ */
+function evaluateThesisPosition(thesis: ThesisRecord) {
+  const isLong = thesis.side === 'LONG'
+  const entryIndex = thesisEntryIndex(thesis)
+  let endIndex = entryIndex
+  let status = 'open'
+
+  for (let j = entryIndex + 1; j < displayCandles.value.length; j++) {
+    const c = displayCandles.value[j]
+    if (!c || c.high == null || c.low == null) continue
+    const hitTp = isLong ? c.high >= thesis.tpPrice : c.low <= thesis.tpPrice
+    const hitSl = isLong ? c.low <= thesis.slPrice : c.high >= thesis.slPrice
+    if (!hitTp && !hitSl) continue
+
+    endIndex = j
+    if (hitTp && hitSl) {
+      const distToTp = Math.abs((c.open ?? thesis.entryPrice) - thesis.tpPrice)
+      const distToSl = Math.abs((c.open ?? thesis.entryPrice) - thesis.slPrice)
+      status = distToTp <= distToSl
+        ? (isLong ? 'win_long' : 'win_short')
+        : (isLong ? 'loss_long' : 'loss_short')
+    } else if (hitTp) {
+      status = isLong ? 'win_long' : 'win_short'
+    } else {
+      status = isLong ? 'loss_long' : 'loss_short'
+    }
+    break
+  }
+
+  return { ...thesis, id: thesis.id ?? 0, entryIndex, endIndex, status }
+}
+
+const renderedThesisPositions = computed(() => {
+  if (!showThesisOverlay.value) return []
+  return thesisRecords.value.map(evaluateThesisPosition)
+})
+
+const thesisPositionBoxes = computed(() => {
+  const boxes: any[] = []
+  for (const pos of renderedThesisPositions.value) {
+    const isLong = pos.side === 'LONG'
+    const boxLeftX = candleX(pos.entryIndex) - candleWidth.value / 2
+    const boxRightX = candleX(pos.endIndex) + candleWidth.value / 2
+    const boxWidth = boxRightX - boxLeftX
+    const title = `${pos.side} · ${pos.status}${pos.remarks ? ` — ${pos.remarks}` : ''}`
+
+    const tpUpper = isLong ? pos.tpPrice : pos.entryPrice
+    const tpLower = isLong ? pos.entryPrice : pos.tpPrice
+    boxes.push({
+      id: `thesis-tp-${pos.id}`,
+      x: boxLeftX,
+      y: priceToY(tpUpper),
+      width: boxWidth,
+      height: priceToY(tpLower) - priceToY(tpUpper),
+      type: 'tp',
+      status: pos.status,
+      title,
+    })
+
+    const slUpper = isLong ? pos.entryPrice : pos.slPrice
+    const slLower = isLong ? pos.slPrice : pos.entryPrice
+    boxes.push({
+      id: `thesis-sl-${pos.id}`,
+      x: boxLeftX,
+      y: priceToY(slUpper),
+      width: boxWidth,
+      height: priceToY(slLower) - priceToY(slUpper),
+      type: 'sl',
+      status: pos.status,
+      title,
+    })
+  }
+  return boxes
+})
 
 /**
  * Drag the preview position's TP or SL line vertically to manually adjust
@@ -6815,6 +7316,7 @@ function plotInitialAvwapPoint() {
 watch(() => props.candles, () => {
   anchoredVwaps.value = []
   plotInitialAvwapPoint()
+  plotInitialFlowMovementPocAvwaps()
 })
 
 // The kline/depth WebSocket streams are keyed by symbol+interval at connect
@@ -6845,16 +7347,31 @@ function handlePzAvwapDropdownOutsideClick(event: MouseEvent) {
   }
 }
 
+/** Closes the "Predict" dropdown when clicking anywhere outside it. */
+function handlePredictDropdownOutsideClick(event: MouseEvent) {
+  if (!predictDropdownOpen.value) return
+  if (predictDropdownRef.value && !predictDropdownRef.value.contains(event.target as Node)) {
+    predictDropdownOpen.value = false
+  }
+}
+
 onMounted(() => {
   scrollToRight()
   connectWebSocket()
   connectDepthWebSocket()
   plotInitialAvwapPoint()
+  plotInitialFlowMovementPocAvwaps()
   if (showCrossTfEma.value) fetchCrossTfEma()
+  // OI and Long/Short ratio now default to on, so load them immediately
+  // instead of waiting for the checkboxes to be toggled off-and-on.
+  if (showOiBar.value) fetchOiHistory()
+  if (showLongShortRatio.value) fetchLongShortRatio()
   tryShowCachedMovement()
   nowTickTimer = setInterval(() => { nowTick.value = Date.now() }, 1_000)
   document.addEventListener('mousedown', handlePzAvwapDropdownOutsideClick)
+  document.addEventListener('mousedown', handlePredictDropdownOutsideClick)
   restoreDrawingsWhenReady(props.symbol)
+  if (props.initialShowThesis) toggleThesisOverlay()
 })
 
 // Re-load this symbol's saved rectangles/lines (and drop the previous
@@ -6872,6 +7389,7 @@ onUnmounted(() => {
     nowTickTimer = null
   }
   document.removeEventListener('mousedown', handlePzAvwapDropdownOutsideClick)
+  document.removeEventListener('mousedown', handlePredictDropdownOutsideClick)
 })
 
 // ─── Existing computed / helpers (unchanged, but now use displayCandles) ──────
@@ -6896,18 +7414,33 @@ const minPrice = computed(() => {
   if (priceRangeMin.value !== 0) return priceRangeMin.value
   // Multi-TF bars are aggregated directly from displayCandles, so their
   // highs/lows are always a subset of the base range already covered here.
-  return Math.min(...displayCandles.value.map(c => c.low!)) * 0.98
+  let min = Math.min(...displayCandles.value.map(c => c.low!))
+  // When a prediction is showing, widen the range so the projected band/
+  // candles (and stretched EMAs) aren't clipped off the bottom of the chart.
+  if (predictionResult.value) {
+    for (const pc of predictionResult.value.predictedCandles) {
+      min = Math.min(min, pc.low, pc.closeLow)
+    }
+  }
+  return min * 0.98
 })
 
 const maxPrice = computed(() => {
   if (priceRangeMax.value !== 0) return priceRangeMax.value
-  return Math.max(...displayCandles.value.map(c => c.high!)) * 1.02
+  let max = Math.max(...displayCandles.value.map(c => c.high!))
+  if (predictionResult.value) {
+    for (const pc of predictionResult.value.predictedCandles) {
+      max = Math.max(max, pc.high, pc.closeHigh)
+    }
+  }
+  return max * 1.02
 })
 
 const priceDelta = computed(() => maxPrice.value - minPrice.value)
 
 const svgWidth = computed(() => {
-  return (displayCandles.value.length + multiTfPrependOffsetSlots.value) * (candleWidth.value + candleGap) + 200
+  const predictedSlots = predictionResult.value ? predictionResult.value.predictedCandles.length : 0
+  return (displayCandles.value.length + multiTfPrependOffsetSlots.value + predictedSlots) * (candleWidth.value + candleGap) + 200
 })
 
 const gridPrices = computed(() => {
@@ -7269,7 +7802,7 @@ interface MultiTfCandlePoint {
 
 const MULTI_TF_CANDLE_TIMEFRAMES = ['1h', '4h', '1d'] as const
 type MultiTfCandleTimeframe = typeof MULTI_TF_CANDLE_TIMEFRAMES[number]
-const MULTI_TF_CANDLE_LIMIT = 500
+const MULTI_TF_CANDLE_LIMIT = 1000
 
 const MULTI_TF_CANDLE_COLORS: Record<MultiTfCandleTimeframe, string> = CROSS_TF_EMA_COLORS
 
@@ -7768,31 +8301,109 @@ const VOLUME_PANEL_MAX_RATIO = 0.9
 /** Height actually usable by the tallest bar (for label positioning). */
 const volumePanelUsableHeight = VOLUME_PANEL_HEIGHT * VOLUME_PANEL_MAX_RATIO
 
-/** Highest `candle.volume` currently in view — used to scale bar heights. */
-const maxVolumeInView = computed(() => {
+/**
+ * Return all numeric leaf properties available on the candle objects.
+ * Nested objects are represented as dot paths (for example
+ * `candleData.candlesAboveCount` or `zoneAnalysis.momentumStrength`).
+ * Arrays are intentionally skipped so previous-candle/history arrays do not
+ * explode the dropdown into indexed paths.
+ */
+function collectNumericPropertyPaths(value: unknown, prefix = '', result = new Set<string>()): Set<string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return result
+
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const path = prefix ? `${prefix}.${key}` : key
+
+    if (typeof child === 'number' && Number.isFinite(child)) {
+      result.add(path)
+    } else if (child && typeof child === 'object' && !Array.isArray(child)) {
+      collectNumericPropertyPaths(child, path, result)
+    }
+  }
+
+  return result
+}
+
+/** Every numeric property found across the currently displayed candles. */
+const numericPropertyPaths = computed(() => {
+  const paths = new Set<string>()
+  for (const candle of displayCandles.value) {
+    collectNumericPropertyPaths(candle, '', paths)
+  }
+
+  // Keep the normal/default property at the top.
+  const sorted = Array.from(paths).sort((a, b) => a.localeCompare(b))
+  if (paths.has('volume')) {
+    return ['volume', ...sorted.filter(path => path !== 'volume')]
+  }
+  return sorted
+})
+
+/** Safely resolve a dot-path such as `zoneAnalysis.momentumStrength`. */
+function getNumericPropertyValue(value: unknown, path: string): number {
+  let current: unknown = value
+  for (const key of path.split('.')) {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) return 0
+    current = (current as Record<string, unknown>)[key]
+  }
+  return typeof current === 'number' && Number.isFinite(current) ? current : 0
+}
+
+function formatIndicatorValue(value: number): string {
+  if (!Number.isFinite(value)) return '0'
+  const abs = Math.abs(value)
+  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`
+  if (abs >= 1_000) return `${(value / 1_000).toFixed(2)}K`
+  if (Number.isInteger(value)) return String(value)
+  return value.toFixed(abs < 1 ? 6 : 2)
+}
+
+/** Highest absolute selected-property value currently in view — used to scale bars. */
+const maxSelectedPropertyInView = computed(() => {
   let max = 0
-  for (const c of displayCandles.value) {
-    const v = c.volume ?? 0
-    if (v > max) max = v
+  for (const candle of displayCandles.value) {
+    const value = Math.abs(getNumericPropertyValue(candle, selectedPropertyPath.value))
+    if (value > max) max = value
   }
   return max
 })
 
-/** One bar per candle, anchored to the bottom of its own panel (grows upward), scaled by volume. */
+/**
+ * Reuses the existing volume-bar geometry, but plots whichever numeric candle
+ * property is selected. Positive values grow upward from the panel baseline;
+ * negative values grow downward. This makes signed properties such as delta
+ * volume useful without changing the chart's existing panel layout.
+ */
 const volumeBars = computed(() => {
-  if (maxVolumeInView.value <= 0 || !panelLayout.value.volume) return []
-  const panelBottom = panelLayout.value.volume.bottom
+  if (maxSelectedPropertyInView.value <= 0 || !panelLayout.value.volume) return []
+
+  const panel = panelLayout.value.volume
+  const panelBottom = panel.bottom
+  const baseline = panelBottom - volumePanelUsableHeight / 2
+  const maxHeight = volumePanelUsableHeight / 2
+  const maxValue = maxSelectedPropertyInView.value
+
   return displayCandles.value.map((candle, i) => {
-    const vol = candle.volume ?? 0
-    const barHeight = (vol / maxVolumeInView.value) * volumePanelUsableHeight
+    const value = getNumericPropertyValue(candle, selectedPropertyPath.value)
+    const barHeight = (Math.abs(value) / maxValue) * maxHeight
+    const y = value >= 0 ? baseline - barHeight : baseline
+
     return {
       x: candleX(i) - candleWidth.value / 2,
-      y: panelBottom - barHeight,
+      y,
       width: candleWidth.value,
       height: barHeight,
+      value,
       isBull: candle.close! >= candle.open!,
+      isPositive: value >= 0,
     }
   })
+})
+
+/** Baseline for signed dynamic-property bars. */
+const dynamicPropertyBaseline = computed(() => {
+  if (!panelLayout.value.volume) return 0
+  return panelLayout.value.volume.bottom - volumePanelUsableHeight / 2
 })
 
 // ─── Wallet Movement panel (exchange inflow/outflow) ───────────────────────────
@@ -7927,7 +8538,10 @@ function tryShowCachedMovement() {
   walletMovements.value = cached.movements
   movementError.value = null
   showMovementPanel.value = true
-  fetchWalletMovement({ silent: true })
+  // NOTE: intentionally no live fetch here — mount should only ever show
+  // what's already cached (localStorage here, or the IndexedDB scanner
+  // cache via loadFlowScannerCache), never hit the network on its own.
+  // Press "See Movement" for a live fetch.
 }
 
 interface MovementBucket {
@@ -8063,17 +8677,16 @@ async function loadFlowScannerCache() {
     flowScannerMovements.value = cached?.movements ?? []
 
     // Nothing shown for this symbol+interval yet (no "See Movement" fetch in
-    // flight/done, no localStorage movement cache to fall back on via
-    // tryShowCachedMovement) — but the flow scanner already has movement
-    // records for this symbol sitting in IndexedDB from its own sweep or a
-    // prior backfill. Show the bars from that immediately instead of making
-    // the user press "See Movement" and wait on a network round trip; the
-    // panel then quietly upgrades to a live, fully-covered fetch in the
-    // background (same pattern as tryShowCachedMovement below).
-    const hasLocalStorageCache = movementCache.value[movementCacheKey(props.symbol, props.interval)] !== undefined
-    if (!hasLocalStorageCache && walletMovements.value.length === 0 && flowScannerMovements.value.length > 0) {
+    // flight/done, no localStorage movement cache via tryShowCachedMovement)
+    // — but the flow scanner already has movement records for this symbol
+    // sitting in IndexedDB from its own sweep or a prior backfill. Show the
+    // bars from that immediately: no network call, purely what's cached.
+    // (tryShowCachedMovement runs in an earlier onMounted hook and is
+    // synchronous, so by the time this async check runs, walletMovements is
+    // already populated if a localStorage cache existed — no separate check
+    // needed here.)
+    if (walletMovements.value.length === 0 && flowScannerMovements.value.length > 0) {
       showMovementPanel.value = true
-      fetchWalletMovement({ silent: true })
     }
   } catch (err) {
     console.warn('[flow spike] failed to load cached scanner movement', err)
@@ -8211,8 +8824,11 @@ async function ensureFlowScannerCoverage() {
 }
 
 async function refreshFlowScannerData() {
-  await loadFlowScannerCache() // show whatever's cached immediately
-  await ensureFlowScannerCoverage() // then quietly fill in whatever's missing for the full visible range
+  // Mount/symbol-switch only ever shows what's already cached in IndexedDB —
+  // no network call. ensureFlowScannerCoverage() (live backfill) now only
+  // runs when the user actually scrolls the chart further back in history
+  // (see the watch below), not automatically on load.
+  await loadFlowScannerCache()
 }
 onMounted(refreshFlowScannerData)
 watch(() => [props.symbol, props.interval], refreshFlowScannerData)
@@ -8620,7 +9236,7 @@ interface LsRatioEntry {
   shortAccount: number
 }
 
-const showLongShortRatio = ref(false)
+const showLongShortRatio = ref(true)
 const lsRatioHistory = ref<LsRatioEntry[]>([])
 const lsRatioLoading = ref(false)
 const lsRatioError = ref<string | null>(null)
@@ -8871,6 +9487,122 @@ const formatValue = (value: any): string => {
   if (typeof value === 'object') return JSON.stringify(value)
   return String(value)
 }
+
+// ─── Predict tool ───────────────────────────────────────────────────────────
+//
+// Builds a PredictionCandleInput[] from whatever the chart already has
+// loaded (OI, L/S ratio, cross-TF EMA, exchange flow) over the visible
+// candles, hands it to predictionProbability.ts, and stores the result.
+// All the actual modeling (factor scoring + Monte Carlo simulation + EMA
+// stretching) lives in that module — this just wires the chart's own data
+// into it and renders the output.
+
+/** Runs the probabilistic prediction using the current chart state as input. */
+function runPrediction() {
+  predictError.value = null
+
+  if (displayCandles.value.length < 10) {
+    predictError.value = 'Not enough candle history loaded to predict (need at least 10).'
+    return
+  }
+
+  predictionRunning.value = true
+  try {
+    const cross1h = crossTfEmaPerCandle('1h')
+    const cross4h = crossTfEmaPerCandle('4h')
+    const cross1d = crossTfEmaPerCandle('1d')
+
+    const history: PredictionCandleInput[] = displayCandles.value.map((c, i) => ({
+      openTime: c.openTime!,
+      open: c.open!,
+      high: c.high!,
+      low: c.low!,
+      close: c.close!,
+      ema200: c.candleData?.ema200 ?? null,
+      openInterest: oiPerCandle.value[i] ?? null,
+      longShortRatio: lsRatioPerCandle.value[i] ?? null,
+      crossTfEma: {
+        '1h': cross1h[i] ?? null,
+        '4h': cross4h[i] ?? null,
+        '1d': cross1d[i] ?? null,
+      },
+      flow: {
+        inflow: movementPerCandle.value[i]?.inflow ?? 0,
+        outflow: movementPerCandle.value[i]?.outflow ?? 0,
+      },
+    }))
+
+    predictionResult.value = generateCandlePrediction(history, {
+      pastCandles: predictPastCandles.value,
+      predictedCandles: predictFutureCandles.value,
+      bidAskSpreadPercent: bidAskSpread.value?.percent ?? null,
+      intervalMs: intervalToMs(props.interval),
+    })
+    predictDropdownOpen.value = false
+  } catch (err) {
+    predictError.value = err instanceof Error ? err.message : 'prediction failed'
+    predictionResult.value = null
+  } finally {
+    predictionRunning.value = false
+  }
+}
+
+function clearPrediction() {
+  predictionResult.value = null
+  predictError.value = null
+}
+
+/** Chart index where predicted candles start — right after the last displayed real candle. */
+const predictedCandleOffset = computed(() => displayCandles.value.length)
+
+/** Predicted candles paired with their chart index, ready for candleX(). */
+const predictedChartCandles = computed(() => {
+  if (!predictionResult.value) return []
+  const offset = predictedCandleOffset.value
+  return predictionResult.value.predictedCandles.map((pc, i) => ({ index: offset + i, ...pc }))
+})
+
+/** 25th↔75th percentile close envelope across all simulated paths, as a filled polygon. */
+const predictedBandPoints = computed(() => {
+  if (!predictionResult.value) return ''
+  const offset = predictedCandleOffset.value
+  const upper = predictionResult.value.predictedCandles.map((c, i) => `${candleX(offset + i)},${priceToY(c.closeHigh)}`)
+  const lower = predictionResult.value.predictedCandles.map((c, i) => `${candleX(offset + i)},${priceToY(c.closeLow)}`).reverse()
+  if (upper.length === 0) return ''
+  return [...upper, ...lower].join(' ')
+})
+
+/** Stretched EMA lines (15m/1h/4h/1d), dashed, continuing from the last real EMA value into the predicted region. */
+const predictedEmaLines = computed(() => {
+  if (!predictionResult.value) return []
+  const offset = predictedCandleOffset.value
+  const colorByTf: Record<string, string> = {
+    '15m': '#ffffff',
+    '1h': CROSS_TF_EMA_COLORS['1h'],
+    '4h': CROSS_TF_EMA_COLORS['4h'],
+    '1d': CROSS_TF_EMA_COLORS['1d'],
+  }
+  return predictionResult.value.emaProjections
+    .filter(series => series.points.length > 0)
+    .map(series => ({
+      tf: series.tf,
+      color: colorByTf[series.tf] ?? '#ffffff',
+      points: series.points.map((p, i) => `${candleX(offset + i)},${priceToY(p.ema)}`).join(' '),
+    }))
+})
+
+/** Multi-line factor breakdown for the summary badge's title/tooltip. */
+const predictionTooltip = computed(() => {
+  const r = predictionResult.value
+  if (!r) return ''
+  return [
+    `Composite score: ${r.compositeScore.toFixed(2)} (−1 short .. +1 long)`,
+    `Drift/candle: ${(r.driftPerCandle * 100).toFixed(3)}%  Vol/candle: ${(r.volatilityPerCandle * 100).toFixed(3)}%`,
+    `Simulations: ${r.simulations}  Past candles used: ${r.pastCandlesUsed}`,
+    '',
+    ...r.factors.map(f => `${f.name}: ${f.score >= 0 ? '+' : ''}${f.score.toFixed(2)} (w=${f.weight}) — ${f.detail}`),
+  ].join('\n')
+})
 </script>
 
 <style scoped>
@@ -8968,6 +9700,73 @@ const formatValue = (value: any): string => {
   background: rgba(255,255,255,0.1);
   color: #fff;
 }
+
+/* ── Predict tool ─────────────────────────────────────────────────────── */
+.predict-dropdown-menu {
+  min-width: 190px;
+  padding: 10px;
+  gap: 8px;
+}
+
+.predict-input-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: #ccc;
+}
+
+.predict-number-input {
+  width: 64px;
+  padding: 3px 6px;
+  background: #111;
+  color: #eee;
+  border: 1px solid #444;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.predict-error {
+  color: #ef5350;
+  font-size: 11px;
+  max-width: 190px;
+  white-space: normal;
+}
+
+.predict-summary {
+  padding: 5px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid #444;
+  cursor: help;
+  white-space: nowrap;
+}
+
+.predict-summary.long { background: rgba(38,166,154,0.18); border-color: #26a69a; color: #4fd1c0; }
+.predict-summary.short { background: rgba(239,83,80,0.18); border-color: #ef5350; color: #ff8a85; }
+.predict-summary.neutral { background: rgba(255,255,255,0.08); border-color: #666; color: #ccc; }
+
+/* Probability band (25th-75th percentile close envelope across simulated paths) */
+.predicted-band {
+  fill: rgba(100,149,237,0.10);
+  stroke: rgba(100,149,237,0.25);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+/* Predicted candles render like real candles but faded + outline-only, so
+   they visually read as "projected" rather than confirmed price action. */
+.predicted-candle { opacity: 0.55; pointer-events: none; }
+.predicted-wick { stroke-width: 1; stroke-dasharray: 2,2; }
+.predicted-candle.bull .predicted-wick { stroke: #26a69a; }
+.predicted-candle.bear .predicted-wick { stroke: #ef5350; }
+.predicted-body { stroke-width: 1; stroke-dasharray: 2,2; fill-opacity: 0.35; }
+.predicted-candle.bull .predicted-body { fill: #26a69a; stroke: #26a69a; }
+.predicted-candle.bear .predicted-body { fill: #ef5350; stroke: #ef5350; }
+
+.predicted-ema-line { opacity: 0.8; pointer-events: none; }
 
 /* ── Preview controls ──────────────────────────────────────────────────── */
 .preview-controls {
@@ -9115,6 +9914,16 @@ const formatValue = (value: any): string => {
   background: rgba(100,181,246,0.35);
 }
 
+.preview-btn.add-thesis {
+  background: rgba(171,71,188,0.2);
+  border-color: #ab47bc;
+  color: #ce93d8;
+}
+
+.preview-btn.add-thesis:not(:disabled):hover {
+  background: rgba(171,71,188,0.35);
+}
+
 .preview-price-input {
   width: 90px;
   padding: 2px 6px;
@@ -9209,7 +10018,14 @@ const formatValue = (value: any): string => {
 }
 .wall-stat.bid { color: #26a69a; }
 .wall-stat.ask { color: #ef5350; }
+.wall-stat.spread { color: #ccc; }
 .wall-stat.depth-count { color: #888; }
+
+/* ── Bid/ask depth ladder (faded bars along the right edge) ─────────────── */
+.depth-ladder { pointer-events: none; }
+.depth-bar { pointer-events: none; }
+.depth-bar-bid { fill: rgba(38, 166, 154, 0.28); }
+.depth-bar-ask { fill: rgba(239, 83, 80, 0.28); }
 
 .impact-readout { margin-top: -0.25rem; }
 .wall-stat.impact-long { color: #26a69a; }
@@ -10324,6 +11140,21 @@ const formatValue = (value: any): string => {
   fill: #ff8a80;
 }
 
+/* ── Thesis review overlay ─────────────────────────────────────────────── */
+/* Same tp-sl-rect/status coloring as the backtest boxes, just dashed so
+   they read as "recorded thesis" rather than an active backtest run. */
+.thesis-rect {
+  stroke-dasharray: 5, 3;
+}
+.thesis-position-label {
+  font-size: 10px;
+  font-weight: bold;
+  font-style: italic;
+  pointer-events: none;
+}
+.thesis-position-label.label-long { fill: #26a69a; }
+.thesis-position-label.label-short { fill: #ef5350; }
+
 /* ── Zone-full marker (candleData.zoneInhabitantCount === 24) ────────────── */
 .zone-full-lines { pointer-events: none; }
 .zone-full-line {
@@ -10601,6 +11432,28 @@ const formatValue = (value: any): string => {
 .tp-sl-rect.box-sl.status-loss_long, .tp-sl-rect.box-sl.status-loss_short { fill: rgba(239,83,80,0.4); }
 
 .volume-spike-line { stroke: #fb923c; opacity: 0.8; pointer-events: none; }
+
+.property-select-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.property-select {
+  min-width: 210px;
+  max-width: 320px;
+  padding: 4px 7px;
+  background: #1a1a1a;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.dynamic-property-baseline {
+  stroke: rgba(255,255,255,0.22);
+  stroke-width: 1;
+  stroke-dasharray: 3,3;
+  pointer-events: none;
+}
 
 .long-potential  { stroke: #42f12b; fill: #42f12b; opacity: 0.8; pointer-events: none; }
 .short-potential { stroke: #ff2323; fill: #ff2323; opacity: 0.8; pointer-events: none; }

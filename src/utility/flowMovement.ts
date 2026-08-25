@@ -18,6 +18,38 @@ export interface FlowMovementRecord {
   [key: string]: unknown
 }
 
+/**
+ * Merges any number of movement-record groups into one deduped array,
+ * preserving order (first occurrence of a given record wins, so pass
+ * already-cached groups before freshly-fetched ones if you want cached
+ * copies to take priority on a collision).
+ *
+ * Dedupes by `tx_hash` where a record actually carries one (truthy —
+ * covers missing, `undefined`, and empty-string alike), falling back to a
+ * `timestamp|type|amount` composite key otherwise. The fallback matters:
+ * a plain `Set<tx_hash>` treats every tx_hash-less record as colliding on
+ * the same `undefined` key, so after the first one every later legitimate
+ * movement without a tx_hash reads as "already seen" and gets dropped —
+ * which is exactly the bug that made FlowMovementScanner's recurring
+ * scans stop accumulating new movements. Both call sites (the scanner's
+ * own sweep and the visualizer's `ensureFlowScannerCoverage` backfill)
+ * must use this same function so they can't drift back apart.
+ */
+export function mergeFlowMovements(...groups: FlowMovementRecord[][]): FlowMovementRecord[] {
+  const seen = new Set<string>()
+  const merged: FlowMovementRecord[] = []
+  for (const group of groups) {
+    for (const mv of group) {
+      const txHash = mv.tx_hash as string | undefined
+      const key = txHash ? txHash : `${mv.timestamp}|${mv.type}|${mv.amount}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      merged.push(mv)
+    }
+  }
+  return merged
+}
+
 export interface CandleWindow {
   /** Candle open time, ms epoch. */
   openTime: number

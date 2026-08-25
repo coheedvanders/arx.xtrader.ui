@@ -58,10 +58,16 @@ function openThesisDb(): Promise<IDBDatabase> {
 export async function saveThesis(entry: Omit<ThesisRecord, 'id'>): Promise<number> {
   const db = await openThesisDb();
   try {
+    // Defensive: IndexedDB's structured-clone algorithm throws a
+    // DataCloneError on anything still wrapped in a Vue reactive Proxy
+    // (e.g. a caller that passed store/prop data straight through without
+    // unwrapping it first). Round-tripping through JSON guarantees a plain,
+    // cloneable object regardless of what the caller handed us.
+    const plainEntry = JSON.parse(JSON.stringify(entry));
     return await new Promise<number>((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
-      const req = store.add(entry);
+      const req = store.add(plainEntry);
       req.onsuccess = () => resolve(req.result as number);
       req.onerror = () => reject(req.error);
     });
@@ -78,6 +84,22 @@ export async function deleteThesis(id: number): Promise<void> {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
       const req = store.delete(id);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+/** Deletes every thesis record across all symbols. */
+export async function clearAllTheses(): Promise<void> {
+  const db = await openThesisDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.clear();
       req.onsuccess = () => resolve();
       req.onerror = () => reject(req.error);
     });

@@ -119,7 +119,8 @@ export interface FuturesSymbol{
   slPrice:number,
   hasRecentPosition: boolean
   recentPositionSide: string,
-  networkChain: string
+  networkChain: string,
+  hasRecentCrossedMovementPoc: boolean
 }
 
 export interface PastVolumeAnalysis{
@@ -378,6 +379,10 @@ export interface CandleData {
   dominantFlowMovement: string | null
   breakHighestAvWapMid: boolean;
   breakLowestAvWapMid: boolean
+  crossedMovementPocCounter: number;
+  hasRecentCrossedMovementPoc: boolean
+  volatilityRatioChange: number;
+  hasVolatilityRationSpike: boolean;
 }
 
 

@@ -75,6 +75,7 @@ export class SimulationUtility {
         var pointBearCandle: CandleEntry | null = null;
         var lastAvwap: PriceZone | null = null;
         var priceZoneAvWaps = new Map<number, PriceZone>();
+        var movementPocAvwaps = new Map<number, PriceZone>();
 
 
         for (let i = 1; i <= entryIndex; i++) {
@@ -267,8 +268,8 @@ export class SimulationUtility {
                             Infinity,
                             )
 
-                        candle.candleData.breakHighestAvWapMid = (candle.open < highestAvWapMid && candle.close > highestAvWapMid) || (candle.open > highestAvWapMid && candle.close < highestAvWapMid) && candle.candleData.side == "bull";
-                        candle.candleData.breakLowestAvWapMid = (candle.open < lowestAvWapMid && candle.close > lowestAvWapMid) || (candle.open > lowestAvWapMid && candle.close < lowestAvWapMid) && candle.candleData.side == "bear";
+                        candle.candleData.breakHighestAvWapMid = (candle.open < highestAvWapMid && candle.close > highestAvWapMid) && candle.candleData.side == "bull";
+                        candle.candleData.breakLowestAvWapMid = (candle.open > lowestAvWapMid && candle.close < lowestAvWapMid) && candle.candleData.side == "bear";
                     }
 
                     candle.candleData.crossedAvwapCount = crossedAvwapCounter;
@@ -308,8 +309,34 @@ export class SimulationUtility {
                 candle.candleData.totalFlowMovement = totalMovementFlow;
 
                 if(i >= 26){
-                    candle.candleData.totalFlowMovementZScore = candleAnalyzer.getZScore(totalMovementFlow,movingCandles.slice(-25).filter(c => c.candleData && c.open < candle.openTime).map(c => c.candleData!.totalFlowMovement))!;
+                    candle.candleData.totalFlowMovementZScore = candleAnalyzer.getZScore(totalMovementFlow,movingCandles.slice(-10).filter(c => c.candleData && c.open < candle.openTime).map(c => c.candleData!.totalFlowMovement))!;
                     candle.candleData.dominantFlowMovement = await getDominantFlowMovement(candle.symbol, candle.openTime, 15 * 60 * 1000)
+                }
+
+                for (const [key, priceZone] of movementPocAvwaps) {
+                    movementPocAvwaps.set(key, candleAnalyzer.getAnchorVwap(movingCandles.filter(c => c.openTime >= key)));
+                }
+
+                if(candle.candleData.totalFlowMovementZScore >= 2.5){
+                    movementPocAvwaps.set(candle.openTime, candleAnalyzer.getAnchorVwap(movingCandles.filter(c => c.openTime >= candle.openTime)));
+                }
+
+                var crossedMovementPocAvwapCounter = 0;
+                for (const [key, avwapZone] of movementPocAvwaps) {
+                    var _crossedAvwap = (candle.open < avwapZone!.mid && candle.close > avwapZone!.mid) || (candle.open > avwapZone!.mid && candle.close < avwapZone!.mid)
+                    if(_crossedAvwap){
+                        crossedMovementPocAvwapCounter++;
+                    }
+                }
+
+                candle.candleData.crossedMovementPocCounter = crossedMovementPocAvwapCounter
+
+                if(candle.priceZoneInteraction?.volatilityRatio! > prevCandle.priceZoneInteraction?.volatilityRatio!){
+                    var volatilityRatioChange = (candle.priceZoneInteraction?.volatilityRatio! / prevCandle.priceZoneInteraction?.volatilityRatio!);
+                    var hasVolatilityRationSpike = volatilityRatioChange > 2.3;
+
+                    candle.candleData.volatilityRatioChange = volatilityRatioChange;
+                    candle.candleData.hasVolatilityRationSpike = hasVolatilityRationSpike;
                 }
 
                 if(prevCandle.status == "OPEN"){
@@ -508,16 +535,14 @@ export class SimulationUtility {
                             }
                         }
 
-                        var pastCandles = movingCandles.slice(-24).filter(c => c.openTime < candle.openTime);
-                        var pastCandleThreadingAvWap = pastCandles.filter(c => c.candleData && c.candleData.crossedAvwapCount > 2 && c.close < candle.close);
+                        var recentPocMovementAvwapCrossing = movingCandles.slice(-3).filter(c => c.candleData && c.candleData.crossedMovementPocCounter > 1).length > 0
+                        candle.candleData.hasRecentCrossedMovementPoc = recentPocMovementAvwapCrossing
 
-                        var recentEmaCrosses = pastCandles.filter(c => c.candleData && c.candleData.crossedEma);
-                        var hasRecentEmaCross = recentEmaCrosses.length >= 1
-                        //candle.candleData.conditionMet = "RECENT_EMA_CROSS"
+                        var recentVolatilityRatioSpike = movingCandles.slice(-24).filter(c => c.candleData && c.candleData.hasVolatilityRationSpike).length > 0
 
-                        var lastCandlessCrossedEma = recentEmaCrosses[recentEmaCrosses.length - 1]
-
-                        
+                        // if(recentVolatilityRatioSpike){
+                        //     candle.candleData.conditionMet = "RECENT_VOLATILITY_RATIO_SPIKE"
+                        // }
                         
                         if(lastAvwap){
                             // var crossedAvwap = movingCandles.slice(-3).filter(c => c.candleData
@@ -530,16 +555,6 @@ export class SimulationUtility {
                             var crossedAvwap = (candle.open < lastAvwap!.mid && candle.close > lastAvwap!.mid) || (candle.open > lastAvwap!.mid && candle.close < lastAvwap!.mid)
                             candle.candleData.crossedAvwapPoint = crossedAvwap
                         }
-
-                        // if(candle.candleData.conditionMet){
-                        //     if(candle.candleData.crossedAvwapPoint && candle.candleData.side == "bull"){
-                        //         candle.side = "LONG";
-                        //         candle.margin = 2;
-                        //     }else if(candle.candleData.crossedAvwapPoint && candle.candleData.side == "bear"){
-                        //         candle.side = "SHORT";
-                        //         candle.margin = 2;
-                        //     }  
-                        // }
 
                         var avwapPointCandles = movingCandles.filter(c => c.candleData && c.candleData.isAvwapPoint);
                         //if(candle.candleData.conditionMet){

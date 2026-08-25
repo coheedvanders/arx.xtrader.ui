@@ -23,7 +23,7 @@
           @click="showEntryHistoryModal(symbol.symbol)"
         >
           <div class="symbol-main">
-            <span class="symbol-name">{{ symbol.symbol }} <span v-if="symbol.crossedMa">[x]</span> <span v-if="symbol.crossedLastAvwap">[AV] - {{symbol.lastXCandleSpan.toFixed(2)}}%</span></span>
+            <span class="symbol-name">{{ symbol.symbol }} <span v-if="symbol.crossedMa">[x]</span> <span v-if="symbol.crossedLastAvwap">[AV]</span> <span v-if="symbol.hasRecentCrossedMovementPoc">[FLOW MOVEMENT X]</span></span>
             <span class="usdt-value">${{ formatUsdt((symbol as any).usdtValue) }}</span>
           </div>
 

@@ -18,7 +18,50 @@
       </button>
     </div>
 
+    <div class="flow-scanner-auto-row">
+      <select
+        class="flow-scanner-auto-select"
+        v-model.number="selectedAutoScanMs"
+        :disabled="autoScanActive"
+      >
+        <option v-for="opt in AUTO_SCAN_INTERVALS" :key="opt.ms" :value="opt.ms">
+          Every {{ opt.label }}
+        </option>
+      </select>
+
+      <button
+        v-if="!autoScanActive"
+        class="flow-scanner-auto-btn"
+        @click="startAutoScan"
+        title="Runs Scan Movement automatically on the selected interval"
+      >
+        Start Auto-Scan
+      </button>
+      <button
+        v-else
+        class="flow-scanner-auto-btn flow-scanner-auto-btn-stop"
+        @click="stopAutoScan"
+      >
+        Stop Auto-Scan
+      </button>
+
+      <span v-if="autoScanActive" class="flow-scanner-auto-countdown">
+        {{ scanning ? 'scanning now…' : `next scan in ${countdownLabel}` }}
+      </span>
+    </div>
+
     <div v-if="scanError" class="flow-scanner-error">{{ scanError }}</div>
+
+    <div v-if="lastScanFailureCount > 0" class="flow-scanner-error flow-scanner-warning">
+      {{ lastScanFailureCount }} symbol{{ lastScanFailureCount === 1 ? '' : 's' }} failed to scan last cycle:
+      <span
+        v-for="(message, sym) in lastScanErrors"
+        :key="`scan-fail-${sym}`"
+        class="flow-scanner-fail-item"
+      >
+        {{ sym }} — {{ message }}
+      </span>
+    </div>
 
     <div v-if="scanning" class="flow-scanner-progress-bar">
       <div class="flow-scanner-progress-fill" :style="{ width: scanProgressPct + '%' }" />
@@ -28,7 +71,7 @@
       No recent flow spikes cached yet. Click "Scan Movement" to check every symbol.
     </div>
 
-    <div v-else class="flow-scanner-results">
+    <!-- <div v-else class="flow-scanner-results">
       <div
         v-for="r in sortedResults"
         :key="r.symbol"
@@ -40,7 +83,7 @@
         <span class="flow-scanner-zscore">z {{ r.zScore?.toFixed(1) ?? '—' }}</span>
         <span class="flow-scanner-time">{{ formatAge(r.fetchedAt) }}</span>
       </div>
-    </div>
+    </div> -->
 
     <!-- Reuse the same modal chrome the rest of the app uses to pop open the full visualizer for a spiking symbol -->
     <DialogComponent v-model="showVisualizer" :width="'95vw'">
@@ -63,7 +106,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onUnmounted, toRaw } from 'vue'
 import type { CandleEntry } from '@/core/interfaces'
 import { useChocoMintoStore } from '@/stores/chocoMintoStore.ts'
 import DialogComponent from '../shared/dialog/DialogComponent.vue'
@@ -72,6 +115,7 @@ import CandleEntryVisualizerComponent from './CandleEntryVisualizerComponent.vue
 import {
   bucketFlowByCandle,
   hasRecentFlowSpike,
+  mergeFlowMovements,
   type FlowMovementRecord,
 } from '@/utility/flowMovement.ts'
 import {
@@ -126,6 +170,17 @@ const scanProgressPct = computed(() =>
 
 const results = ref<Record<string, FlowMovementDbEntry>>({})
 
+// Per-symbol scan failures from the most recently *completed* scanMovement()
+// cycle. Previously a symbol that threw (e.g. the whale-tracker API at
+// WALLET_MOVEMENT_API_BASE being down, erroring, or CORS-blocked) just hit a
+// console.warn and otherwise vanished - saveFlowMovement never even got
+// called for it, so its IndexedDB entry silently stopped updating with zero
+// visible indication why. Surfacing these means "the data isn't updating"
+// is now something you can actually see the cause of instead of having to
+// dig through devtools.
+const lastScanErrors = ref<Record<string, string>>({})
+const lastScanFailureCount = computed(() => Object.keys(lastScanErrors.value).length)
+
 const sortedResults = computed(() =>
   Object.values(results.value)
     .filter((r) => r.hasSpike)
@@ -163,11 +218,9 @@ async function fetchCandleWindows(symbol: string): Promise<CandleEntry[]> {
   })) as CandleEntry[]
 }
 
-/** Fetches wallet movement records for `symbol` across [startMs, endMs]. */
-async function fetchMovements(symbol: string, startMs: number, endMs: number): Promise<FlowMovementRecord[]> {
-  const startIso = new Date(startMs).toISOString()
-  const endIso = new Date(endMs).toISOString()
-  const url = `${WALLET_MOVEMENT_API_BASE}/api/movement?symbol=${encodeURIComponent(symbol.toUpperCase())}&start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`
+/** Fetches `symbol`'s most recent wallet-movement records — no start/end window, just the API's default most-recent-transfers scan (see whale_tracker_api.py's TRANSFER_FETCH_LIMIT). Merged with cached history in scanSymbol below rather than relying on the request itself to cover an exact range. */
+async function fetchMovements(symbol: string): Promise<FlowMovementRecord[]> {
+  const url = `${WALLET_MOVEMENT_API_BASE}/api/movement?symbol=${encodeURIComponent(symbol.toUpperCase())}&scan=1000`
   const res = await fetch(url)
   const body = await res.json().catch(() => null)
   if (!res.ok) throw new Error(body?.error || `movement request failed (${res.status})`)
@@ -187,7 +240,50 @@ async function scanSymbol(symbol: string) {
   const rawEndMs = last.openTime + FLOW_INTERVAL_MS
   const endMs = Math.min(rawEndMs, Date.now())
 
-  const movements = await fetchMovements(symbol, first.openTime, endMs)
+  const upperSymbol = symbol.toUpperCase()
+  // toRaw matters here: results is a ref, so results.value[upperSymbol] is
+  // Vue's deep-reactive Proxy, not the plain object - and cached.movements
+  // would be a proxied array of proxied movement objects. IndexedDB's
+  // structured-clone algorithm can throw DataCloneError on those (Proxies
+  // don't carry the internal slots it checks for), which silently fails the
+  // whole saveFlowMovement() write below every time there's cached data to
+  // merge in - exactly the "movements array isn't updating" symptom.
+  // Unwrapping here keeps cachedMovements, the merge, and entry all plain
+  // data the rest of the way through.
+  const cached = toRaw(results.value[upperSymbol])
+
+  // Keep whatever's cached that still falls inside the new 60-candle window
+  // - old records outside it get dropped so the cache doesn't grow
+  // unbounded. Then fetch just the latest movements (no start/end - plain
+  // ?symbol= call) and merge them in, deduping by tx_hash. This trades an
+  // exact-range guarantee for a much cheaper/simpler call every cycle,
+  // while still accumulating history across scans instead of only ever
+  // seeing whatever the most-recent-N scan happens to return.
+  const cachedMovements =
+    cached && cached.intervalMs === FLOW_INTERVAL_MS
+      ? cached.movements.filter((m) => new Date(m.timestamp).getTime() >= first.openTime)
+      : []
+
+  const newMovements = await fetchMovements(symbol)
+
+  // Same window rule applied to the cached side above (line ~232) - drop
+  // anything the "most recent" scan happened to still return that's now
+  // outside the 60-candle window, so the merge doesn't quietly widen it
+  // with older transfers.
+  const newMovementsInWindow = newMovements.filter((m) => {
+    const ts = new Date(m.timestamp).getTime()
+    return !isNaN(ts) && ts >= first.openTime
+  })
+
+  // Cached groups go first so an existing cached copy of a record wins the
+  // "first occurrence" slot on a collision - mergeFlowMovements is the same
+  // tx_hash-with-fallback dedup CandleEntryVisualizerComponent.vue uses for
+  // this exact DB record, so a recurring scan actually keeps the old
+  // movements and inserts the new ones instead of silently dropping
+  // whichever ones happen to lack a tx_hash (see mergeFlowMovements' doc
+  // comment in flowMovement.ts for why that matters).
+  const movements = mergeFlowMovements(cachedMovements, newMovementsInWindow)
+
   const totalFlowPerCandle = bucketFlowByCandle(
     movements,
     candles.map((c) => ({ openTime: c.openTime! })),
@@ -196,7 +292,7 @@ async function scanSymbol(symbol: string) {
   const summary = hasRecentFlowSpike(totalFlowPerCandle, FLOW_LOOKBACK, FLOW_Z_THRESHOLD)
 
   const entry: FlowMovementDbEntry = {
-    symbol: symbol.toUpperCase(),
+    symbol: upperSymbol,
     movements,
     startMs: first.openTime,
     endMs,
@@ -230,20 +326,103 @@ async function scanMovement() {
   scanProgress.value = 0
   scanTotal.value = symbols.length
 
+  const failures: Record<string, string> = {}
+
   for (const symbol of symbols) {
     try {
       await scanSymbol(symbol)
     } catch (err) {
-      // One symbol failing (rate limit, delisted, API hiccup) shouldn't abort the whole scan.
+      // One symbol failing (rate limit, delisted, API hiccup) shouldn't abort the whole scan -
+      // but it also shouldn't disappear silently, or "the movements array isn't updating" has
+      // no visible cause. Record it so lastScanErrors can show it.
+      const message = err instanceof Error ? err.message : String(err)
       console.warn(`[FlowMovementScanner] failed to scan ${symbol}`, err)
+      failures[symbol.toUpperCase()] = message
     } finally {
       scanProgress.value++
     }
     await sleep(SCAN_DELAY_MS)
   }
 
+  lastScanErrors.value = failures
   scanning.value = false
 }
+
+// ─── Auto-scan (runs scanMovement on a recurring interval) ─────────────────
+const AUTO_SCAN_INTERVALS = [
+  { label: '30m', ms: 30 * 60 * 1000 },
+  { label: '45m', ms: 45 * 60 * 1000 },
+  { label: '1hr', ms: 60 * 60 * 1000 },
+]
+
+const selectedAutoScanMs = ref(AUTO_SCAN_INTERVALS[0].ms)
+const autoScanActive = ref(false)
+const nextScanAt = ref<number | null>(null)
+// Ticks once a second while auto-scan is active, purely to keep countdownLabel fresh.
+const nowTick = ref(Date.now())
+
+let autoScanTimeoutId: ReturnType<typeof setTimeout> | null = null
+let countdownTickId: ReturnType<typeof setInterval> | null = null
+
+const countdownLabel = computed(() => {
+  if (nextScanAt.value == null) return ''
+  const remainingMs = Math.max(0, nextScanAt.value - nowTick.value)
+  const totalSec = Math.ceil(remainingMs / 1000)
+  const min = Math.floor(totalSec / 60)
+  const sec = totalSec % 60
+  return `${min}:${sec.toString().padStart(2, '0')}`
+})
+
+/** Waits out the selected interval, then kicks off the next auto-scan cycle. */
+function scheduleNextAutoScan() {
+  nextScanAt.value = Date.now() + selectedAutoScanMs.value
+  autoScanTimeoutId = setTimeout(runAutoScanCycle, selectedAutoScanMs.value)
+}
+
+/** Runs one scan, then (if still active) schedules the next — timed from completion, so a slow scan doesn't cause overlapping runs. */
+async function runAutoScanCycle() {
+  if (!autoScanActive.value) return
+  // Countdown for the *next* cycle starts now, right as this one kicks off -
+  // not after scanMovement() resolves, so the displayed countdown reflects
+  // "time until the next scan starts" from the moment this scan started,
+  // not from whenever it happened to finish. scanMovement() already guards
+  // itself against re-entry (`if (scanning.value) return`), so if a scan
+  // runs long enough to overlap the next scheduled tick, that tick just
+  // no-ops and reschedules again rather than starting a second scan.
+  scheduleNextAutoScan()
+  try {
+    await scanMovement()
+  } catch (err) {
+    console.warn('[FlowMovementScanner] auto-scan cycle failed', err)
+  }
+}
+
+function startAutoScan() {
+  if (autoScanActive.value) return
+  autoScanActive.value = true
+  nowTick.value = Date.now()
+  countdownTickId = setInterval(() => {
+    nowTick.value = Date.now()
+  }, 1000)
+  runAutoScanCycle()
+}
+
+function stopAutoScan() {
+  autoScanActive.value = false
+  nextScanAt.value = null
+  if (autoScanTimeoutId != null) {
+    clearTimeout(autoScanTimeoutId)
+    autoScanTimeoutId = null
+  }
+  if (countdownTickId != null) {
+    clearInterval(countdownTickId)
+    countdownTickId = null
+  }
+}
+
+onUnmounted(() => {
+  stopAutoScan()
+})
 
 // ─── Visualizer dialog ──────────────────────────────────────────────────────
 const showVisualizer = ref(false)
@@ -319,9 +498,62 @@ async function openSymbol(symbol: string) {
   cursor: default;
 }
 
+.flow-scanner-auto-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.flow-scanner-auto-select {
+  background: #202020;
+  color: #ddd;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.flow-scanner-auto-select:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.flow-scanner-auto-btn {
+  background: #2a2a2a;
+  color: #eab308;
+  border: 1px solid #eab308;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.flow-scanner-auto-btn-stop {
+  color: #ef5350;
+  border-color: #ef5350;
+}
+
+.flow-scanner-auto-countdown {
+  font-size: 11px;
+  color: #888;
+}
+
 .flow-scanner-error {
   color: #ef5350;
   font-size: 12px;
+}
+
+.flow-scanner-warning {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: #f0a020;
+}
+
+.flow-scanner-fail-item {
+  font-family: monospace;
+  font-size: 11px;
+  color: #f0a020;
 }
 
 .flow-scanner-empty {
