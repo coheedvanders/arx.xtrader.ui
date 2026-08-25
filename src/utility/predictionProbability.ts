@@ -30,10 +30,21 @@ export interface PredictionCandleInput {
   close: number
   /** 15m (chart-native) EMA200 at this candle — i.e. candle.candleData.ema200 */
   ema200: number | null
+  /** 15m MA200 / MA100 at this candle — i.e. candle.candleData.ma200 / ma100 */
+  ma200: number | null
+  ma100: number | null
   openInterest: number | null
   longShortRatio: { longAccount: number; shortAccount: number } | null
   crossTfEma: { '1h': number | null; '4h': number | null; '1d': number | null }
   flow: { inflow: number; outflow: number }
+  /** candle.candleData.isBuyingExhaustion / isSellingExhaustion / isCandleInAbsorption */
+  isBuyingExhaustion: boolean
+  isSellingExhaustion: boolean
+  isCandleInAbsorption: boolean
+  /** candle.isWeakening — momentum-weakening flag on the candle itself */
+  isWeakening: boolean
+  /** candle.patternTrack — 'hl' (higher low, bullish structure) / 'lh' (lower high, bearish structure) */
+  patternTrack: 'hl' | 'lh' | null
 }
 
 export interface PredictionParams {
@@ -255,6 +266,151 @@ function scoreMomentum(logReturns: number[]): FactorScore {
   return { name: 'Price Momentum', score, weight: 0.16, detail: `drift/vol=${(m / sd).toFixed(3)}` }
 }
 
+/**
+ * Exhaustion / structure read — acts as a counter-trend brake. Buying
+ * exhaustion after an up-move flags a potential top (bearish), selling
+ * exhaustion after a down-move flags a potential bottom (bullish), a
+ * weakening candle fades whatever the short local trend was doing, and
+ * higher-low/lower-high pattern-track state adds a small structural lean.
+ * Absorption doesn't get its own directional vote — it's noted in the
+ * detail string and instead widens the simulation's volatility (see
+ * `generateCandlePrediction`), since an absorbing candle usually means
+ * "stalling", not "reversing".
+ *
+ * Every event is recency-weighted (exponential decay, most recent candle
+ * weighted highest) so a signal from 2 candles ago dominates one from 40
+ * candles ago.
+ */
+function scoreExhaustionStructure(window: PredictionCandleInput[]): FactorScore {
+  const RECENCY_DECAY = 0.9
+  let weightedSum = 0
+  let weightUsed = 0
+  let buyingExhCount = 0
+  let sellingExhCount = 0
+  let weakeningCount = 0
+  let hlCount = 0
+  let lhCount = 0
+  let absorptionCount = 0
+
+  for (let i = 0; i < window.length; i++) {
+    const c = window[i]
+    const recency = Math.pow(RECENCY_DECAY, window.length - 1 - i)
+
+    if (c.isCandleInAbsorption) absorptionCount++
+
+    if (c.isBuyingExhaustion) {
+      buyingExhCount++
+      weightedSum += -1 * 0.5 * recency
+      weightUsed += 0.5 * recency
+    }
+    if (c.isSellingExhaustion) {
+      sellingExhCount++
+      weightedSum += 1 * 0.5 * recency
+      weightUsed += 0.5 * recency
+    }
+    if (c.isWeakening) {
+      weakeningCount++
+      // Fade whatever the short local trend (vs. ~5 candles back) was doing.
+      const lookback = Math.max(0, i - 5)
+      const localTrend = Math.sign(c.close - window[lookback].close)
+      weightedSum += -localTrend * 0.35 * recency
+      weightUsed += 0.35 * recency
+    }
+    if (c.patternTrack === 'hl') {
+      hlCount++
+      weightedSum += 1 * 0.3 * recency
+      weightUsed += 0.3 * recency
+    }
+    if (c.patternTrack === 'lh') {
+      lhCount++
+      weightedSum += -1 * 0.3 * recency
+      weightUsed += 0.3 * recency
+    }
+  }
+
+  const score = weightUsed > 0 ? clamp(weightedSum / weightUsed) : 0
+  const detail = weightUsed > 0
+    ? `buyExh=${buyingExhCount} sellExh=${sellingExhCount} weakening=${weakeningCount} HL=${hlCount} LH=${lhCount} absorption=${absorptionCount}`
+    : 'no exhaustion/structure signals in window'
+
+  return { name: 'Exhaustion / Structure', score, weight: 0.20, detail }
+}
+
+/**
+ * Nearest-EMA bounce vs. break read. For every candle, finds whichever
+ * tracked EMA/MA (15m EMA200, MA200, MA100, 1h/4h/1d EMA200) price is
+ * currently closest to, then classifies what happened at that level:
+ *   - BOUNCE: price wicked into/through the level but closed back on the
+ *     same side it was already on → reinforces the existing trend.
+ *   - BREAK: price closed on the opposite side from the prior candle, with
+ *     real conviction (a decent-sized body, not a doji) → treated as a
+ *     structure/regime shift and weighted stronger than a bounce.
+ * Each event is weighted by which line it happened at (higher timeframe =
+ * more weight) and recency-decayed the same way as the exhaustion factor.
+ */
+function scoreEmaBounceBreak(window: PredictionCandleInput[]): FactorScore {
+  const RECENCY_DECAY = 0.9
+  const TF_WEIGHT: Record<string, number> = { '15m': 0.15, MA100: 0.15, MA200: 0.2, '1h': 0.25, '4h': 0.35, '1d': 0.45 }
+
+  let weightedSum = 0
+  let weightUsed = 0
+  let bounces = 0
+  let breaks = 0
+  const testedTfs = new Set<string>()
+
+  for (let i = 1; i < window.length; i++) {
+    const prev = window[i - 1]
+    const curr = window[i]
+
+    const candidates = [
+      { tf: '15m', prevValue: prev.ema200, currValue: curr.ema200 },
+      { tf: 'MA200', prevValue: prev.ma200, currValue: curr.ma200 },
+      { tf: 'MA100', prevValue: prev.ma100, currValue: curr.ma100 },
+      { tf: '1h', prevValue: prev.crossTfEma['1h'], currValue: curr.crossTfEma['1h'] },
+      { tf: '4h', prevValue: prev.crossTfEma['4h'], currValue: curr.crossTfEma['4h'] },
+      { tf: '1d', prevValue: prev.crossTfEma['1d'], currValue: curr.crossTfEma['1d'] },
+    ].filter(c => c.prevValue != null && c.currValue != null) as { tf: string; prevValue: number; currValue: number }[]
+
+    if (candidates.length === 0) continue
+
+    // Whichever tracked line current price sits nearest to.
+    const nearest = candidates.reduce((best, c) =>
+      Math.abs(curr.close - c.currValue) < Math.abs(curr.close - best.currValue) ? c : best
+    )
+
+    const wasAbove = prev.close > nearest.prevValue
+    const isAbove = curr.close > nearest.currValue
+    const wickCrossed = curr.high >= nearest.currValue && curr.low <= nearest.currValue
+    const bodyRatio = curr.high !== curr.low ? Math.abs(curr.close - curr.open) / (curr.high - curr.low) : 0
+
+    const recency = Math.pow(RECENCY_DECAY, window.length - 1 - i)
+    const tfWeight = TF_WEIGHT[nearest.tf] ?? 0.2
+
+    if (wasAbove !== isAbove && bodyRatio > 0.3) {
+      // Break: side flipped candle-to-candle with real conviction.
+      breaks++
+      testedTfs.add(nearest.tf)
+      const sign = isAbove ? 1 : -1
+      weightedSum += sign * tfWeight * 1.0 * recency
+      weightUsed += tfWeight * 1.0 * recency
+    } else if (wasAbove === isAbove && wickCrossed) {
+      // Bounce: level was tested (wicked into) but held, same side as before.
+      bounces++
+      testedTfs.add(nearest.tf)
+      const sign = isAbove ? 1 : -1
+      weightedSum += sign * tfWeight * 0.5 * recency
+      weightUsed += tfWeight * 0.5 * recency
+    }
+  }
+
+  const score = weightUsed > 0 ? clamp(weightedSum / weightUsed) : 0
+  const detail = weightUsed > 0
+    ? `${bounces} bounce(s), ${breaks} break(s) on [${[...testedTfs].join(', ')}]`
+    : 'no EMA/MA tests detected in window'
+
+  return { name: 'EMA Bounce/Break', score, weight: 0.24, detail }
+}
+
 // ─── main entry ───────────────────────────────────────────────────────────
 
 export function generateCandlePrediction(
@@ -269,7 +425,16 @@ export function generateCandlePrediction(
   for (let i = 1; i < closes.length; i++) logReturns.push(Math.log(closes[i] / closes[i - 1]))
 
   const driftPerCandle = mean(logReturns)
-  const volatilityPerCandle = stdev(logReturns) || Math.abs(driftPerCandle) * 0.5 || 0.001
+  let volatilityPerCandle = stdev(logReturns) || Math.abs(driftPerCandle) * 0.5 || 0.001
+
+  // Recent exhaustion/absorption tends to precede choppier, wider-ranged
+  // price action rather than a clean trend continuation — widen the
+  // simulated volatility (up to +15%) proportionate to how much of the
+  // last few candles show that stalling behavior.
+  const recentWindow = window.slice(-Math.min(5, window.length))
+  const stallingCount = recentWindow.filter(c => c.isBuyingExhaustion || c.isSellingExhaustion || c.isCandleInAbsorption).length
+  const volatilityMultiplier = 1 + 0.15 * clamp(stallingCount / recentWindow.length, 0, 1)
+  volatilityPerCandle *= volatilityMultiplier
 
   const factors: FactorScore[] = [
     scoreOpenInterest(window),
@@ -277,6 +442,8 @@ export function generateCandlePrediction(
     scoreCrossTfEma(window),
     scoreFlowMovement(window),
     scoreMomentum(logReturns),
+    scoreExhaustionStructure(window),
+    scoreEmaBounceBreak(window),
   ]
   const totalWeight = factors.reduce((a, f) => a + f.weight, 0)
   const compositeScore = clamp(factors.reduce((a, f) => a + f.score * f.weight, 0) / totalWeight)

@@ -9519,6 +9519,8 @@ function runPrediction() {
       low: c.low!,
       close: c.close!,
       ema200: c.candleData?.ema200 ?? null,
+      ma200: c.candleData?.ma200 ?? null,
+      ma100: c.candleData?.ma100 ?? null,
       openInterest: oiPerCandle.value[i] ?? null,
       longShortRatio: lsRatioPerCandle.value[i] ?? null,
       crossTfEma: {
@@ -9530,6 +9532,11 @@ function runPrediction() {
         inflow: movementPerCandle.value[i]?.inflow ?? 0,
         outflow: movementPerCandle.value[i]?.outflow ?? 0,
       },
+      isBuyingExhaustion: c.candleData?.isBuyingExhaustion ?? false,
+      isSellingExhaustion: c.candleData?.isSellingExhaustion ?? false,
+      isCandleInAbsorption: c.candleData?.isCandleInAbsorption ?? false,
+      isWeakening: c.isWeakening ?? false,
+      patternTrack: c.patternTrack === 'hl' || c.patternTrack === 'lh' ? c.patternTrack : null,
     }))
 
     predictionResult.value = generateCandlePrediction(history, {
