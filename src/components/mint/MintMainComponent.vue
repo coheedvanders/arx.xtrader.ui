@@ -435,7 +435,8 @@ async function initializeFutureSymbols(){
                     hasRecentPosition: false,
                     recentPositionSide: "",
                     networkChain: tokenMap.chain,
-                    hasRecentCrossedMovementPoc: false
+                    hasRecentCrossedMovementPoc: false,
+                    hasRecentVolatilityChangeSpike:false
                 })
             }
         }

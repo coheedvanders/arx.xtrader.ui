@@ -6,6 +6,8 @@ import { klineDbUtility } from "./klineDbUtility.ts";
 import { PriceZoneUtility } from "./priceZoneUtility.ts";
 import { PnlUtility } from "./PnlUtility.ts";
 import { totalFlowForCandle, getDominantFlowMovement } from '@/utility/flowMovementDb.ts'
+import { identifyMarketState } from '@/utility/marketState'
+import { GetConfluenceState } from "@/utility/confluenceState.ts"
 
 export class SimulationUtility {
     static async initializePastCandleEntryData(symbol: string, interval:string,maxCandles:number, supportAndResistancePeriodLength: number){
@@ -74,8 +76,10 @@ export class SimulationUtility {
 
         var pointBearCandle: CandleEntry | null = null;
         var lastAvwap: PriceZone | null = null;
+        var lastVoAvWap: PriceZone | null = null;
         var priceZoneAvWaps = new Map<number, PriceZone>();
         var movementPocAvwaps = new Map<number, PriceZone>();
+        var volatilityRatioSpikes: CandleEntry[] | null = null;
 
 
         for (let i = 1; i <= entryIndex; i++) {
@@ -339,6 +343,27 @@ export class SimulationUtility {
                     candle.candleData.hasVolatilityRationSpike = hasVolatilityRationSpike;
                 }
 
+                var recentPocMovementAvwapCrossing = movingCandles.slice(-3).filter(c => c.candleData && c.candleData.crossedMovementPocCounter > 1).length > 0
+                candle.candleData.hasRecentCrossedMovementPoc = recentPocMovementAvwapCrossing
+
+                var recentVolatilityRatioChangeSpike = movingCandles.slice(-24).filter(c => c.candleData && c.candleData.volatilityRatioChange >= 1.5).length > 0;
+                candle.candleData.hasRecentVolatityRatioChangeSpike = recentVolatilityRatioChangeSpike
+
+                if(movingCandles.length >= 50){
+                    var marketState = identifyMarketState(
+                        movingCandles.slice(-24),
+                        Array.from(priceZoneAvWaps.values())
+                    )
+
+                    candle.candleData.marketState = marketState!;
+                }
+
+                volatilityRatioSpikes = movingCandles.filter(c => c.candleData && c.candleData.hasVolatilityRationSpike)
+                if(volatilityRatioSpikes.length > 0){
+                    var lastVolatilityRatioSpike = volatilityRatioSpikes[volatilityRatioSpikes.length - 1];
+                    candle.candleData.confluenceState = GetConfluenceState(movingCandles,lastVolatilityRatioSpike.openTime,lastVolatilityRatioSpike.high,lastVolatilityRatioSpike.low)
+                }
+
                 if(prevCandle.status == "OPEN"){
 
                     var _estimatedPnlPercentage = 0
@@ -529,19 +554,27 @@ export class SimulationUtility {
                             var lastCandleInZone = movingCandles.filter(c => c.priceZone == priceZones[priceZones.length - 2] && c.candleData && c.candleData.zoneInhabitantCount == 24)[0];
                             if(lastCandleInZone){
                                 var pastPriceZoneConditionMet = lastCandleInZone.candleData?.conditionMet;
-                                if(pastPriceZoneConditionMet && !pastPriceZoneConditionMet.includes("PREV")){
+                                if(pastPriceZoneConditionMet && !pastPriceZoneConditionMet.includes("PREV") && pastPriceZoneConditionMet != "MOVEMENT_POC_BREAK" && pastPriceZoneConditionMet != "BREAKS_VS" && pastPriceZoneConditionMet != "CROSSED_LAST_AVWAP"){
                                     candle.candleData.conditionMet = "PREV_" + pastPriceZoneConditionMet.replace("PREV_","");
                                 }
                             }
                         }
 
-                        var recentPocMovementAvwapCrossing = movingCandles.slice(-3).filter(c => c.candleData && c.candleData.crossedMovementPocCounter > 1).length > 0
-                        candle.candleData.hasRecentCrossedMovementPoc = recentPocMovementAvwapCrossing
+                        // if(candle.candleData.hasRecentCrossedMovementPoc){
+                        //     candle.candleData.conditionMet = "MOVEMENT_POC_BREAK";
+                        // }
 
-                        var recentVolatilityRatioSpike = movingCandles.slice(-24).filter(c => c.candleData && c.candleData.hasVolatilityRationSpike).length > 0
+                        // if(volatilityRatioSpikes.length > 0){
+                        //     var _lastVolatilityRatioSpike = volatilityRatioSpikes[volatilityRatioSpikes.length - 1];
+                        //     if((candle.high > _lastVolatilityRatioSpike.high && candle.low < _lastVolatilityRatioSpike.high
+                        //         || (candle.high > _lastVolatilityRatioSpike.low && candle.low < _lastVolatilityRatioSpike.low)
+                        //     )){
+                        //         candle.candleData.conditionMet = "BREAKS_VS";
+                        //     }
+                        // }
 
-                        // if(recentVolatilityRatioSpike){
-                        //     candle.candleData.conditionMet = "RECENT_VOLATILITY_RATIO_SPIKE"
+                        // if(candle.candleData.crossedAvwapPoint){
+                        //     candle.candleData.conditionMet = "CROSSED_LAST_AVWAP";
                         // }
                         
                         if(lastAvwap){
@@ -556,6 +589,11 @@ export class SimulationUtility {
                             candle.candleData.crossedAvwapPoint = crossedAvwap
                         }
 
+                        if(lastVoAvWap){
+                            var crossedVoAvwap = (candle.open < lastVoAvWap!.mid && candle.close > lastVoAvWap!.mid) || (candle.open > lastVoAvWap!.mid && candle.close < lastVoAvWap!.mid)
+                            candle.candleData.crossedVoAvwapPoint = crossedVoAvwap
+                        }
+
                         var avwapPointCandles = movingCandles.filter(c => c.candleData && c.candleData.isAvwapPoint);
                         //if(candle.candleData.conditionMet){
                             if(avwapPointCandles.length >= 1){
@@ -563,6 +601,12 @@ export class SimulationUtility {
                                 lastAvwap = candleAnalyzer.getAnchorVwap(movingCandles.filter(c => c.openTime >= lastAvwapPointCandle.openTime))
                             }
                         //}
+
+                        var voAvwapPointCandles = movingCandles.filter(c => c.candleData && c.candleData.hasVolatilityRationSpike);
+                        if(voAvwapPointCandles.length >= 1){
+                            var lastVoAvWapPointCandle = voAvwapPointCandles[voAvwapPointCandles.length - 1];
+                            lastVoAvWap = candleAnalyzer.getAnchorVwap(movingCandles.filter(c => c.openTime >= lastVoAvWapPointCandle.openTime))
+                        }
 
                         var lastXCandles = movingCandles.slice(-8);
                         var lastXCandleHigh = Math.max(...lastXCandles.map(c => c.high))

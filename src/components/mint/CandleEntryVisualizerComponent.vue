@@ -1,6 +1,6 @@
 <template>
-  <div class="candle-visualizer">
-    <div class="controls">
+  <div class="candle-visualizer" :class="{ 'overlay-instance': props.overlayMode }">
+    <div v-if="!props.overlayMode" class="controls">
       <label class="checkbox-label">
         <input 
           v-model="connectVolumeSpikesvSpikes" 
@@ -101,6 +101,10 @@
         Reset Scrubbed Candles ({{ multiTfScrubbedCount }})
       </button>
 
+      <button @click="toggleBtcOverlay">
+        {{ loadingBtcOverlay ? 'Loading BTC…' : (showBtcOverlay ? 'Hide BTC Overlay' : 'Overlay BTC') }}
+      </button>
+
       <button @click="showKeyLevels = true">show key levels</button>
 
       <button @click="showMaCrossing = true">See MA</button>
@@ -111,11 +115,11 @@
       <div class="tool-dropdown" ref="predictDropdownRef">
         <button
           class="tool-btn"
-          :class="{ 'tool-btn-active': predictionResult !== null }"
+          :class="{ 'tool-btn-active': predictionResult !== null || predictPickModeActive }"
           @click="predictDropdownOpen = !predictDropdownOpen"
           title="Projects the next N candles from the last M candles — factoring Open Interest, Long/Short ratio, cross-TF EMA alignment (1h/4h/1d), exchange inflow/outflow and bid/ask spread — through a Monte Carlo probabilistic simulation, then stretches the EMAs to continue along the predicted path"
         >
-          {{ predictionRunning ? 'Predicting…' : 'Predict ▾' }}
+          {{ predictPickModeActive ? 'Predict: pick a candle…' : predictionRunning ? 'Predicting…' : 'Predict ▾' }}
         </button>
         <div v-if="predictDropdownOpen" class="tool-dropdown-menu predict-dropdown-menu">
           <label class="predict-input-label">
@@ -126,10 +130,23 @@
             <span>Predict candles</span>
             <input v-model.number="predictFutureCandles" type="number" min="1" max="200" class="predict-number-input" />
           </label>
-          <button class="tool-dropdown-item" @click="runPrediction">Run Prediction</button>
+          <button class="tool-dropdown-item" @click="runPrediction">Run Prediction (latest candle)</button>
+          <button class="tool-dropdown-item" @click="togglePredictPickMode">Predict &gt; Selected Candle…</button>
+          <div v-if="predictFromCandleIndex !== null" class="predict-anchor-status">
+            Anchored at candle #{{ predictFromCandleIndex }}
+            <button class="predict-anchor-reset" @click="resetPredictAnchorToLatest">Reset to latest</button>
+          </div>
           <div v-if="predictError" class="predict-error">{{ predictError }}</div>
         </div>
       </div>
+
+      <button
+        v-if="predictPickModeActive"
+        class="tool-btn"
+        @click="predictPickModeActive = false"
+      >
+        Cancel Pick
+      </button>
 
       <button
         v-if="predictionResult"
@@ -145,7 +162,11 @@
         :class="predictionResult.direction.toLowerCase()"
         :title="predictionTooltip"
       >
-        Predict: {{ predictionResult.direction }} · {{ predictionResult.confidence.toFixed(0) }}%
+        Predict{{ predictFromCandleIndex !== null ? ` (from #${predictFromCandleIndex})` : '' }}: {{ predictionResult.direction }} ·
+        Up {{ (predictionResult.horizons.next1.probabilityUp * 100).toFixed(0) }}% /
+        Down {{ (predictionResult.horizons.next1.probabilityDown * 100).toFixed(0) }}% /
+        Flat {{ (predictionResult.horizons.next1.probabilityNeutral * 100).toFixed(0) }}%
+        · confidence: {{ predictionResult.confidence }}
       </span>
 
       <!-- ── Thesis review overlay ─────────────────────────────────────── -->
@@ -254,6 +275,18 @@
         <span>Show AVWAP Bands</span>
       </label>
 
+      <label
+        v-if="anchoredVwaps.some(a => a.isAllZonesFill)"
+        class="checkbox-label"
+        title="The All Zones fill renders as a single high/low channel cloud by default — check this to also draw each zone's individual AVWAP line"
+      >
+        <input
+          v-model="showAllZonesAvwapLines"
+          type="checkbox"
+        />
+        <span>Show All-Zones AVWAP Lines</span>
+      </label>
+
       <div class="tool-dropdown" ref="pzAvwapDropdownRef">
         <button
           class="tool-btn"
@@ -281,6 +314,13 @@
             title="Anchor an AVWAP at every candle with a flow z-score spike (z ≥ 3); red = INFLOW, green = OUTFLOW"
           >
             Movement POC
+          </button>
+          <button
+            class="tool-dropdown-item"
+            @click="pinAvwapToLastVolatilitySpike(); pzAvwapDropdownOpen = false"
+            title="Anchor an open-ended AVWAP at the most recent candle with hasVolatilityRationSpike (the [VO] marker)"
+          >
+            Last Volatility Spike
           </button>
         </div>
       </div>
@@ -355,6 +395,14 @@
         @click="drawnRectangles = []"
       >
         Clear Rectangles ({{ drawnRectangles.length }})
+      </button>
+
+      <button
+        class="tool-btn"
+        @click="pinLastVolatilitySpikeRectangle"
+        title="Draw a rectangle spanning the high/low of the last candle with volatilityRatioChange >= 1.5, from that candle through the current candle"
+      >
+        Last VC Spike
       </button>
 
       <!-- ── Horizontal price line tool ──────────────────────────────────── -->
@@ -564,7 +612,7 @@
     </div>
 
     <!-- Preview summary panel -->
-    <div v-if="previewPosition" class="preview-panel" :class="previewPosition.side.toLowerCase()">
+    <div v-if="!props.overlayMode && previewPosition" class="preview-panel" :class="previewPosition.side.toLowerCase()">
       <span class="preview-side-badge" :class="previewPosition.side.toLowerCase()">{{ previewPosition.side }}</span>
       <span class="preview-stat"><label>Entry</label><span>{{ previewPosition.entryPrice.toFixed(4) }}</span></span>
       <span class="preview-stat tp">
@@ -606,7 +654,7 @@
       </button>
       <button class="preview-panel-close" @click="clearPreview">×</button>
     </div>
-    <div v-if="previewError" class="preview-error">{{ previewError }}</div>
+    <div v-if="!props.overlayMode && previewError" class="preview-error">{{ previewError }}</div>
 
     <div class="chart-container" ref="chartContainer" @wheel="handleZoom" @mousemove="handleMouseMove" @mouseleave="handleMouseLeave" @mousedown="handleChartMouseDown" @dblclick="handleChartDoubleClick">
       <svg :width="svgWidth" :height="totalSvgHeight" class="candles-svg">
@@ -1361,32 +1409,32 @@
             </text>
           </g>
 
-          <text
+          <!-- <text
               v-if="candle.candleData?.isCandleInAbsorption"
               :x="candleX(i)"
               :y="priceToY(candle.low!) + 45"
               class="pattern-label"
             >
               x
-            </text>
+            </text> -->
 
-            <text
+            <!-- <text
               v-if="candle.candleData?.isSellingExhaustion"
               :x="candleX(i)"
               :y="priceToY(candle.low!) + 55"
               class="pattern-label"
             >
               S
-            </text>
+            </text> -->
 
-            <text
+            <!-- <text
               v-if="candle.candleData?.isBuyingExhaustion"
               :x="candleX(i)"
               :y="priceToY(candle.low!) + 55"
               class="pattern-label"
             >
               B
-            </text>
+            </text> -->
 
             <text
               v-if="candle.candleData?.hasVolatilityRationSpike"
@@ -1395,6 +1443,14 @@
               class="pattern-label"
             >
               [VO]
+            </text>
+            <text
+              v-if="candle.candleData?.volatilityRatioChange! >= 1.5"
+              :x="candleX(i)"
+              :y="priceToY(candle.low!) + 85"
+              class="pattern-label"
+            >
+              *VS*
             </text>
 
             <!-- <text
@@ -1415,14 +1471,14 @@
               [D]
             </text> -->
 
-            <text
+            <!-- <text
               v-if="candle.candleData?.crossedEma"
               :x="candleX(i)"
               :y="priceToY(candle.low!) + 75"
               class="pattern-label"
             >
               [X]
-            </text>
+            </text> -->
 
           <g v-if="candle.patternTrack === 'lh'" class="lower-high-indicator">
             <circle
@@ -1555,7 +1611,9 @@
               'avwap-target': avwapModeActive,
               'range-download-target': rangeDownloadModeActive,
               'range-investigate-target': rangeInvestigateModeActive,
-              'summarize-target': summarizeModeActive
+              'summarize-target': summarizeModeActive,
+              'predict-target': predictPickModeActive,
+              'predict-anchor': predictFromCandleIndex === i
             }"
             @click="handleCandleClick(i)"
             @mousedown="handleCandleMouseDown(i, $event)"
@@ -1590,8 +1648,9 @@
               />
             </g>
 
-            <!-- Flow spike box — trailing 24-candle exchange wallet flow z-score spike, from FlowMovementScanner's IndexedDB cache. Drawn for every past candle that qualified, not just the most recent. -->
-            <g v-if="candle.candleData?.totalFlowMovementZScore! >= 2.5" class="flow-spike-indicator">
+            <!-- Flow spike box — trailing 24-candle exchange wallet flow z-score spike, from FlowMovementScanner's IndexedDB cache. Drawn for every past candle that qualified, not just the most recent.
+                 Falls back to the internally-computed flowSpikeFlags/movementPerCandle when candle.candleData wasn't pre-annotated upstream (e.g. the BTC overlay instance, whose candles come straight from a bare REST kline fetch) so the pulse still shows there too. -->
+            <g v-if="(candle.candleData?.totalFlowMovementZScore! >= 2.5) || flowSpikeFlags[i]" class="flow-spike-indicator">
               <rect
                 :x="candleX(i) - candleWidth / 2 - 3"
                 :y="priceToY(candle.high!) - 20"
@@ -1599,7 +1658,7 @@
                 :height="11"
                 rx="2"
                 class="flow-spike-box"
-                :class="candle.candleData?.dominantFlowMovement"
+                :class="candle.candleData?.dominantFlowMovement ?? ((movementPerCandle[i]?.inflow ?? 0) >= (movementPerCandle[i]?.outflow ?? 0) ? 'INFLOW' : 'OUTFLOW')"
               >
                 <title>Exchange wallet flow spike (z ≥ {{ FLOW_SPIKE_Z_THRESHOLD }} over trailing {{ FLOW_SPIKE_LOOKBACK }} candles)</title>
               </rect>
@@ -1642,6 +1701,28 @@
                 :points="`${candleX(i)},${priceToY(candle.high!) - 25} ${candleX(i) - 5},${priceToY(candle.high!) - 33} ${candleX(i) + 5},${priceToY(candle.high!) - 33}`"
                 class="chevron-down"
               />
+            </g>
+
+            <!-- Mechanical move (cog) — OI + LS Ratio pattern suggests this candle's
+                 move was a forced liquidation cascade rather than organic flow.
+                 Sits above the flow-spike box so the two never overlap. Rendered
+                 as a bold badge (not a bare glyph) so it doesn't get lost among
+                 the other markers stacked around each candle. -->
+            <g v-if="getMechanicalMoveSignal(i)" class="mechanical-move-indicator">
+              <title>{{ getMechanicalMoveSignal(i)!.reason }}</title>
+              <circle
+                :cx="candleX(i)"
+                :cy="priceToY(candle.high!) - 34"
+                r="9"
+                class="mechanical-move-badge"
+              />
+              <text
+                :x="candleX(i)"
+                :y="priceToY(candle.high!) - 34"
+                text-anchor="middle"
+                dominant-baseline="central"
+                class="mechanical-move-icon"
+              >⚙</text>
             </g>
 
             <!-- Overbought -->
@@ -2278,8 +2359,50 @@
 
         <!-- Anchored VWAP tool overlay -->
         <g class="anchored-vwaps">
+          <!-- "Fill PZ AVWAP > All Zones" channel — filled cloud spanning the highest to lowest
+               of all-zones AVWAP mid values at each index, standing in for the individual
+               per-zone lines (which are hidden by default; see showAllZonesAvwapLines). -->
+          <g v-if="allZonesAvwapCloud" class="avwap-all-zones-cloud">
+            <!-- outer band cloud: highest upper-band to lowest lower-band across all zones — only when "Show AVWAP Bands" is on -->
+            <polygon
+              v-if="showAvwapBands"
+              :points="allZonesAvwapCloud.bandPolygon"
+              class="avwap-all-zones-band-fill"
+              :style="{ fill: allZonesAvwapCloud.color }"
+            />
+            <polyline
+              v-if="showAvwapBands"
+              :points="allZonesAvwapCloud.bandUpperLine"
+              class="avwap-all-zones-band-edge"
+              :style="{ stroke: allZonesAvwapCloud.color }"
+            />
+            <polyline
+              v-if="showAvwapBands"
+              :points="allZonesAvwapCloud.bandLowerLine"
+              class="avwap-all-zones-band-edge"
+              :style="{ stroke: allZonesAvwapCloud.color }"
+            />
+
+            <polygon
+              :points="allZonesAvwapCloud.polygon"
+              class="avwap-all-zones-cloud-fill"
+              :style="{ fill: allZonesAvwapCloud.color }"
+            />
+            <polyline
+              :points="allZonesAvwapCloud.upperLine"
+              class="avwap-all-zones-cloud-edge"
+              :style="{ stroke: allZonesAvwapCloud.color }"
+            />
+            <polyline
+              :points="allZonesAvwapCloud.lowerLine"
+              class="avwap-all-zones-cloud-edge"
+              :style="{ stroke: allZonesAvwapCloud.color }"
+            />
+          </g>
+
           <g
             v-for="avwap in anchoredVwapSeries"
+            v-show="!avwap.isAllZonesFill || showAllZonesAvwapLines"
             :key="`avwap-${avwap.id}`"
             class="avwap-group"
           >
@@ -2454,6 +2577,24 @@
           </foreignObject>
         </g>
       </svg>
+
+      <!-- BTC overlay: same component re-rendered on top, structure-only comparison -->
+      <div
+        v-if="!props.overlayMode && showBtcOverlay && btcOverlayCandles.length"
+        class="btc-overlay-layer"
+        :style="{ width: svgWidth + 'px', height: totalSvgHeight + 'px' }"
+      >
+        <CandleEntryVisualizerComponent
+          :candles="btcOverlayCandles"
+          symbol="btcusdt"
+          :interval="props.interval"
+          :overlay-mode="true"
+        />
+      </div>
+
+      <div v-if="!props.overlayMode && showBtcOverlay && btcOverlayCandles.length" class="overlay-vs-label">
+        {{ props.symbol.toUpperCase() }} <span class="vs">vs</span> BTC
+      </div>
     </div>
 
     <!-- Candle Details Modal -->
@@ -3294,6 +3435,7 @@ import { getFlowMovement, saveFlowMovement, type FlowMovementDbEntry } from '@/u
 import { saveThesis as saveThesisRecord, getThesesForSymbol, type ThesisRecord } from '@/utility/thesisDb.ts';
 import { generateCandlePrediction, type CandlePredictionResult } from '@/utility/predictionProbability.ts';
 import type { PredictionCandleInput } from '@/utility/predictionProbability.ts';
+import { klineDbUtility } from '@/utility/klineDbUtility.ts';
 
 var chocomintoStore = useChocoMintoStore();
 // ─── Binance kline stream message shape ───────────────────────────────────────
@@ -3370,12 +3512,15 @@ interface Props {
   crossedAvwapPoint?: CrossedAvwapPoint | null
   /** When true, the thesis overlay ("Show/Hide Thesis") is switched on as soon as the chart mounts — used when opening straight into a thesis review. */
   initialShowThesis?: boolean
+  /** When true, renders as a bare structure-comparison overlay: no toolbar, no order/preview actions, no "Overlay BTC" button of its own — just the candles. Used when this component renders itself recursively via the "Overlay BTC" button. */
+  overlayMode?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   symbol: 'btcusdt',
   interval: '15m',
   initialShowThesis: false,
+  overlayMode: false,
 })
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -3393,6 +3538,10 @@ const showMovementDetail = ref(false)
 const selectedMovementCandleIndex = ref<number | null>(null)
 const showEma = ref(true)
 const showMa = ref(false)
+/** "Overlay BTC" toggle — re-renders this same component (in overlayMode) on top of the chart with BTC candles, purely for eyeballing structure/shape against whatever symbol is currently loaded. */
+const showBtcOverlay = ref(false)
+const btcOverlayCandles = ref<CandleEntry[]>([])
+const loadingBtcOverlay = ref(false)
 const candleGap = 5
 const svgHeight = 600
 const CANDLES_PER_ZONE = 24
@@ -3961,6 +4110,8 @@ interface AnchoredVwap {
   endIndex: number | null
   /** Fixed color override (e.g. from "Fill PZ AVWAP > Movement POC"). When unset, anchoredVwapSeries falls back to the AVWAP_COLORS rotation. */
   color?: string
+  /** Set on entries placed by "Fill PZ AVWAP > All Zones". These collapse into a single high/low channel cloud by default instead of drawing as individual lines — see allZonesAvwapCloud / showAllZonesAvwapLines. */
+  isAllZonesFill?: boolean
 }
 
 interface AnchoredVwapPoint {
@@ -4001,9 +4152,16 @@ const predictFutureCandles = ref(24)
 const predictionResult = ref<CandlePredictionResult | null>(null)
 const predictionRunning = ref(false)
 const predictError = ref<string | null>(null)
+/** True while armed to pick an anchor candle on the chart for "Predict from Selected Candle". */
+const predictPickModeActive = ref(false)
+/** Index (within displayCandles) of the picked anchor candle, or null to predict from the latest candle as before. */
+const predictFromCandleIndex = ref<number | null>(null)
 
 /** Toggles the shaded band + upper/lower lines on every placed AVWAP; the mid line always stays visible. */
 const showAvwapBands = ref(false)
+
+/** Toggles the individual per-zone AVWAP lines placed by "Fill PZ AVWAP > All Zones". Hidden by default — those zones instead render collapsed into a single high/low channel cloud (see allZonesAvwapCloud). */
+const showAllZonesAvwapLines = ref(false)
 
 function toggleAvwapMode() {
   avwapModeActive.value = !avwapModeActive.value
@@ -4073,9 +4231,66 @@ const anchoredVwapSeries = computed(() => {
       anchorPrice: points[0]?.mid ?? anchorCandle?.close ?? 0,
       endPrice: lastPoint?.mid ?? anchorCandle?.close ?? 0,
       color: a.color ?? AVWAP_COLORS[i % AVWAP_COLORS.length],
+      isAllZonesFill: a.isAllZonesFill ?? false,
       points,
     }
   })
+})
+
+/**
+ * "Fill PZ AVWAP > All Zones" channel — collapses every isAllZonesFill AVWAP
+ * into a single filled cloud running from the highest to the lowest of their
+ * mid values at each candle index, instead of drawing N overlapping lines.
+ * At any given index only the zones whose AVWAP has already started (anchored
+ * at or before that index) contribute, so the envelope only spans the range
+ * where at least one all-zones AVWAP actually has a value. Returns null when
+ * there are no all-zones AVWAPs placed (or fewer than 2 points to draw).
+ *
+ * Also builds a second, wider envelope from each zone's upper/lower std-dev
+ * bands (highest `upper` and lowest `lower` across all zones at each index) —
+ * this is what "Show AVWAP Bands" reveals for the all-zones fill: one outer
+ * band cloud, not each zone's individual band lines.
+ */
+const allZonesAvwapCloud = computed(() => {
+  const entries = anchoredVwapSeries.value.filter(a => a.isAllZonesFill)
+  if (entries.length === 0) return null
+
+  const highByIndex = new Map<number, number>()
+  const lowByIndex = new Map<number, number>()
+  const bandHighByIndex = new Map<number, number>()
+  const bandLowByIndex = new Map<number, number>()
+
+  for (const entry of entries) {
+    for (const p of entry.points) {
+      const prevHigh = highByIndex.get(p.index)
+      const prevLow = lowByIndex.get(p.index)
+      highByIndex.set(p.index, prevHigh === undefined ? p.mid : Math.max(prevHigh, p.mid))
+      lowByIndex.set(p.index, prevLow === undefined ? p.mid : Math.min(prevLow, p.mid))
+
+      const prevBandHigh = bandHighByIndex.get(p.index)
+      const prevBandLow = bandLowByIndex.get(p.index)
+      bandHighByIndex.set(p.index, prevBandHigh === undefined ? p.upper : Math.max(prevBandHigh, p.upper))
+      bandLowByIndex.set(p.index, prevBandLow === undefined ? p.lower : Math.min(prevBandLow, p.lower))
+    }
+  }
+
+  const indices = [...highByIndex.keys()].sort((a, b) => a - b)
+  if (indices.length < 2) return null
+
+  const upperPoints = indices.map(i => ({ x: candleX(i), y: priceToY(highByIndex.get(i)!) }))
+  const lowerPoints = indices.map(i => ({ x: candleX(i), y: priceToY(lowByIndex.get(i)!) }))
+  const bandUpperPoints = indices.map(i => ({ x: candleX(i), y: priceToY(bandHighByIndex.get(i)!) }))
+  const bandLowerPoints = indices.map(i => ({ x: candleX(i), y: priceToY(bandLowByIndex.get(i)!) }))
+
+  const upperLine = upperPoints.map(p => `${p.x},${p.y}`).join(' ')
+  const lowerLine = lowerPoints.map(p => `${p.x},${p.y}`).join(' ')
+  const polygon = [...upperPoints, ...[...lowerPoints].reverse()].map(p => `${p.x},${p.y}`).join(' ')
+
+  const bandUpperLine = bandUpperPoints.map(p => `${p.x},${p.y}`).join(' ')
+  const bandLowerLine = bandLowerPoints.map(p => `${p.x},${p.y}`).join(' ')
+  const bandPolygon = [...bandUpperPoints, ...[...bandLowerPoints].reverse()].map(p => `${p.x},${p.y}`).join(' ')
+
+  return { upperLine, lowerLine, polygon, bandUpperLine, bandLowerLine, bandPolygon, color: ALL_ZONES_AVWAP_COLOR }
 })
 
 /** Builds an SVG `points` string for one of the three lines (mid/upper/lower) of an anchored VWAP. */
@@ -4151,11 +4366,10 @@ function startAvwapEndDrag(avwapId: number, event: MouseEvent) {
 }
 
 /**
- * "Fill PZ AVWAP" — auto-anchors one Anchored VWAP at the start candle of
- * every Price Zone, instead of hand-clicking each zone's opening candle.
- * Walks displayCandles the same way fillPriceZonesWithVolumeProfile does to
- * find each zone's startIndex (grouped by candle.priceZone), then replaces
- * whatever AVWAPs are currently placed with a fresh one per zone.
+ * Shared builder behind "Fill PZ AVWAP" (recent/all) and the on-mount default
+ * fill: walks displayCandles the same way fillPriceZonesWithVolumeProfile
+ * does to find each Price Zone's startIndex (grouped by candle.priceZone),
+ * then returns one open-ended AnchoredVwap per selected zone.
  *
  * `scope` controls how many zones get filled:
  *   - 'recent' → only the 6 most recent zones (keeps the chart from getting
@@ -4166,9 +4380,10 @@ function startAvwapEndDrag(avwapId: number, event: MouseEvent) {
  * single-click placement — so every zone's VWAP keeps extending forward to
  * the latest candle rather than stopping at its own zone's end. Purely
  * synchronous (computeAnchoredVwapPoints has no network dependency, unlike
- * the VP fill's OI lookups), so all zones appear at once.
+ * the VP fill's OI lookups), so all zones appear at once. Pure — does not
+ * touch anchoredVwaps itself, so callers can either replace or append.
  */
-function fillPriceZonesWithAvwap(scope: 'recent' | 'all') {
+function buildPriceZoneAvwaps(scope: 'recent' | 'all'): AnchoredVwap[] {
   const anchorIndices: number[] = []
   let currentZone: CandleEntry['priceZone'] | null = null
 
@@ -4182,12 +4397,41 @@ function fillPriceZonesWithAvwap(scope: 'recent' | 'all') {
 
   const selected = scope === 'recent' ? anchorIndices.slice(-6) : anchorIndices
 
-  anchoredVwaps.value = selected.map(anchorIndex => ({
+  return selected.map(anchorIndex => ({
     id: ++avwapIdCounter,
     anchorIndex,
     endIndex: null,
     color: scope === 'all' ? ALL_ZONES_AVWAP_COLOR : undefined,
+    isAllZonesFill: scope === 'all',
   }))
+}
+
+/**
+ * The "Fill PZ AVWAP > All Zones" cloud is meant to be permanent once
+ * placed: picking a different Fill PZ AVWAP type afterward should replace
+ * only that other type's entries, not wipe the all-zones cloud out from
+ * under it. These two helpers split anchoredVwaps.value by isAllZonesFill
+ * so each "replace" action only touches its own half.
+ */
+function replaceAllZonesAvwaps(entries: AnchoredVwap[]) {
+  anchoredVwaps.value = [...anchoredVwaps.value.filter(a => !a.isAllZonesFill), ...entries]
+}
+function replaceNonAllZonesAvwaps(entries: AnchoredVwap[]) {
+  anchoredVwaps.value = [...anchoredVwaps.value.filter(a => a.isAllZonesFill), ...entries]
+}
+
+/** "Fill PZ AVWAP" button (recent/all) — replaces whatever AVWAPs of the SAME scope are currently placed with a fresh set from buildPriceZoneAvwaps. The 'all' scope's cloud is permanent: choosing 'recent' here (or any other Fill PZ AVWAP type) never removes it. */
+function fillPriceZonesWithAvwap(scope: 'recent' | 'all') {
+  if (scope === 'all') {
+    replaceAllZonesAvwaps(buildPriceZoneAvwaps('all'))
+  } else {
+    replaceNonAllZonesAvwaps(buildPriceZoneAvwaps('recent'))
+  }
+}
+
+/** On load, auto-add the "All Zones" AVWAP channel on top of whatever plotInitialAvwapPoint/plotInitialVolatilitySpikeAvwap placed, so the chart opens with the all-zones high/low cloud already plotted instead of requiring a manual "Fill PZ AVWAP > All Zones" click. */
+function plotInitialAllZonesAvwap() {
+  anchoredVwaps.value.push(...buildPriceZoneAvwaps('all'))
 }
 
 /**
@@ -4225,14 +4469,88 @@ function buildFlowMovementPocAvwaps(): AnchoredVwap[] {
   })
 }
 
-/** "Fill PZ AVWAP > Movement POC" button — replaces any currently placed AVWAPs, same as the other Fill PZ AVWAP options. */
+/** "Fill PZ AVWAP > Movement POC" button — replaces any currently placed non-all-zones AVWAPs, same as the other Fill PZ AVWAP options. The all-zones cloud (if placed) is permanent and stays untouched. */
 function fillFlowMovementPocWithAvwap() {
-  anchoredVwaps.value = buildFlowMovementPocAvwaps()
+  replaceNonAllZonesAvwaps(buildFlowMovementPocAvwaps())
 }
 
 /** On load, auto-add the Movement POC AVWAPs on top of whatever plotInitialAvwapPoint placed, so the chart opens with flow-spike AVWAPs already plotted instead of requiring a manual "Movement POC" click. */
 function plotInitialFlowMovementPocAvwaps() {
   anchoredVwaps.value.push(...buildFlowMovementPocAvwaps())
+}
+
+/**
+ * Finds the most recent (highest-index) candle with
+ * candleData.hasVolatilityRationSpike true — the same flag that lights up
+ * the [VO] pattern label — and returns a single open-ended AnchoredVwap
+ * anchored there, or null if no candle in the current range has the flag.
+ * Pure — does not touch anchoredVwaps itself, so callers can either replace
+ * or append (same split as buildFlowMovementPocAvwaps).
+ */
+function buildLastVolatilitySpikeAvwap(): AnchoredVwap | null {
+  for (let i = displayCandles.value.length - 1; i >= 0; i--) {
+    if (displayCandles.value[i].candleData?.hasVolatilityRationSpike) {
+      return { id: ++avwapIdCounter, anchorIndex: i, endIndex: null }
+    }
+  }
+  return null
+}
+
+/**
+ * "Fill PZ AVWAP > Last Volatility Spike" button — pins a single open-ended
+ * AVWAP at the most recent volatility-ratio-spike candle, replacing any
+ * non-all-zones AVWAPs currently placed — same replace semantics as
+ * fillFlowMovementPocWithAvwap / fillPriceZonesWithAvwap. The all-zones
+ * cloud (if placed) is permanent and stays untouched. No-ops (leaves the
+ * existing AVWAPs untouched) if no candle in the current range has the flag.
+ */
+function pinAvwapToLastVolatilitySpike() {
+  const avwap = buildLastVolatilitySpikeAvwap()
+  if (!avwap) return
+  replaceNonAllZonesAvwaps([avwap])
+}
+
+/** On load, auto-add the last-volatility-spike AVWAP on top of whatever plotInitialAvwapPoint/plotInitialFlowMovementPocAvwaps placed, so the chart opens with it already plotted instead of requiring a manual click. */
+function plotInitialVolatilitySpikeAvwap() {
+  const avwap = buildLastVolatilitySpikeAvwap()
+  if (avwap) anchoredVwaps.value.push(avwap)
+}
+
+/**
+ * "Last VC Spike" button — finds the most recent (highest-index) candle
+ * with candleData.volatilityRatioChange >= 1.5 (the same threshold that
+ * lights up the *VS* pattern label) and pushes a drawn rectangle spanning
+ * that candle's high/low, stretching from that candle through to the
+ * current (last) candle. Reuses the freeform Rectangle tool's storage/
+ * rendering/drag-resize machinery — appends rather than replacing, same as
+ * the manual Rectangle tool. No-ops if no candle in the current range has
+ * the flag.
+ */
+function pinLastVolatilitySpikeRectangle() {
+  const candles = displayCandles.value
+  let spikeIndex = -1
+  for (let i = candles.length - 1; i >= 0; i--) {
+    if ((candles[i].candleData?.volatilityRatioChange ?? 0) >= 1.5) {
+      spikeIndex = i
+      break
+    }
+  }
+  if (spikeIndex === -1) return
+
+  const spikeCandle = candles[spikeIndex]
+  if (spikeCandle.high == null || spikeCandle.low == null) return
+
+  const lastIndex = candles.length - 1
+  const left = candleX(spikeIndex) - candleWidth.value / 2
+  const right = candleX(lastIndex) + candleWidth.value / 2
+
+  drawnRectangles.value.push({
+    id: ++rectIdCounter,
+    x: left,
+    width: right - left,
+    priceHigh: spikeCandle.high,
+    priceLow: spikeCandle.low,
+  })
 }
 
 
@@ -4698,8 +5016,12 @@ function toggleVpMode() {
   vpModeActive.value = !vpModeActive.value
 }
 
-/** Wraps openCandleModal so the modal doesn't pop open mid-drag/mid-click while the VP or Anchored VWAP tools are armed. */
+/** Wraps openCandleModal so the modal doesn't pop open mid-drag/mid-click while the VP, Anchored VWAP, or Predict-pick tools are armed. */
 function handleCandleClick(index: number) {
+  if (predictPickModeActive.value) {
+    selectPredictFromCandle(index)
+    return
+  }
   if (vpModeActive.value || avwapModeActive.value) return
   openCandleModal(index)
 }
@@ -6263,6 +6585,26 @@ function stopLiveVolumePolling() {
   }
 }
 
+// ─── BTC overlay (structure-only comparison) ───────────────────────────────
+/** Binance klines REST rows: [openTime, open, high, low, close, volume, closeTime, ...] */
+async function fetchBtcOverlayCandles() {
+  loadingBtcOverlay.value = true
+  try {
+    btcOverlayCandles.value = await klineDbUtility.getKlines("BTCUSDT");
+  } catch {
+    // network hiccup — leave whatever overlay candles we already have (if any)
+  } finally {
+    loadingBtcOverlay.value = false
+  }
+}
+
+function toggleBtcOverlay() {
+  showBtcOverlay.value = !showBtcOverlay.value
+  if (showBtcOverlay.value && btcOverlayCandles.value.length === 0) {
+    fetchBtcOverlayCandles()
+  }
+}
+
 function connectWebSocket() {
   if (ws) {
     ws.onclose = null   // prevent the reconnect handler from firing twice
@@ -6631,6 +6973,17 @@ const bidAskSpread = computed(() => {
   const abs = bestAsk.value.price - bestBid.value.price
   const mid = (bestAsk.value.price + bestBid.value.price) / 2
   return { abs, percent: mid > 0 ? (abs / mid) * 100 : 0 }
+})
+
+// Rolling buffer of recent live spread% readings — gives the Predict tool's
+// spread analysis a real self-baseline (z-score/percentile against this
+// symbol's own recent spread distribution) instead of a single snapshot.
+const SPREAD_HISTORY_MAX = 300
+const spreadHistoryBuffer = ref<number[]>([])
+watch(bidAskSpread, val => {
+  if (val == null) return
+  spreadHistoryBuffer.value.push(val.percent)
+  if (spreadHistoryBuffer.value.length > SPREAD_HISTORY_MAX) spreadHistoryBuffer.value.shift()
 })
 
 /** Max width, in px, a full-size depth bar can stretch in from the right edge. */
@@ -7316,7 +7669,9 @@ function plotInitialAvwapPoint() {
 watch(() => props.candles, () => {
   anchoredVwaps.value = []
   plotInitialAvwapPoint()
-  plotInitialFlowMovementPocAvwaps()
+  //plotInitialFlowMovementPocAvwaps()
+  plotInitialVolatilitySpikeAvwap()
+  plotInitialAllZonesAvwap()
 })
 
 // The kline/depth WebSocket streams are keyed by symbol+interval at connect
@@ -7360,7 +7715,9 @@ onMounted(() => {
   connectWebSocket()
   connectDepthWebSocket()
   plotInitialAvwapPoint()
-  plotInitialFlowMovementPocAvwaps()
+  //plotInitialFlowMovementPocAvwaps()
+  plotInitialVolatilitySpikeAvwap()
+  plotInitialAllZonesAvwap()
   if (showCrossTfEma.value) fetchCrossTfEma()
   // OI and Long/Short ratio now default to on, so load them immediately
   // instead of waiting for the checkboxes to be toggled off-and-on.
@@ -7379,6 +7736,10 @@ onMounted(() => {
 // per-symbol scoping as the rest of the persisted drawing state.
 watch(() => props.symbol, (symbol) => {
   restoreDrawingsWhenReady(symbol)
+  predictionResult.value = null
+  predictError.value = null
+  predictFromCandleIndex.value = null
+  predictPickModeActive.value = false
 })
 
 onUnmounted(() => {
@@ -7439,8 +7800,13 @@ const maxPrice = computed(() => {
 const priceDelta = computed(() => maxPrice.value - minPrice.value)
 
 const svgWidth = computed(() => {
-  const predictedSlots = predictionResult.value ? predictionResult.value.predictedCandles.length : 0
-  return (displayCandles.value.length + multiTfPrependOffsetSlots.value + predictedSlots) * (candleWidth.value + candleGap) + 200
+  // predictedCandleOffset is the anchor candle's index (or the last real
+  // candle when no anchor is picked) — a mid-chart anchor overlays predicted
+  // candles onto slots that already exist, so only the portion that extends
+  // past the current chart should add width.
+  const predictedEndSlots = predictionResult.value ? predictedCandleOffset.value + predictionResult.value.predictedCandles.length : 0
+  const totalSlots = Math.max(displayCandles.value.length, predictedEndSlots) + multiTfPrependOffsetSlots.value
+  return totalSlots * (candleWidth.value + candleGap) + 200
 })
 
 const gridPrices = computed(() => {
@@ -7591,10 +7957,20 @@ const zoneLabels = computed(() => {
   return labels
 })
 
+/**
+ * Base-interval (e.g. 15m) EMA200, self-computed locally from close prices —
+ * used as a fallback wherever candle.candleData.ema200 wasn't attached
+ * upstream (the BTC overlay's candles come straight from a bare REST kline
+ * fetch, so they never carry candleData at all). Same seeded-SMA-then-EMA
+ * approach as calculateEma200Series below, just run against this instance's
+ * own displayCandles instead of a higher-timeframe series.
+ */
+const baseEma200Fallback = computed(() => calculateEma200Series(displayCandles.value.map(c => c.close!)))
+
 const emaPoints = computed(() => {
   const points: string[] = []
   for (let i = 0; i < displayCandles.value.length; i++) {
-    const ema9 = displayCandles.value[i].candleData?.ema200
+    const ema9 = displayCandles.value[i].candleData?.ema200 ?? baseEma200Fallback.value[i]
     if (ema9 !== undefined && ema9 !== null) {
       points.push(`${candleX(i)},${priceToY(ema9)}`)
     }
@@ -9288,6 +9664,89 @@ const lsRatioPerCandle = computed<({ longAccount: number; shortAccount: number }
   })
 })
 
+// ─── Mechanical move detection (OI + LS Ratio) ─────────────────────────────
+// A "mechanical" move is a liquidation cascade, not organic flow: price
+// moves hard while OPEN INTEREST DROPS (positions are being forced closed,
+// not opened), and the crowd was already leaning the way that's now getting
+// squeezed out — longs stacked before a drop, shorts stacked before a pump.
+// That combination (price direction + OI unwind + pre-existing LS skew) is
+// the standard "forced deleveraging" signature. OI *rising* alongside a move
+// just means people are opening fresh positions into it — leveraged, but
+// not forced — so that case is deliberately NOT flagged as mechanical.
+//
+// The LS skew is checked on the PRIOR candle (the crowding that set the
+// squeeze up), not the candle where the squeeze fires — by the time OI has
+// already unwound, the ratio has partly unwound with it.
+//
+// "Sharp OI drop" is relative to how much OI normally moves candle-to-candle
+// for this symbol/interval (a trailing baseline), not a fixed percentage —
+// a fixed threshold is either dead on quiet majors or firing constantly on
+// volatile alts. Same z-score-flavored approach as the flow/volume spike
+// detectors elsewhere in this file.
+const MECHANICAL_MIN_PRICE_MOVE_PCT = 0.5 // ignore small/noise candles entirely
+const MECHANICAL_OI_LOOKBACK = 20 // candles used to establish the "normal" OI swing for this symbol/interval
+const MECHANICAL_OI_SPIKE_MULTIPLIER = 2.5 // OI drop must exceed this many multiples of the recent baseline swing
+const MECHANICAL_MIN_OI_DROP_PCT = 1.5 // absolute floor, so a near-zero baseline can't make tiny drops "sharp"
+const MECHANICAL_LS_SKEW_THRESHOLD = 0.12 // |longAccount - 0.5| considered a "crowded" positioning skew, checked BEFORE the move
+
+interface MechanicalMoveSignal {
+  reason: string
+}
+
+/**
+ * Classifies a single candle as a likely liquidation-driven ("mechanical")
+ * move: a hard price move, an OI unwind that's sharp relative to this
+ * symbol's recent normal OI swing, and an LS ratio that was already crowded
+ * toward the side now being squeezed out. Returns null when there isn't
+ * enough data or the pattern doesn't fire.
+ */
+const getMechanicalMoveSignal = (index: number): MechanicalMoveSignal | null => {
+  const candle = displayCandles.value[index]
+  if (candle?.open == null || candle?.close == null) return null
+
+  const priceChangePct = ((candle.close - candle.open) / candle.open) * 100
+  if (Math.abs(priceChangePct) < MECHANICAL_MIN_PRICE_MOVE_PCT) return null
+
+  const oiNow = oiPerCandle.value[index]
+  const oiPrev = index > 0 ? oiPerCandle.value[index - 1] : null
+  if (oiNow == null || oiPrev == null || oiPrev === 0) return null
+  const oiChangePct = ((oiNow - oiPrev) / oiPrev) * 100
+  if (oiChangePct >= 0) return null // only an OI *unwind* counts as forced deleveraging
+
+  // Baseline: average absolute OI swing over the trailing lookback window (excluding this candle).
+  const lookbackStart = Math.max(1, index - MECHANICAL_OI_LOOKBACK)
+  let baselineSum = 0
+  let baselineCount = 0
+  for (let j = lookbackStart; j < index; j++) {
+    const a = oiPerCandle.value[j - 1]
+    const b = oiPerCandle.value[j]
+    if (a == null || b == null || a === 0) continue
+    baselineSum += Math.abs((b - a) / a) * 100
+    baselineCount++
+  }
+  const baselineOiSwingPct = baselineCount > 0 ? baselineSum / baselineCount : 0
+  const oiDropThreshold = Math.max(MECHANICAL_MIN_OI_DROP_PCT, baselineOiSwingPct * MECHANICAL_OI_SPIKE_MULTIPLIER)
+  if (Math.abs(oiChangePct) < oiDropThreshold) return null
+
+  // Crowd positioning going INTO this candle — the setup, not the aftermath.
+  const priorLs = index > 0 ? lsRatioPerCandle.value[index - 1] : null
+  if (!priorLs) return null
+  const longSkew = priorLs.longAccount - 0.5
+
+  const isBullCandle = priceChangePct > 0
+  const crowdWasLong = longSkew >= MECHANICAL_LS_SKEW_THRESHOLD
+  const crowdWasShort = longSkew <= -MECHANICAL_LS_SKEW_THRESHOLD
+
+  if (!isBullCandle && crowdWasLong) {
+    return { reason: `Likely long squeeze — OI ${oiChangePct.toFixed(1)}% (~${baselineOiSwingPct.toFixed(1)}% is normal here) while crowd was ${(priorLs.longAccount * 100).toFixed(0)}% long` }
+  }
+  if (isBullCandle && crowdWasShort) {
+    return { reason: `Likely short squeeze — OI ${oiChangePct.toFixed(1)}% (~${baselineOiSwingPct.toFixed(1)}% is normal here) while crowd was ${(priorLs.shortAccount * 100).toFixed(0)}% short` }
+  }
+
+  return null
+}
+
 const LS_PANEL_HEIGHT = 60
 
 /** Top edge of the L/S panel's own section (own band, computed from panelLayout). */
@@ -9501,8 +9960,16 @@ const formatValue = (value: any): string => {
 function runPrediction() {
   predictError.value = null
 
-  if (displayCandles.value.length < 10) {
-    predictError.value = 'Not enough candle history loaded to predict (need at least 10).'
+  const lastRealIndex = displayCandles.value.length - 1
+  const anchorIndex = predictFromCandleIndex.value ?? lastRealIndex
+
+  if (anchorIndex < 0 || anchorIndex > lastRealIndex) {
+    predictError.value = 'Selected candle is no longer on the chart.'
+    predictFromCandleIndex.value = null
+    return
+  }
+  if (anchorIndex + 1 < 10) {
+    predictError.value = 'Not enough candle history before the selected candle to predict (need at least 10).'
     return
   }
 
@@ -9512,38 +9979,61 @@ function runPrediction() {
     const cross4h = crossTfEmaPerCandle('4h')
     const cross1d = crossTfEmaPerCandle('1d')
 
-    const history: PredictionCandleInput[] = displayCandles.value.map((c, i) => ({
-      openTime: c.openTime!,
-      open: c.open!,
-      high: c.high!,
-      low: c.low!,
-      close: c.close!,
-      ema200: c.candleData?.ema200 ?? null,
-      ma200: c.candleData?.ma200 ?? null,
-      ma100: c.candleData?.ma100 ?? null,
-      openInterest: oiPerCandle.value[i] ?? null,
-      longShortRatio: lsRatioPerCandle.value[i] ?? null,
-      crossTfEma: {
-        '1h': cross1h[i] ?? null,
-        '4h': cross4h[i] ?? null,
-        '1d': cross1d[i] ?? null,
-      },
-      flow: {
-        inflow: movementPerCandle.value[i]?.inflow ?? 0,
-        outflow: movementPerCandle.value[i]?.outflow ?? 0,
-      },
-      isBuyingExhaustion: c.candleData?.isBuyingExhaustion ?? false,
-      isSellingExhaustion: c.candleData?.isSellingExhaustion ?? false,
-      isCandleInAbsorption: c.candleData?.isCandleInAbsorption ?? false,
-      isWeakening: c.isWeakening ?? false,
-      patternTrack: c.patternTrack === 'hl' || c.patternTrack === 'lh' ? c.patternTrack : null,
-    }))
+    // Everything from the start of the chart up to (and including) the
+    // anchor candle — the anchor is treated as "now" for this prediction,
+    // so candles after it (if any, when anchored mid-chart) are ignored as
+    // model input and instead sit there as a visual "what actually
+    // happened" reference against the projected overlay.
+    const historySource = displayCandles.value.slice(0, anchorIndex + 1)
+
+    const history: PredictionCandleInput[] = historySource.map((c, i) => {
+      // Live top-of-book only makes sense when predicting from the actual
+      // latest candle — a historical anchor gets no bid/ask snapshot rather
+      // than attaching today's book to a past moment.
+      const isLiveAnchor = anchorIndex === lastRealIndex && i === historySource.length - 1
+      return {
+        openTime: c.openTime!,
+        open: c.open!,
+        high: c.high!,
+        low: c.low!,
+        close: c.close!,
+        ema200: c.candleData?.ema200 ?? null,
+        ma200: c.candleData?.ma200 ?? null,
+        ma100: c.candleData?.ma100 ?? null,
+        openInterest: oiPerCandle.value[i] ?? null,
+        longShortRatio: lsRatioPerCandle.value[i] ?? null,
+        crossTfEma: {
+          '1h': cross1h[i] ?? null,
+          '4h': cross4h[i] ?? null,
+          '1d': cross1d[i] ?? null,
+        },
+        flow: {
+          inflow: movementPerCandle.value[i]?.inflow ?? 0,
+          outflow: movementPerCandle.value[i]?.outflow ?? 0,
+        },
+        isBuyingExhaustion: c.candleData?.isBuyingExhaustion ?? false,
+        isSellingExhaustion: c.candleData?.isSellingExhaustion ?? false,
+        isCandleInAbsorption: c.candleData?.isCandleInAbsorption ?? false,
+        isWeakening: c.isWeakening ?? false,
+        patternTrack: c.patternTrack === 'hl' || c.patternTrack === 'lh' ? c.patternTrack : null,
+        ...(isLiveAnchor && bestBid.value && bestAsk.value ? {
+          bestBid: bestBid.value.price,
+          bestAsk: bestAsk.value.price,
+          bidSize: bestBid.value.qty,
+          askSize: bestAsk.value.qty,
+        } : {}),
+      }
+    })
 
     predictionResult.value = generateCandlePrediction(history, {
       pastCandles: predictPastCandles.value,
       predictedCandles: predictFutureCandles.value,
-      bidAskSpreadPercent: bidAskSpread.value?.percent ?? null,
+      // A historical anchor's own spread context is gone — the live buffer
+      // only applies to the true latest candle; a historical pick predicts
+      // with 'INSUFFICIENT_DATA' spread rather than a misleading live read.
+      bidAskSpreadPercentHistory: anchorIndex === lastRealIndex ? spreadHistoryBuffer.value : [],
       intervalMs: intervalToMs(props.interval),
+      symbol: props.symbol,
     })
     predictDropdownOpen.value = false
   } catch (err) {
@@ -9554,13 +10044,34 @@ function runPrediction() {
   }
 }
 
+/** Toggles "click a candle on the chart to predict from there" pick mode. */
+function togglePredictPickMode() {
+  predictPickModeActive.value = !predictPickModeActive.value
+  if (predictPickModeActive.value) predictDropdownOpen.value = false
+}
+
+/** Called when a candle is clicked while predict-pick mode is armed. */
+function selectPredictFromCandle(index: number) {
+  predictPickModeActive.value = false
+  predictFromCandleIndex.value = index
+  runPrediction()
+}
+
+/** Drops the picked anchor and reverts to predicting from the latest candle. */
+function resetPredictAnchorToLatest() {
+  predictFromCandleIndex.value = null
+  if (predictionResult.value) runPrediction()
+}
+
 function clearPrediction() {
   predictionResult.value = null
   predictError.value = null
+  predictFromCandleIndex.value = null
+  predictPickModeActive.value = false
 }
 
-/** Chart index where predicted candles start — right after the last displayed real candle. */
-const predictedCandleOffset = computed(() => displayCandles.value.length)
+/** Chart index where predicted candles start — right after the picked anchor candle, or the last real candle if none is picked. */
+const predictedCandleOffset = computed(() => (predictFromCandleIndex.value ?? displayCandles.value.length - 1) + 1)
 
 /** Predicted candles paired with their chart index, ready for candleX(). */
 const predictedChartCandles = computed(() => {
@@ -9598,16 +10109,28 @@ const predictedEmaLines = computed(() => {
     }))
 })
 
-/** Multi-line factor breakdown for the summary badge's title/tooltip. */
+/** Multi-line regime/positioning/confluence breakdown for the summary badge's title/tooltip. */
 const predictionTooltip = computed(() => {
   const r = predictionResult.value
   if (!r) return ''
+  const d = r.diagnostics
   return [
-    `Composite score: ${r.compositeScore.toFixed(2)} (−1 short .. +1 long)`,
-    `Drift/candle: ${(r.driftPerCandle * 100).toFixed(3)}%  Vol/candle: ${(r.volatilityPerCandle * 100).toFixed(3)}%`,
-    `Simulations: ${r.simulations}  Past candles used: ${r.pastCandlesUsed}`,
+    `Regime: ${d.regime} (${d.regimeDetail}), strength ${d.regimeStrength.toFixed(2)}`,
+    `OI: ${d.oiState} (short window: ${d.oiShortWindowState}), strength ${d.oiStrength.toFixed(2)}`,
+    `Flow: ${d.flowState} (persistence ${(d.flowPersistence * 100).toFixed(0)}%, accel ${d.flowAcceleration.toFixed(2)})${d.flowSpike ? ' [SPIKE]' : ''}`,
+    `L/S crowding: ${d.lsCrowding} (percentile ${(d.lsPercentile * 100).toFixed(0)})`,
+    `Spread: ${d.spreadState}${d.spreadZScore != null ? ` (z=${d.spreadZScore.toFixed(2)})` : ''}`,
+    `EMA event: ${d.emaEvent}${d.emaEventTf ? ` on ${d.emaEventTf}` : ''}`,
     '',
-    ...r.factors.map(f => `${f.name}: ${f.score >= 0 ? '+' : ''}${f.score.toFixed(2)} (w=${f.weight}) — ${f.detail}`),
+    `Confluence: ${d.confluenceLevel} — bullish ${d.bullishEvidence.toFixed(2)} vs bearish ${d.bearishEvidence.toFixed(2)} (agreement ${(d.signalAgreement * 100).toFixed(0)}%)`,
+    `Dominant driver: ${d.dominantDriver}`,
+    `Confidence: ${r.confidence} (${r.confidenceScore.toFixed(0)}/100 signal quality — NOT the probability itself)`,
+    '',
+    `Next 1 candle:  Up ${(r.horizons.next1.probabilityUp * 100).toFixed(0)}%  Down ${(r.horizons.next1.probabilityDown * 100).toFixed(0)}%  Flat ${(r.horizons.next1.probabilityNeutral * 100).toFixed(0)}%`,
+    `Next 2 candles: Up ${(r.horizons.next2.probabilityUp * 100).toFixed(0)}%  Down ${(r.horizons.next2.probabilityDown * 100).toFixed(0)}%  Flat ${(r.horizons.next2.probabilityNeutral * 100).toFixed(0)}%`,
+    `Next 4 candles: Up ${(r.horizons.next4.probabilityUp * 100).toFixed(0)}%  Down ${(r.horizons.next4.probabilityDown * 100).toFixed(0)}%  Flat ${(r.horizons.next4.probabilityNeutral * 100).toFixed(0)}%`,
+    '',
+    ...d.votes.map(v => `${v.name}: ${v.contribution >= 0 ? '+' : ''}${v.contribution.toFixed(2)} (w=${v.weight.toFixed(2)}) — ${v.note}`),
   ].join('\n')
 })
 </script>
@@ -9739,6 +10262,32 @@ const predictionTooltip = computed(() => {
   font-size: 11px;
   max-width: 190px;
   white-space: normal;
+}
+
+.predict-anchor-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: #ccc;
+  border-top: 1px solid #333;
+  padding-top: 6px;
+  margin-top: 2px;
+}
+
+.predict-anchor-reset {
+  background: none;
+  border: none;
+  color: #64b5f6;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.predict-anchor-reset:hover {
+  color: #90caf9;
 }
 
 .predict-summary {
@@ -10056,6 +10605,22 @@ const predictionTooltip = computed(() => {
 /* ── Anchored VWAP tool ────────────────────────────────────────────────── */
 .candle.avwap-target {
   cursor: crosshair;
+}
+
+/* ── Predict tool: pick-a-candle mode + anchor highlight ─────────────────── */
+.candle.predict-target {
+  cursor: crosshair;
+}
+.candle.predict-target:hover .body,
+.candle.predict-target:hover .wick {
+  filter: brightness(1.4);
+}
+.candle.predict-anchor .body {
+  stroke: #ffb74d;
+  stroke-width: 2;
+}
+.candle.predict-anchor .wick {
+  stroke: #ffb74d;
 }
 
 /* ── Range Download tool ──────────────────────────────────────────────── */
@@ -11051,6 +11616,29 @@ const predictionTooltip = computed(() => {
   filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.6));
 }
 
+/* ── "Fill PZ AVWAP > All Zones" high/low channel cloud ─────────────────── */
+.avwap-all-zones-cloud { pointer-events: none; }
+.avwap-all-zones-cloud-fill {
+  stroke: none;
+  opacity: 0.14;
+}
+.avwap-all-zones-cloud-edge {
+  fill: none;
+  stroke-width: 1.25;
+  stroke-dasharray: 5, 3;
+  opacity: 0.75;
+}
+.avwap-all-zones-band-fill {
+  stroke: none;
+  opacity: 0.06;
+}
+.avwap-all-zones-band-edge {
+  fill: none;
+  stroke-width: 1;
+  stroke-dasharray: 2, 3;
+  opacity: 0.45;
+}
+
 /* ── Backtest playback controls ───────────────────────────────────────── */
 .backtest-controls {
   display: flex;
@@ -11409,6 +11997,63 @@ const predictionTooltip = computed(() => {
 
 .candles-svg { display: block; }
 
+/* ── BTC overlay: same component rendered on top of itself, structure-only ── */
+.btc-overlay-layer {
+  position: absolute;
+  top: 1rem;
+  left: 1rem; /* match .chart-container's padding so the nested svg starts at the same origin */
+  pointer-events: none;
+  opacity: 0.6;
+  z-index: 5;
+  mix-blend-mode: screen;
+}
+
+/* Recursive instance rendered inside .btc-overlay-layer via overlay-mode prop */
+.candle-visualizer.overlay-instance {
+  padding: 0;
+  background: transparent;
+  gap: 0;
+}
+.candle-visualizer.overlay-instance .chart-container {
+  background: transparent;
+  border: none;
+  padding: 0;
+  overflow: visible;
+}
+/* .btc-overlay-layer is pointer-events:none as a whole (so it doesn't block
+   interaction with the main chart's own candles/tools underneath), but the
+   BTC candles themselves should still be clickable to open their details
+   modal — re-enable hit-testing just for the candle groups. */
+.candle-visualizer.overlay-instance .candle {
+  pointer-events: auto;
+}
+/* The BTC overlay's own modal should always be fully interactive regardless
+   of the pointer-events:none on its ancestor .btc-overlay-layer. */
+.candle-visualizer.overlay-instance .modal-overlay {
+  pointer-events: auto;
+}
+
+.overlay-vs-label {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.75rem;
+  z-index: 6;
+  pointer-events: none;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: #eee;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 0.2rem 0.5rem;
+}
+.overlay-vs-label .vs {
+  color: #f0b90b; /* Binance-yellow, just to make the "vs" pop between the two symbols */
+  font-weight: 700;
+  margin: 0 0.25rem;
+}
+
 .crosshair { pointer-events: none; }
 .crosshair-line { stroke: rgba(255,255,255,0.3); stroke-width: 1; stroke-dasharray: 4,4; }
 .crosshair-line.horizontal { opacity: 0.6; }
@@ -11597,6 +12242,30 @@ const predictionTooltip = computed(() => {
 
 .ob-marker { fill: red; }
 .os-marker { fill: green; }
+
+/* Mechanical move (cog) — OI + LS Ratio pattern suggests a forced
+   liquidation cascade rather than organic flow. A filled, outlined, gently
+   pulsing badge so it reads clearly against the chart instead of blending
+   into the other small markers. */
+.mechanical-move-indicator { cursor: help; }
+.mechanical-move-badge {
+  fill: #ffb300;
+  stroke: #7a4b00;
+  stroke-width: 1.5px;
+  filter: drop-shadow(0 0 4px rgba(255, 179, 0, 0.85));
+  animation: mechanical-move-pulse 1.6s ease-in-out infinite;
+}
+.mechanical-move-icon {
+  font-size: 13px;
+  font-weight: bold;
+  fill: #1a1a1a;
+  pointer-events: none;
+  user-select: none;
+}
+@keyframes mechanical-move-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
 
 .atr-extensions { pointer-events: none; }
 .atr-extension-rect { stroke:#808080; stroke-width:1; opacity:0.5; stroke-linecap:round; background:gray; }

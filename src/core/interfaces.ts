@@ -1,3 +1,5 @@
+import type { ConfluenceStateResult } from "@/utility/confluenceState"
+import type { MarketState, MarketStateResult } from "@/utility/marketState"
 import type { NumberLiteralType } from "typescript"
 
 export interface TrendLine {
@@ -120,7 +122,8 @@ export interface FuturesSymbol{
   hasRecentPosition: boolean
   recentPositionSide: string,
   networkChain: string,
-  hasRecentCrossedMovementPoc: boolean
+  hasRecentCrossedMovementPoc: boolean,
+  hasRecentVolatilityChangeSpike: boolean
 }
 
 export interface PastVolumeAnalysis{
@@ -381,8 +384,12 @@ export interface CandleData {
   breakLowestAvWapMid: boolean
   crossedMovementPocCounter: number;
   hasRecentCrossedMovementPoc: boolean
+  hasRecentVolatityRatioChangeSpike:boolean;
   volatilityRatioChange: number;
   hasVolatilityRationSpike: boolean;
+  crossedVoAvwapPoint: boolean,
+  marketState:MarketStateResult | null,
+  confluenceState: ConfluenceStateResult | null
 }
 
 

@@ -246,6 +246,7 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
         currentFutureSumbol.value!.hasRecentPosition = currentCandle.candleData?.hasRecentPosition!;
         currentFutureSumbol.value!.recentPositionSide = currentCandle.candleData?.recentPositionSide!;
         currentFutureSumbol.value!.hasRecentCrossedMovementPoc = currentCandle.candleData?.hasRecentCrossedMovementPoc!;
+        currentFutureSumbol.value!.hasRecentVolatilityChangeSpike = currentCandle.candleData?.hasRecentVolatityRatioChangeSpike!;
 
     if(chocoMintoStore.isManualSimulation){
         updateStoreFutureSymbolSimulationStats(symbol,candles);
@@ -516,6 +517,7 @@ async function updateCandleEntryWithLastCandle(symbol:string){
     currentFutureSumbol.value!.recentPositionSide = prevKlineEntry.candleData?.recentPositionSide!;
 
     currentFutureSumbol.value!.hasRecentCrossedMovementPoc = prevKlineEntry.candleData?.hasRecentCrossedMovementPoc!;
+    currentFutureSumbol.value!.hasRecentVolatilityChangeSpike = prevKlineEntry.candleData?.hasRecentVolatityRatioChangeSpike!;
 
     if(isPrevCandleTriggeredOpen){
         //indexDBLogger.writeLog(`[updateCandleEntryWithLastCandle][${symbol}]: isPrevCandleTriggeredOpen==true, prevKlineEntry.side=${prevKlineEntry.side}`);

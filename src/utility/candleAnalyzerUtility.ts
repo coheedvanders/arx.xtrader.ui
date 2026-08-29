@@ -382,7 +382,11 @@ static buyerInterestScore(
         crossedMovementPocCounter: 0,
         hasRecentCrossedMovementPoc: false,
         volatilityRatioChange: 0,
-        hasVolatilityRationSpike: false
+        hasVolatilityRationSpike: false,
+        crossedVoAvwapPoint: false,
+        hasRecentVolatityRatioChangeSpike: false,
+        marketState: null,
+        confluenceState: null
     };
   }
 
