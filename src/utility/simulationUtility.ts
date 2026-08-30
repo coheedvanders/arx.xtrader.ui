@@ -283,7 +283,7 @@ export class SimulationUtility {
                 //===============
                 //LOOKBACK TREND
                 //===============
-                var lookbackChange = movingCandles.slice(-50);
+                var lookbackChange = movingCandles.slice(-8);
 
                 var lookbackBase = lookbackChange[0];
                 var basePrice = 0;
@@ -297,7 +297,7 @@ export class SimulationUtility {
 
                 candle.candleData.lookbackChangePercentage = lookbackChangePercentage;
 
-                var trendDirection = this.getTrendDirection(movingCandles.slice(-25).filter(c => c.candleData).map(c => c.candleData!.lookbackChangePercentage), lookbackChangePercentage)
+                var trendDirection = this.getTrendDirection(movingCandles.slice(-2).filter(c => c.candleData).map(c => c.candleData!.lookbackChangePercentage), lookbackChangePercentage)
 
                 candle.candleData.lookbackTrend = trendDirection;
 

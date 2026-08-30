@@ -105,11 +105,30 @@
         {{ loadingBtcOverlay ? 'Loading BTC…' : (showBtcOverlay ? 'Hide BTC Overlay' : 'Overlay BTC') }}
       </button>
 
+      <span v-if="btcOverlayError" class="btc-overlay-error" :title="btcOverlayError">
+        BTC overlay failed to load — see console
+      </span>
+
+      <label v-if="showBtcOverlay" class="btc-overlay-opacity-label">
+        <span>BTC opacity</span>
+        <input
+          v-model.number="btcOverlayOpacity"
+          type="range"
+          min="0.05"
+          max="1"
+          step="0.05"
+          class="btc-overlay-opacity-slider"
+        />
+        <span class="btc-overlay-opacity-value">{{ Math.round(btcOverlayOpacity * 100) }}%</span>
+      </label>
+
       <button @click="showKeyLevels = true">show key levels</button>
 
       <button @click="showMaCrossing = true">See MA</button>
 
       <button @click="showAccumulationAnalysis = true">Accumulation Scan</button>
+
+      <button @click="openOptimizeTrendModal">Optimize Trend</button>
 
       <!-- ── Predict tool ─────────────────────────────────────────────────── -->
       <div class="tool-dropdown" ref="predictDropdownRef">
@@ -1453,6 +1472,15 @@
               *VS*
             </text>
 
+            <text
+              v-if="candle.candleData?.crossedAvwapPoint"
+              :x="candleX(i)"
+              :y="priceToY(candle.low!) + 55"
+              class="pattern-label"
+            >
+              #
+            </text>
+
             <!-- <text
               v-if="candle.candleData?.breakHighestAvWapMid"
               :x="candleX(i)"
@@ -1689,6 +1717,19 @@
                 r="4"
                 class="is-change-high-dot"
               />
+            </g>
+
+            <!-- Lookback trend label — SU/MU/R/MD/SD from resolvedLookbackTrend(i), sourced from the
+                 locally-recomputed (Optimize Trend modal) values with a fallback to whatever
+                 candle.candleData.lookbackTrend the backend already attached. -->
+            <g v-if="trendAbbreviation(i)" class="lookback-trend-indicator">
+              <text
+                :x="candleX(i)"
+                :y="priceToY(candle.low!) + 68"
+                text-anchor="middle"
+                dominant-baseline="central"
+                :class="['pattern-label', 'lookback-trend-label', trendLabelClass(i)]"
+              >{{ trendAbbreviation(i) }}</text>
             </g>
 
             <g v-if="candle.candleData?.isLongPotential" class="long-potential">
@@ -2368,19 +2409,19 @@
               v-if="showAvwapBands"
               :points="allZonesAvwapCloud.bandPolygon"
               class="avwap-all-zones-band-fill"
-              :style="{ fill: allZonesAvwapCloud.color }"
+              :style="{ fill: allZonesAvwapCloud.bandColor }"
             />
             <polyline
               v-if="showAvwapBands"
               :points="allZonesAvwapCloud.bandUpperLine"
               class="avwap-all-zones-band-edge"
-              :style="{ stroke: allZonesAvwapCloud.color }"
+              :style="{ stroke: allZonesAvwapCloud.bandColor }"
             />
             <polyline
               v-if="showAvwapBands"
               :points="allZonesAvwapCloud.bandLowerLine"
               class="avwap-all-zones-band-edge"
-              :style="{ stroke: allZonesAvwapCloud.color }"
+              :style="{ stroke: allZonesAvwapCloud.bandColor }"
             />
 
             <polygon
@@ -2582,7 +2623,12 @@
       <div
         v-if="!props.overlayMode && showBtcOverlay && btcOverlayCandles.length"
         class="btc-overlay-layer"
-        :style="{ width: svgWidth + 'px', height: totalSvgHeight + 'px' }"
+        :style="{
+          width: svgWidth + 'px',
+          height: totalSvgHeight + 'px',
+          opacity: btcOverlayOpacity,
+          transform: `translateY(${btcOverlayAlignmentOffsetY}px)`
+        }"
       >
         <CandleEntryVisualizerComponent
           :candles="btcOverlayCandles"
@@ -3409,6 +3455,50 @@
       </div>
     </div>
   </DialogComponent>
+
+  <!-- Optimize Trend dialog — tunes trendLookbackPeriod / trendDirectionLookback, which
+       localLookbackChanges/localLookbackTrends are keyed off. Nothing on screen changes
+       until "Apply" commits the drafts. -->
+  <DialogComponent v-model="showOptimizeTrendModal" :width="'420px'">
+    <DialogHeaderComponent>
+      Optimize Trend
+    </DialogHeaderComponent>
+
+    <div class="line-dialog-body">
+      <label class="line-dialog-field">
+        <span>Lookback Period (base-price window, candles)</span>
+        <input
+          v-model.number="trendLookbackPeriodDraft"
+          type="number"
+          min="2"
+          step="1"
+          class="line-dialog-input"
+          @keyup.enter="applyOptimizeTrend"
+        />
+      </label>
+
+      <label class="line-dialog-field">
+        <span>Trend Lookback (std-dev window, candles)</span>
+        <input
+          v-model.number="trendDirectionLookbackDraft"
+          type="number"
+          min="2"
+          step="1"
+          class="line-dialog-input"
+          @keyup.enter="applyOptimizeTrend"
+        />
+      </label>
+
+      <p class="optimize-trend-hint">
+        Recomputes lookbackTrend across the candles currently on screen — the SU/MU/R/MD/SD label under each candle updates as soon as you click Apply.
+      </p>
+
+      <div class="line-dialog-actions">
+        <button class="line-dialog-btn line-dialog-btn-cancel" @click="cancelOptimizeTrendModal">Cancel</button>
+        <button class="line-dialog-btn line-dialog-btn-confirm" @click="applyOptimizeTrend">Apply</button>
+      </div>
+    </div>
+  </DialogComponent>
 </template>
 
 <script setup lang="ts">
@@ -3542,6 +3632,8 @@ const showMa = ref(false)
 const showBtcOverlay = ref(false)
 const btcOverlayCandles = ref<CandleEntry[]>([])
 const loadingBtcOverlay = ref(false)
+/** Opacity of the BTC overlay layer, user-adjustable via the slider next to the toggle button. */
+const btcOverlayOpacity = ref(0.6)
 const candleGap = 5
 const svgHeight = 600
 const CANDLES_PER_ZONE = 24
@@ -4133,6 +4225,8 @@ const MOVEMENT_POC_OUTFLOW_COLOR = '#26a69a' // OUTFLOW -> green
 
 /** Fixed line color for "Fill PZ AVWAP > All zones" — faded violet, so it reads distinctly from the AVWAP_COLORS rotation. */
 const ALL_ZONES_AVWAP_COLOR = '#9c88b4'
+/** Color for the outer band (highest upper-band to lowest lower-band across all zones) — kept distinct from the mid-line cloud's purple so the band reads clearly on its own. */
+const ALL_ZONES_AVWAP_BAND_COLOR = 'orange'
 
 let avwapIdCounter = 0
 const avwapModeActive = ref(false)
@@ -4290,7 +4384,7 @@ const allZonesAvwapCloud = computed(() => {
   const bandLowerLine = bandLowerPoints.map(p => `${p.x},${p.y}`).join(' ')
   const bandPolygon = [...bandUpperPoints, ...[...bandLowerPoints].reverse()].map(p => `${p.x},${p.y}`).join(' ')
 
-  return { upperLine, lowerLine, polygon, bandUpperLine, bandLowerLine, bandPolygon, color: ALL_ZONES_AVWAP_COLOR }
+  return { upperLine, lowerLine, polygon, bandUpperLine, bandLowerLine, bandPolygon, color: ALL_ZONES_AVWAP_COLOR, bandColor: ALL_ZONES_AVWAP_BAND_COLOR }
 })
 
 /** Builds an SVG `points` string for one of the three lines (mid/upper/lower) of an anchored VWAP. */
@@ -6586,13 +6680,25 @@ function stopLiveVolumePolling() {
 }
 
 // ─── BTC overlay (structure-only comparison) ───────────────────────────────
+/** Set when fetchBtcOverlayCandles fails, so the failure is visible instead of the button silently reverting with nothing to show. */
+const btcOverlayError = ref<string | null>(null)
+
 /** Binance klines REST rows: [openTime, open, high, low, close, volume, closeTime, ...] */
 async function fetchBtcOverlayCandles() {
   loadingBtcOverlay.value = true
+  btcOverlayError.value = null
   try {
-    btcOverlayCandles.value = await klineDbUtility.getKlines("BTCUSDT");
-  } catch {
-    // network hiccup — leave whatever overlay candles we already have (if any)
+    const result = await klineDbUtility.getKlines("BTCUSDT");
+    if (!result || result.length === 0) {
+      btcOverlayError.value = 'No BTC candle data returned.'
+    }
+    btcOverlayCandles.value = result ?? []
+  } catch (err) {
+    // Surface it instead of failing silently — previously this just left
+    // btcOverlayCandles empty with no indication anything went wrong, so the
+    // "Overlay BTC" button would appear to do nothing.
+    console.error('fetchBtcOverlayCandles failed:', err)
+    btcOverlayError.value = err instanceof Error ? err.message : 'Failed to load BTC candles.'
   } finally {
     loadingBtcOverlay.value = false
   }
@@ -6604,6 +6710,92 @@ function toggleBtcOverlay() {
     fetchBtcOverlayCandles()
   }
 }
+
+/**
+ * EMA200 series for the BTC overlay candles, computed the exact same way
+ * baseEma200Fallback is for the main chart. The overlay's candles come
+ * straight from a bare REST kline fetch (see the flow-spike comment above)
+ * so they never carry a pre-annotated candleData — this is the same "run it
+ * ourselves" fallback the visible white EMA line already relies on for the
+ * overlay instance, reused here so the alignment matches what's on screen.
+ */
+const btcOverlayEma200Fallback = computed(() => calculateEma200Series(btcOverlayCandles.value.map(c => c.close!)))
+
+/** True for an ema200 reading that's actually usable as an alignment anchor — excludes null/undefined AND 0 (some candles carry a 0 placeholder for "not yet warmed up" instead of leaving the field absent). */
+function isValidEma200(v: number | null | undefined): v is number {
+  return v !== null && v !== undefined && v !== 0
+}
+
+/** The effective ema200 (candleData.ema200, falling back to the locally-computed series) for the main chart at index i — same logic emaPoints already plots, but treating a 0 value as "not available" rather than a real EMA reading. */
+function mainEma200At(i: number): number | null {
+  const raw = displayCandles.value[i]?.candleData?.ema200
+  const effective = isValidEma200(raw) ? raw : baseEma200Fallback.value[i]
+  return isValidEma200(effective) ? effective : null
+}
+
+/** Same as mainEma200At but for the BTC overlay candles. */
+function btcEma200At(i: number): number | null {
+  const raw = btcOverlayCandles.value[i]?.candleData?.ema200
+  const effective = isValidEma200(raw) ? raw : btcOverlayEma200Fallback.value[i]
+  return isValidEma200(effective) ? effective : null
+}
+
+/**
+ * Index (into displayCandles / btcOverlayCandles) of the first candle where
+ * BOTH series have an ema200 value available — EMA200 needs 200 bars to
+ * warm up, so early candles typically don't have it yet. The BTC overlay is
+ * rendered index-aligned (candleX is purely positional), so this same index
+ * lines up with the corresponding BTC candle.
+ */
+const firstEma200Index = computed<number | null>(() => {
+  const len = Math.min(displayCandles.value.length, btcOverlayCandles.value.length)
+  for (let i = 0; i < len; i++) {
+    if (mainEma200At(i) !== null && btcEma200At(i) !== null) return i
+  }
+  return null
+})
+
+/**
+ * BTC overlay's own price domain, mirroring the min/max/delta logic the
+ * recursive overlay-mode instance computes for itself from its candles
+ * (low*0.98 .. high*1.02) — replicated here so this (the outer, non-overlay)
+ * instance can work out where a given BTC price lands in the overlay's own
+ * pixel space, without reaching into the child component's internals.
+ */
+const btcOverlayPriceScale = computed(() => {
+  if (btcOverlayCandles.value.length === 0) return null
+  const min = Math.min(...btcOverlayCandles.value.map(c => c.low!)) * 0.98
+  const max = Math.max(...btcOverlayCandles.value.map(c => c.high!)) * 1.02
+  return { min, max, delta: max - min }
+})
+
+/**
+ * Vertical shift (px) applied to the whole BTC overlay layer so that the
+ * first available ema200 value lines up at the same y-pixel as the main
+ * chart's ema200 at that same index — "same level" alignment — rather than
+ * each series independently stretching to fill the full chart height.
+ */
+const btcOverlayAlignmentOffsetY = computed<number>(() => {
+  try {
+    const idx = firstEma200Index.value
+    const btcScale = btcOverlayPriceScale.value
+    if (idx === null || !btcScale || btcScale.delta === 0) return 0
+
+    const mainEma200 = mainEma200At(idx)
+    const btcEma200 = btcEma200At(idx)
+    if (mainEma200 === null || btcEma200 === null) return 0
+
+    const mainAnchorY = priceToY(mainEma200)
+    const btcAnchorY = ((btcScale.max - btcEma200) / btcScale.delta) * svgHeight
+    const offset = mainAnchorY - btcAnchorY
+    return Number.isFinite(offset) ? offset : 0
+  } catch (err) {
+    // Never let an alignment-calc edge case take down the whole overlay —
+    // worst case it just renders unshifted instead of vanishing entirely.
+    console.error('btcOverlayAlignmentOffsetY failed:', err)
+    return 0
+  }
+})
 
 function connectWebSocket() {
   if (ws) {
@@ -9230,6 +9422,146 @@ const flowSpikeFlags = computed<boolean[]>(() => {
   if (flowScannerTotalPerCandle.value.length === 0) return []
   return detectFlowSpikes(flowScannerTotalPerCandle.value, FLOW_SPIKE_LOOKBACK, FLOW_SPIKE_Z_THRESHOLD).flags
 })
+
+// ─── Optimize Trend (live-tunable lookbackTrend) ────────────────────────────
+//
+// Same base-price/std-dev logic as the upstream lookbackTrend annotation
+// (movingCandles.slice(-N) for the base price, then getTrendDirection over
+// the trailing M candles' lookbackChangePercentage), reimplemented here as a
+// pair of computeds so the "Optimize Trend" modal's two params (Lookback
+// Period, Trend Lookback) can be tuned and see the SU/MU/R/MD/SD labels
+// update immediately, without waiting on a backend recompute. This is a
+// chart-local approximation — it only ever sees displayCandles (the
+// currently loaded window), so it won't bit-match a full-history backend
+// run — and it does NOT mutate candle.candleData itself (mutating props
+// here would fight the same upstream data other computeds rely on being
+// stable); instead resolvedLookbackTrend() below falls back to whatever
+// candle.candleData?.lookbackTrend already carries, same fallback pattern
+// as flowSpikeFlags for candles the backend didn't pre-annotate.
+type LookbackTrendDirection = 'strong_uptrend' | 'mild_uptrend' | 'ranging' | 'mild_downtrend' | 'strong_downtrend'
+
+const TREND_ABBREVIATIONS: Record<LookbackTrendDirection, string> = {
+  strong_uptrend: '',
+  mild_uptrend: '',
+  ranging: 'R',
+  mild_downtrend: '',
+  strong_downtrend: '',
+}
+
+const TREND_LABEL_CLASSES: Record<LookbackTrendDirection, string> = {
+  strong_uptrend: 'trend-strong-up',
+  mild_uptrend: 'trend-mild-up',
+  ranging: 'trend-ranging',
+  mild_downtrend: 'trend-mild-down',
+  strong_downtrend: 'trend-strong-down',
+}
+
+/** Ported from the upstream static getTrendDirection() — unchanged logic. */
+function getTrendDirection(lookbackChanges: number[], currentChange: number): LookbackTrendDirection {
+  const mean = lookbackChanges.reduce((a, b) => a + b, 0) / lookbackChanges.length
+  const variance = lookbackChanges.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / lookbackChanges.length
+  const stdDev = Math.sqrt(variance)
+
+  const strongThreshold = stdDev * 1.5
+  const mildThreshold = stdDev * 0.5
+
+  if (currentChange > strongThreshold) return 'strong_uptrend'
+  if (currentChange > mildThreshold) return 'mild_uptrend'
+  if (currentChange < -strongThreshold) return 'strong_downtrend'
+  if (currentChange < -mildThreshold) return 'mild_downtrend'
+  return 'ranging'
+}
+
+/** Committed params — only these (not the modal's drafts) drive the computeds below, so nothing changes on screen until "Apply". */
+const trendLookbackPeriod = ref(8)
+const trendDirectionLookback = ref(2)
+
+const showOptimizeTrendModal = ref(false)
+const trendLookbackPeriodDraft = ref(trendLookbackPeriod.value)
+const trendDirectionLookbackDraft = ref(trendDirectionLookback.value)
+
+function openOptimizeTrendModal() {
+  trendLookbackPeriodDraft.value = trendLookbackPeriod.value
+  trendDirectionLookbackDraft.value = trendDirectionLookback.value
+  showOptimizeTrendModal.value = true
+}
+
+function cancelOptimizeTrendModal() {
+  showOptimizeTrendModal.value = false
+}
+
+/** Commits the draft params, which the computeds below are keyed off — this is the one moment the on-screen SU/MU/R/MD/SD labels actually change. */
+function applyOptimizeTrend() {
+  const period = Math.round(trendLookbackPeriodDraft.value)
+  const trendLookback = Math.round(trendDirectionLookbackDraft.value)
+  if (!Number.isFinite(period) || period < 2 || !Number.isFinite(trendLookback) || trendLookback < 2) return
+
+  trendLookbackPeriod.value = period
+  trendDirectionLookback.value = trendLookback
+  showOptimizeTrendModal.value = false
+}
+
+/** Per-displayed-candle lookbackChangePercentage, recomputed against trendLookbackPeriod. Base price picks the base candle's open or close depending on which side of it price is on and whether that base candle itself closed bull/bear — same rule as the upstream loop. */
+const localLookbackChanges = computed<(number | null)[]>(() => {
+  const candles = displayCandles.value
+  const period = trendLookbackPeriod.value
+  const changes: (number | null)[] = new Array(candles.length).fill(null)
+
+  for (let i = 0; i < candles.length; i++) {
+    const candle = candles[i]
+    if (candle.close == null) continue
+
+    const windowStart = Math.max(0, i - period + 1)
+    const lookbackBase = candles[windowStart]
+    if (lookbackBase?.open == null || lookbackBase?.close == null) continue
+
+    const basePrice = candle.close > lookbackBase.close
+      ? (lookbackBase.candleData?.side === 'bull' ? lookbackBase.open : lookbackBase.close)
+      : (lookbackBase.candleData?.side === 'bear' ? lookbackBase.close : lookbackBase.open)
+
+    if (!basePrice) continue
+    changes[i] = ((candle.close - basePrice) / basePrice) * 100
+  }
+
+  return changes
+})
+
+/** Per-displayed-candle trend direction — for candle i, feeds getTrendDirection the trailing trendDirectionLookback candles' localLookbackChanges (including i itself), same window shape as the upstream `movingCandles.slice(-25)` step. */
+const localLookbackTrends = computed<(LookbackTrendDirection | null)[]>(() => {
+  const changes = localLookbackChanges.value
+  const trendLookback = trendDirectionLookback.value
+  const trends: (LookbackTrendDirection | null)[] = new Array(changes.length).fill(null)
+
+  for (let i = 0; i < changes.length; i++) {
+    const currentChange = changes[i]
+    if (currentChange == null) continue
+
+    const windowStart = Math.max(0, i - trendLookback + 1)
+    const window = changes.slice(windowStart, i + 1).filter((v): v is number => v != null)
+    if (window.length === 0) continue
+
+    trends[i] = getTrendDirection(window, currentChange)
+  }
+
+  return trends
+})
+
+/** Locally recomputed trend if available, else whatever the backend already attached to this candle. */
+function resolvedLookbackTrend(index: number): LookbackTrendDirection | null {
+  return (localLookbackTrends.value[index] as LookbackTrendDirection | undefined)
+    ?? (displayCandles.value[index]?.candleData?.lookbackTrend as LookbackTrendDirection | undefined)
+    ?? null
+}
+
+function trendAbbreviation(index: number): string | null {
+  const trend = resolvedLookbackTrend(index)
+  return trend ? TREND_ABBREVIATIONS[trend] : null
+}
+
+function trendLabelClass(index: number): string {
+  const trend = resolvedLookbackTrend(index)
+  return trend ? TREND_LABEL_CLASSES[trend] : ''
+}
 
 // ─── Summarize Movement tool ────────────────────────────────────────────────
 //
@@ -11991,7 +12323,12 @@ const predictionTooltip = computed(() => {
   border-radius: 6px;
   padding: 1rem;
   overflow-x: auto;
-  overflow-y: hidden;
+  /* was 'hidden' — the BTC overlay's alignment shift (translateY, to line up
+     ema200 levels) can push it above/below this box's normal height, which
+     'hidden' would clip into invisibility. 'visible' here actually computes
+     to 'auto' (since overflow-x is 'auto'), so it just scrolls vertically
+     when needed instead of hiding the overlay outright. */
+  overflow-y: visible;
   user-select: none;
 }
 
@@ -12003,9 +12340,30 @@ const predictionTooltip = computed(() => {
   top: 1rem;
   left: 1rem; /* match .chart-container's padding so the nested svg starts at the same origin */
   pointer-events: none;
-  opacity: 0.6;
+  /* opacity is set inline from btcOverlayOpacity (see the slider control) */
   z-index: 5;
   mix-blend-mode: screen;
+}
+
+.btc-overlay-opacity-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #ccc;
+}
+.btc-overlay-opacity-slider {
+  width: 90px;
+}
+.btc-overlay-opacity-value {
+  min-width: 34px;
+  font-family: monospace;
+  color: #999;
+}
+.btc-overlay-error {
+  font-size: 12px;
+  color: #ef5350;
+  cursor: help;
 }
 
 /* Recursive instance rendered inside .btc-overlay-layer via overlay-mode prop */
@@ -12032,6 +12390,14 @@ const predictionTooltip = computed(() => {
 .candle-visualizer.overlay-instance .modal-overlay {
   pointer-events: auto;
 }
+
+/* BTC overlay candle colors — white/gray instead of the main chart's green/red,
+   so the overlay reads as a structural reference rather than a second set of
+   buy/sell signals. White = bull, gray = bear. */
+.candle-visualizer.overlay-instance .candle.bull .wick { stroke: #ffffff; }
+.candle-visualizer.overlay-instance .candle.bear .wick { stroke: #888888; }
+.candle-visualizer.overlay-instance .candle.bull .body { fill: #ffffff; stroke: #ffffff; }
+.candle-visualizer.overlay-instance .candle.bear .body { fill: #888888; stroke: #888888; }
 
 .overlay-vs-label {
   position: absolute;
@@ -12280,4 +12646,20 @@ const predictionTooltip = computed(() => {
 .pattern-label:hover { opacity:1; font-size:11px; }
 .weakening-indicator { pointer-events: none; }
 .weakening-diamond { fill:#f59e0b; opacity:0.9; stroke:#fcd34d; stroke-width:1; }
+
+/* Lookback trend label (SU/MU/R/MD/SD) — reuses .pattern-label's sizing/weight, colored by direction. */
+.lookback-trend-indicator { pointer-events: none; }
+.lookback-trend-label.trend-strong-up { fill: #26a69a; opacity: 1; }
+.lookback-trend-label.trend-mild-up { fill: #7fd9c4; }
+.lookback-trend-label.trend-ranging { fill: #cfd8dc; opacity: 0.6; }
+.lookback-trend-label.trend-mild-down { fill: #f5a3a0; }
+.lookback-trend-label.trend-strong-down { fill: #ef5350; opacity: 1; }
+
+/* Optimize Trend dialog hint text — DialogComponent is dark-on-light, same note as the line dialog above. */
+.optimize-trend-hint {
+  font-size: 12px;
+  color: #555;
+  margin: -6px 0 2px;
+  line-height: 1.4;
+}
 </style>
