@@ -122,6 +122,26 @@
         <span class="btc-overlay-opacity-value">{{ Math.round(btcOverlayOpacity * 100) }}%</span>
       </label>
 
+      <button
+        @click="toggleBtcProjection"
+        title="Projects a second candle series on this symbol's own price scale: each candle's close is the previous projected close shifted by that index's BTC candle's own change %, colored by BTC's bull/bear at that index"
+      >
+        {{ loadingBtcOverlay ? 'Loading BTC…' : (showBtcProjection ? 'Hide BTC Price Projection' : 'BTC Price Projection') }}
+      </button>
+
+      <label v-if="showBtcProjection" class="btc-overlay-opacity-label">
+        <span>Projection opacity</span>
+        <input
+          v-model.number="btcProjectionOpacity"
+          type="range"
+          min="0.05"
+          max="1"
+          step="0.05"
+          class="btc-overlay-opacity-slider"
+        />
+        <span class="btc-overlay-opacity-value">{{ Math.round(btcProjectionOpacity * 100) }}%</span>
+      </label>
+
       <button @click="showKeyLevels = true">show key levels</button>
 
       <button @click="showMaCrossing = true">See MA</button>
@@ -1471,6 +1491,14 @@
             >
               *VS*
             </text>
+            <text
+              v-if="candle.candleData?.btcSpikeEvent"
+              :x="candleX(i)"
+              :y="priceToY(candle.low!) + 95"
+              class="pattern-label"
+            >
+              BTC_{{candle.candleData?.side}}
+            </text>
 
             <text
               v-if="candle.candleData?.crossedAvwapPoint"
@@ -1788,6 +1816,26 @@
               />
             </g>
           </g>
+        </g>
+
+        <!-- BTC Price Projection: index-aligned, body-only candles on the MAIN
+             price scale (see btcProjectionCandles for the compounding math).
+             Colored via the same white(bull)/gray(bear) palette .overlay-instance
+             already uses, so it visually reads as "the other overlay tool" even
+             though it isn't rendered through a recursive component instance. -->
+        <g v-if="showBtcProjection && btcProjectionCandles.length" class="btc-projection-candles" :style="{ opacity: btcProjectionOpacity }">
+          <rect
+            v-for="proj in btcProjectionCandles"
+            :key="`btc-proj-${proj.index}`"
+            :x="candleX(proj.index) - candleWidth / 2"
+            :y="priceToY(Math.max(proj.open, proj.close))"
+            :width="candleWidth"
+            :height="Math.max(Math.abs(proj.close - proj.open) / priceDelta * svgHeight, 1)"
+            class="btc-projection-body"
+            :class="{ bull: proj.side === 'bull', bear: proj.side === 'bear' }"
+          >
+            <title>BTC Price Projection — projected close: {{ proj.close.toFixed(4) }} (BTC {{ proj.side }})</title>
+          </rect>
         </g>
 
         <!-- Volume Profile Fixed Range overlays -->
@@ -3502,7 +3550,7 @@
 </template>
 
 <script setup lang="ts">
-import type { CandleEntry, FuturesSymbol } from '@/core/interfaces';
+import type { CandleEntry, FuturesSymbol, BtcProjectionCandle } from '@/core/interfaces';
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 // NOTE: adjust this import path to wherever OrderMakerUtility actually lives in your project
 import { OrderMakerUtility } from '@/utility/OrderMakerUtility';
@@ -3634,6 +3682,19 @@ const btcOverlayCandles = ref<CandleEntry[]>([])
 const loadingBtcOverlay = ref(false)
 /** Opacity of the BTC overlay layer, user-adjustable via the slider next to the toggle button. */
 const btcOverlayOpacity = ref(0.6)
+
+/**
+ * "BTC Price Projection" toggle — draws a second, index-aligned candle series
+ * directly on the MAIN chart's own price scale (unlike the BTC Overlay above,
+ * which plots raw BTC prices on their own scale). Each projected candle's
+ * close is the previous projected close shifted by that index's BTC candle's
+ * own intra-candle change % — a compounding "what if this symbol moved like
+ * BTC did" path anchored at the real candle[0] close. Body-only (no wicks),
+ * colored white/bull-gray/bear reusing the .overlay-instance palette.
+ */
+const showBtcProjection = ref(!props.overlayMode)
+/** Opacity of the projection candles, mirrors btcOverlayOpacity's pattern. */
+const btcProjectionOpacity = ref(0.7)
 const candleGap = 5
 const svgHeight = 600
 const CANDLES_PER_ZONE = 24
@@ -6712,6 +6773,63 @@ function toggleBtcOverlay() {
 }
 
 /**
+ * Toggles the BTC Price Projection series. Reuses the same btcOverlayCandles
+ * fetch/cache as "Overlay BTC" — both features need the same raw BTC klines,
+ * just plotted differently, so there's no reason to fetch twice.
+ */
+function toggleBtcProjection() {
+  showBtcProjection.value = !showBtcProjection.value
+  if (showBtcProjection.value && btcOverlayCandles.value.length === 0) {
+    fetchBtcOverlayCandles()
+  }
+}
+
+/**
+ * The projected series itself. Candle 0 is intentionally skipped (empty) —
+ * it has no "previous projected close" to project from, it's just the real
+ * anchor point every later candle is chained off of. From index 1 on:
+ *   - projected open  = the PREVIOUS projected candle's close (or the real
+ *     candle[0] close, for index 1 specifically)
+ *   - projected close = projected open shifted by the BTC candle's own
+ *     intra-candle change %, (btcClose - btcOpen) / btcOpen
+ *   - side = the BTC candle's own bull/bear, independent of which way the
+ *     projected open/close happen to land
+ * Because each step chains off the prior PROJECTED close rather than the
+ * real close, this diverges from the real price path over time by design —
+ * it's "how this symbol would have moved if it tracked BTC's % moves exactly."
+ */
+const btcProjectionCandles = computed<BtcProjectionCandle[]>(() => {
+  const symbolCandles = displayCandles.value
+  const btcCandles = btcOverlayCandles.value
+  const len = Math.min(symbolCandles.length, btcCandles.length)
+  if (len < 2) return []
+
+  const result: BtcProjectionCandle[] = []
+  let prevProjectedClose = symbolCandles[0].close!
+
+  for (let i = 1; i < len; i++) {
+    const btcCandle = btcCandles[i]
+    const btcOpen = btcCandle.open!
+    const btcClose = btcCandle.close!
+    const btcChangePct = btcOpen !== 0 ? (btcClose - btcOpen) / btcOpen : 0
+
+    const projectedOpen = prevProjectedClose
+    const projectedClose = projectedOpen * (1 + btcChangePct)
+
+    result.push({
+      index: i,
+      open: projectedOpen,
+      close: projectedClose,
+      side: btcClose >= btcOpen ? 'bull' : 'bear',
+    })
+
+    prevProjectedClose = projectedClose
+  }
+
+  return result
+})
+
+/**
  * EMA200 series for the BTC overlay candles, computed the exact same way
  * baseEma200Fallback is for the main chart. The overlay's candles come
  * straight from a bare REST kline fetch (see the flow-spike comment above)
@@ -7902,6 +8020,53 @@ function handlePredictDropdownOutsideClick(event: MouseEvent) {
   }
 }
 
+// ─── Keyboard shortcuts ─────────────────────────────────────────────────────
+//
+//   c = clear rectangles, AVWAPs (keeps any "All Zones" AVWAP), volume
+//       profiles, lines, range download boxes, range investigate boxes, and
+//       price ranges
+//   a = toggle Anchored VWAP pick mode
+//   p = toggle Volume Profile pick mode
+//   r = toggle Price Range pick mode
+//   l = toggle Line placement mode
+//
+// Ignored while typing in an input/textarea/select or a contenteditable
+// element (e.g. the line label field), and while any modifier key is held,
+// so browser/OS shortcuts (Ctrl+C, Cmd+R, etc.) are left alone.
+function handleHotkeys(event: KeyboardEvent) {
+  if (event.ctrlKey || event.metaKey || event.altKey) return
+
+  const target = event.target as HTMLElement | null
+  if (target) {
+    const tag = target.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable) return
+  }
+
+  switch (event.key.toLowerCase()) {
+    case 'c':
+      drawnRectangles.value = []
+      anchoredVwaps.value = anchoredVwaps.value.filter(a => a.isAllZonesFill)
+      volumeProfiles.value = []
+      priceLines.value = []
+      rangeDownloadBoxes.value = []
+      rangeInvestigateBoxes.value = []
+      priceRanges.value = []
+      break
+    case 'a':
+      toggleAvwapMode()
+      break
+    case 'p':
+      toggleVpMode()
+      break
+    case 'r':
+      togglePriceRangeMode()
+      break
+    case 'l':
+      toggleLineMode()
+      break
+  }
+}
+
 onMounted(() => {
   scrollToRight()
   connectWebSocket()
@@ -7919,8 +8084,15 @@ onMounted(() => {
   nowTickTimer = setInterval(() => { nowTick.value = Date.now() }, 1_000)
   document.addEventListener('mousedown', handlePzAvwapDropdownOutsideClick)
   document.addEventListener('mousedown', handlePredictDropdownOutsideClick)
+  document.addEventListener('keydown', handleHotkeys)
   restoreDrawingsWhenReady(props.symbol)
   if (props.initialShowThesis) toggleThesisOverlay()
+  // Projection defaults to on, so make sure its data source is loaded too —
+  // toggleBtcProjection() itself would flip showBtcProjection back off since
+  // it's already true, so fetch directly instead of calling the toggle.
+  if (showBtcProjection.value && btcOverlayCandles.value.length === 0) {
+    fetchBtcOverlayCandles()
+  }
 })
 
 // Re-load this symbol's saved rectangles/lines (and drop the previous
@@ -7943,6 +8115,7 @@ onUnmounted(() => {
   }
   document.removeEventListener('mousedown', handlePzAvwapDropdownOutsideClick)
   document.removeEventListener('mousedown', handlePredictDropdownOutsideClick)
+  document.removeEventListener('keydown', handleHotkeys)
 })
 
 // ─── Existing computed / helpers (unchanged, but now use displayCandles) ──────
@@ -9441,11 +9614,11 @@ const flowSpikeFlags = computed<boolean[]>(() => {
 type LookbackTrendDirection = 'strong_uptrend' | 'mild_uptrend' | 'ranging' | 'mild_downtrend' | 'strong_downtrend'
 
 const TREND_ABBREVIATIONS: Record<LookbackTrendDirection, string> = {
-  strong_uptrend: '',
-  mild_uptrend: '',
+  strong_uptrend: 'SU',
+  mild_uptrend: 'MU',
   ranging: 'R',
-  mild_downtrend: '',
-  strong_downtrend: '',
+  mild_downtrend: 'MD',
+  strong_downtrend: 'SD',
 }
 
 const TREND_LABEL_CLASSES: Record<LookbackTrendDirection, string> = {
@@ -12541,6 +12714,15 @@ const predictionTooltip = computed(() => {
 .body { stroke-width: 1; }
 .candle.bull .body { fill: #26a69a; stroke: #26a69a; }
 .candle.bear .body { fill: #ef5350; stroke: #ef5350; }
+
+/* BTC Price Projection — body-only candles, colored by the BTC candle's own
+   side at that index (not by the projected open/close direction). Reuses the
+   same white/gray palette as .overlay-instance so it reads as "the other
+   BTC tool" at a glance. */
+.btc-projection-candles { pointer-events: none; }
+.btc-projection-body { stroke-width: 1; }
+.btc-projection-body.bull { fill: #ffffff; stroke: #ffffff; }
+.btc-projection-body.bear { fill: #888888; stroke: #888888; }
 
 .volume-spike-indicator { pointer-events: none; }
 .volume-spike-dot   { fill: #fbbf24; opacity: 0.9; }

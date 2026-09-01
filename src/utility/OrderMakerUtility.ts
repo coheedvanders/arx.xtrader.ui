@@ -96,7 +96,7 @@ export class OrderMakerUtility {
         throw lastError;
     }
 
-    static async openOrder(symbol:string,margin:number,side:string,tp:number,sl:number) {
+    static async openOrder(symbol:string,margin:number,side:string,tp:number,sl:number,tpRoi?:number, slRoi?: number) {
         const res = await fetch(import.meta.env.VITE_ORDER_MAKER_API + "/open-order", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -104,8 +104,8 @@ export class OrderMakerUtility {
                 symbol: symbol,
                 side: side,
                 cost: margin.toString(),
-                tp_roi: "0",
-                sl_roi: "0",
+                tp_roi: (tpRoi ?? 0).toString(),
+                sl_roi: (slRoi ?? 0).toString(),
                 tp: tp.toString(),
                 sl: sl.toString()
             })

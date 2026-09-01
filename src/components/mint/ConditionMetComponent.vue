@@ -1,16 +1,65 @@
 <template>
   <div class="condition-board pa-md">
+    <div class="preview-controls">
+      <label class="preview-controls-label">
+        Past candles
+        <input
+          type="number"
+          min="1"
+          class="preview-candles-input"
+          v-model.number="pastCandlesCount"
+        />
+      </label>
+      <button
+        type="button"
+        class="scan-preview-btn"
+        :disabled="isScanningPreview"
+        @click="scanCandlePreviews"
+      >
+        {{ isScanningPreview ? `Scanning… (${scanProgress.done}/${scanProgress.total})` : 'Scan Preview' }}
+      </button>
+
+      <label class="preview-controls-label">
+        Order margin
+        <input
+          type="number"
+          min="1"
+          class="preview-candles-input"
+          v-model.number="orderMargin"
+        />
+      </label>
+    </div>
+
     <div
       v-for="group in groupedSymbols"
       :key="group.label"
       class="condition-group"
     >
-      <div class="group-header" :class="group.isZone ? 'is-zone-header' : ''">
+      <div
+        class="group-header"
+        :class="group.isZone ? 'is-zone-header' : ''"
+        @click="toggleGroup(group.label)"
+      >
+        <span class="group-chevron" :class="{ 'is-collapsed': isGroupCollapsed(group.label) }">▾</span>
         <span class="group-label">{{ group.label }}</span>
         <span class="group-count">{{ group.symbols.length }}</span>
+
+        <div
+          class="sentiment-bar"
+          :title="`${groupSentiment(group.symbols).bullish} bulls · ${groupSentiment(group.symbols).bearish} bears · ${groupSentiment(group.symbols).neutral} neutral`"
+        >
+          <div class="sentiment-seg is-bullish" :style="{ width: groupSentiment(group.symbols).bullishPct + '%' }"></div>
+          <div class="sentiment-seg is-neutral" :style="{ width: groupSentiment(group.symbols).neutralPct + '%' }"></div>
+          <div class="sentiment-seg is-bearish" :style="{ width: groupSentiment(group.symbols).bearishPct + '%' }"></div>
+        </div>
+        <span class="sentiment-counts">
+          <span class="is-bullish-text">{{ groupSentiment(group.symbols).bullish }}▲</span>
+          /
+          <span class="is-bearish-text">{{ groupSentiment(group.symbols).bearish }}▼</span>
+        </span>
       </div>
 
-      <div class="symbol-list">
+      <div class="symbol-list" v-show="!isGroupCollapsed(group.label)">
         <div
           v-for="symbol in group.symbols"
           :key="symbol.symbol"
@@ -24,7 +73,30 @@
         >
           <div class="symbol-main">
             <span class="symbol-name">{{ symbol.symbol }} <span v-if="symbol.crossedMa">[x]</span> <span v-if="symbol.crossedLastAvwap">[AV]</span> <span v-if="symbol.hasRecentCrossedMovementPoc">[FLOW MOVEMENT X]</span></span>
-            <span class="usdt-value">${{ formatUsdt((symbol as any).usdtValue) }}</span>
+
+            <div class="symbol-main-right">
+              <span class="usdt-value">${{ formatUsdt((symbol as any).usdtValue) }}</span>
+
+              <svg
+                v-if="getCandlePreview(symbol.symbol).length"
+                class="candle-preview-svg"
+                :viewBox="`0 0 ${PREVIEW_WIDTH} ${PREVIEW_HEIGHT}`"
+                preserveAspectRatio="none"
+                @click.stop
+              >
+                <template v-for="c in candleGeometry(symbol.symbol)" :key="c.key">
+                  <line
+                    :x1="c.x" :y1="c.wickY1" :x2="c.x" :y2="c.wickY2"
+                    class="candle-wick" :class="c.up ? 'is-up' : 'is-down'"
+                  />
+                  <rect
+                    :x="c.bodyX" :y="c.bodyY" :width="c.bodyW" :height="c.bodyH"
+                    class="candle-body" :class="c.up ? 'is-up' : 'is-down'"
+                  />
+                </template>
+              </svg>
+              <span v-else-if="isScanningPreview" class="candle-preview-placeholder">…</span>
+            </div>
           </div>
 
           <div class="symbol-meta">
@@ -56,6 +128,25 @@
                 </div>
               </div>
             </template>
+
+            <div class="order-actions" @click.stop>
+              <button
+                type="button"
+                class="order-btn is-buy"
+                :disabled="isPlacingOrder(symbol.symbol)"
+                @click="placeOrder(symbol, 'BUY')"
+              >
+                {{ isPlacingOrder(symbol.symbol) ? '…' : 'Buy' }}
+              </button>
+              <button
+                type="button"
+                class="order-btn is-sell"
+                :disabled="isPlacingOrder(symbol.symbol)"
+                @click="placeOrder(symbol, 'SELL')"
+              >
+                {{ isPlacingOrder(symbol.symbol) ? '…' : 'Sell' }}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -82,13 +173,188 @@ import DialogHeaderComponent from '../shared/dialog/DialogHeaderComponent.vue';
 import CandleEntryHistoryComponent from './CandleEntryHistoryComponent.vue';
 import type { CandleEntry } from '@/core/interfaces.ts';
 import { klineDbUtility } from '@/utility/klineDbUtility';
+import { KlineUtility } from '@/utility/klineUtility';
 import { OrderMakerUtility } from '@/utility/OrderMakerUtility.ts';
+
+interface Props {
+  previewInterval?: string;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  previewInterval: '15m',
+});
 
 const chocoMintoStore = useChocoMintoStore();
 
 const showEntryHistory = ref(false);
 const selectedSymbolCandleEntries = ref<CandleEntry[]>([]);
 const selectedSymbol = ref('');
+
+// ── Collapsible condition groups ────────────────────────────────────────────
+
+const collapsedGroups = ref(new Set<string>());
+
+function toggleGroup(label: string) {
+  const next = new Set(collapsedGroups.value);
+  if (next.has(label)) {
+    next.delete(label);
+  } else {
+    next.add(label);
+  }
+  collapsedGroups.value = next;
+}
+
+function isGroupCollapsed(label: string) {
+  return collapsedGroups.value.has(label);
+}
+
+// ── Bulls / bears sentiment summary ─────────────────────────────────────────
+
+function groupSentiment(symbols: any[]) {
+  let bullish = 0;
+  let bearish = 0;
+  let neutral = 0;
+
+  for (const s of symbols) {
+    if (s.trend === 'BULLISH') bullish++;
+    else if (s.trend === 'BEARISH') bearish++;
+    else neutral++;
+  }
+
+  const total = symbols.length || 1;
+
+  return {
+    bullish,
+    bearish,
+    neutral,
+    bullishPct: (bullish / total) * 100,
+    bearishPct: (bearish / total) * 100,
+    neutralPct: (neutral / total) * 100,
+  };
+}
+
+// ── Buy / Sell order actions ────────────────────────────────────────────────
+
+const orderMargin = ref(5);
+const placingOrder = ref(new Set<string>());
+
+function isPlacingOrder(symbol: string) {
+  return placingOrder.value.has(symbol);
+}
+
+async function placeOrder(symbol: any, side: 'BUY' | 'SELL') {
+  const key = symbol.symbol;
+  if (placingOrder.value.has(key)) return;
+
+  placingOrder.value = new Set(placingOrder.value).add(key);
+
+  try {
+    await OrderMakerUtility.openOrder(
+      symbol.symbol,
+      orderMargin.value,
+      side,
+      0,
+      0,
+      2,
+      1.5
+    );
+  } catch (e) {
+    console.error(`Failed to open ${side} order for ${key}`, e);
+    alert(`Failed to open ${side} order for ${key}: ${(e as Error).message}`);
+  } finally {
+    const next = new Set(placingOrder.value);
+    next.delete(key);
+    placingOrder.value = next;
+  }
+}
+
+// ── Candle preview (Scan Preview) ───────────────────────────────────────────
+
+const PREVIEW_WIDTH = 84;
+const PREVIEW_HEIGHT = 28;
+const PREVIEW_SCAN_CHUNK_SIZE = 8;
+
+const pastCandlesCount = ref(20);
+const isScanningPreview = ref(false);
+const scanProgress = ref({ done: 0, total: 0 });
+const candlePreviews = ref(new Map<string, CandleEntry[]>());
+
+function candleOpen(c: any): number { return c?.open ?? c?.o ?? 0; }
+function candleHigh(c: any): number { return c?.high ?? c?.h ?? 0; }
+function candleLow(c: any): number { return c?.low ?? c?.l ?? 0; }
+function candleClose(c: any): number { return c?.close ?? c?.c ?? 0; }
+
+function getCandlePreview(symbol: string): CandleEntry[] {
+  return candlePreviews.value.get(symbol) ?? [];
+}
+
+async function scanCandlePreviews() {
+  if (isScanningPreview.value) return;
+
+  const n = Math.max(1, Math.floor(pastCandlesCount.value) || 20);
+  const symbols = Array.from(new Set(groupedSymbols.value.flatMap(g => g.symbols.map((s: any) => s.symbol))));
+
+  isScanningPreview.value = true;
+  scanProgress.value = { done: 0, total: symbols.length };
+
+  try {
+    for (let i = 0; i < symbols.length; i += PREVIEW_SCAN_CHUNK_SIZE) {
+      const chunk = symbols.slice(i, i + PREVIEW_SCAN_CHUNK_SIZE);
+
+      await Promise.all(chunk.map(async (sym) => {
+        try {
+          const klines = await KlineUtility.getRecentKlines(sym, props.previewInterval, n);
+          candlePreviews.value.set(sym, klines ?? []);
+        } catch (e) {
+          console.error(`Failed to load candle preview for ${sym}`, e);
+        } finally {
+          scanProgress.value = { ...scanProgress.value, done: scanProgress.value.done + 1 };
+        }
+      }));
+    }
+  } finally {
+    isScanningPreview.value = false;
+  }
+}
+
+function candleGeometry(symbol: string) {
+  const candles = getCandlePreview(symbol);
+  if (!candles.length) return [];
+
+  const highs = candles.map(candleHigh);
+  const lows = candles.map(candleLow);
+  const max = Math.max(...highs);
+  const min = Math.min(...lows);
+  const range = (max - min) || 1;
+
+  const slotWidth = PREVIEW_WIDTH / candles.length;
+  const bodyWidth = Math.max(1, slotWidth * 0.6);
+  const yFor = (price: number) => PREVIEW_HEIGHT - ((price - min) / range) * PREVIEW_HEIGHT;
+
+  return candles.map((c, i) => {
+    const o = candleOpen(c);
+    const h = candleHigh(c);
+    const l = candleLow(c);
+    const cl = candleClose(c);
+    const up = cl >= o;
+
+    const x = i * slotWidth + slotWidth / 2;
+    const bodyTop = yFor(Math.max(o, cl));
+    const bodyBottom = yFor(Math.min(o, cl));
+
+    return {
+      key: i,
+      x,
+      wickY1: yFor(h),
+      wickY2: yFor(l),
+      bodyX: x - bodyWidth / 2,
+      bodyY: bodyTop,
+      bodyW: bodyWidth,
+      bodyH: Math.max(1, bodyBottom - bodyTop),
+      up,
+    };
+  });
+}
 
 // ── Grouping by conditionMet ────────────────────────────────────────────────
 
@@ -198,8 +464,13 @@ async function showEntryHistoryModal(symbol: string) {
 
 async function shoutAvCrosses() {
   var newPositions = chocoMintoStore.futureSymbols.filter(c => c.positionSide);
+  var recentVovs = chocoMintoStore.futureSymbols.filter(c => c.conditionMet == "RECENT_VOVS");
 
   var message = "";
+
+  if(recentVovs.length > 0){
+    message = `${recentVovs.length} recent VOVS detected!`
+  }
 
   if(newPositions.length > 0){
     message = `${newPositions.length} new positions detected!`
@@ -227,11 +498,13 @@ async function shoutAvCrosses() {
     };
 
     speak(message);
+    speak(message);
   }
 }
 
 defineExpose({
-  shoutAvCrosses
+  shoutAvCrosses,
+  scanCandlePreviews,
 })
 </script>
 
@@ -255,7 +528,46 @@ defineExpose({
   border-radius: 8px;
   margin-bottom: 10px;
   background: rgba(127, 127, 127, 0.08);
+  cursor: pointer;
+  user-select: none;
 }
+
+.group-chevron {
+  display: inline-block;
+  font-size: 0.75rem;
+  opacity: 0.7;
+  transition: transform 0.15s ease;
+}
+.group-chevron.is-collapsed {
+  transform: rotate(-90deg);
+}
+
+/* ── Bulls/bears sentiment bar ─────────────────────────────────── */
+.sentiment-bar {
+  display: flex;
+  width: 90px;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(127, 127, 127, 0.15);
+  flex-shrink: 0;
+}
+
+.sentiment-seg {
+  height: 100%;
+}
+.sentiment-seg.is-bullish { background: #22c55e; }
+.sentiment-seg.is-bearish { background: #ef4444; }
+.sentiment-seg.is-neutral { background: #94a3b8; }
+
+.sentiment-counts {
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+.is-bullish-text { color: #22c55e; }
+.is-bearish-text { color: #ef4444; }
 
 .group-header.is-zone-header {
   background: rgba(251, 146, 60, 0.1);
@@ -411,4 +723,107 @@ defineExpose({
   color: #fb923c;
   font-weight: 700;
 }
+
+/* ── Preview controls toolbar ─────────────────────────────────────────── */
+.preview-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(127, 127, 127, 0.08);
+}
+
+.preview-controls-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  opacity: 0.85;
+}
+
+.preview-candles-input {
+  width: 64px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: rgba(127, 127, 127, 0.06);
+  color: inherit;
+  font-size: 0.85rem;
+}
+
+.scan-preview-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid rgba(59, 130, 246, 0.5);
+  background: rgba(59, 130, 246, 0.15);
+  color: #3b82f6;
+  font-weight: 600;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.scan-preview-btn:hover:not(:disabled) { background: rgba(59, 130, 246, 0.25); }
+.scan-preview-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* ── Mini candle preview ──────────────────────────────────────────────── */
+.symbol-main-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.candle-preview-svg {
+  width: 84px;
+  height: 28px;
+  display: block;
+}
+
+.candle-preview-placeholder {
+  font-size: 0.75rem;
+  opacity: 0.4;
+  width: 84px;
+  text-align: center;
+}
+
+.candle-wick { stroke-width: 1; }
+.candle-wick.is-up { stroke: #22c55e; }
+.candle-wick.is-down { stroke: #ef4444; }
+
+.candle-body.is-up { fill: #22c55e; }
+.candle-body.is-down { fill: #ef4444; }
+
+/* ── Buy / Sell order actions ─────────────────────────────────────────── */
+.order-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.order-btn {
+  padding: 4px 14px;
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.order-btn:disabled { opacity: 0.6; cursor: default; }
+
+.order-btn.is-buy {
+  border: 1px solid rgba(34, 197, 94, 0.5);
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+.order-btn.is-buy:hover:not(:disabled) { background: rgba(34, 197, 94, 0.28); }
+
+.order-btn.is-sell {
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+.order-btn.is-sell:hover:not(:disabled) { background: rgba(239, 68, 68, 0.28); }
 </style>

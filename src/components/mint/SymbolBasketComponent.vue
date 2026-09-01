@@ -106,6 +106,10 @@ async function showEntryHistoryModal(futureSymbol: FuturesSymbol){
 async function initializeFutureSymbolData(){
     progressCounter.value = 0;
 
+    await runPositionEntry("BTCUSDT", 0, true, []);
+
+    var btcUsdtCandleEntries = await klineDbUtility.getKlines("BTCUSDT");
+
     for (let i = 0; i <= props.futureSymbols.length - 1; i++) {
         try {
             progressCounter.value = i + 1;
@@ -114,9 +118,9 @@ async function initializeFutureSymbolData(){
             currentFutureSumbol.value = futureSymbol;
             currentFutureSumbol.value.status = "processing"
 
-            //if(futureSymbol.symbol != "COTIUSDT") continue;
+            //if(futureSymbol.symbol != "FILUSDT") continue;
 
-            await runPositionEntry(futureSymbol.symbol, futureSymbol.maxLeverage, true);
+            await runPositionEntry(futureSymbol.symbol, futureSymbol.maxLeverage, true, btcUsdtCandleEntries);
             
             await new Promise(resolve => setTimeout(resolve, 400));
 
@@ -141,7 +145,7 @@ async function initializeFutureSymbolData(){
     }
 }
 
-async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:boolean){
+async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:boolean, btcCandles: CandleEntry[]){
     var candles : CandleEntry[] = [];
 
     if(isFreshRun){
@@ -224,8 +228,10 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
         candles,
         maxLeverage,
         candles.length - 1,
-        chocoMintoStore.startingTimeStamp);
+        chocoMintoStore.startingTimeStamp,
+        btcCandles);
 
+    if(btcCandles.length > 0){
         var currentCandle = candles[candles.length - 1];
         currentFutureSumbol.value!.conditionMet = currentCandle.candleData?.conditionMet!;
         currentFutureSumbol.value!.usdtValue = currentCandle.volume * currentCandle.close;
@@ -247,6 +253,7 @@ async function runPositionEntry(symbol: string, maxLeverage: number, isFreshRun:
         currentFutureSumbol.value!.recentPositionSide = currentCandle.candleData?.recentPositionSide!;
         currentFutureSumbol.value!.hasRecentCrossedMovementPoc = currentCandle.candleData?.hasRecentCrossedMovementPoc!;
         currentFutureSumbol.value!.hasRecentVolatilityChangeSpike = currentCandle.candleData?.hasRecentVolatityRatioChangeSpike!;
+    }
 
     if(chocoMintoStore.isManualSimulation){
         updateStoreFutureSymbolSimulationStats(symbol,candles);
@@ -296,6 +303,10 @@ const recentCandleCache = new Map<string, Candle[]>()
 async function onNewCandleSpawed() {
     progressCounter.value = 0;
 
+    await runPositionEntry("BTCUSDT", 0, true, []);
+
+    var btcUsdtCandleEntries = await klineDbUtility.getKlines("BTCUSDT");
+
     // Batch-fetch latest 2 candles for every symbol in parallel, once,
     // instead of sequentially inside the loop below - this was the actual
     // bottleneck (N sequential round-trips vs. one parallel batch).
@@ -324,7 +335,7 @@ async function onNewCandleSpawed() {
         var futureSymbol = props.futureSymbols[i];
 
         try {
-            await updateCandleEntryWithLastCandle(futureSymbol.symbol);
+            await updateCandleEntryWithLastCandle(futureSymbol.symbol, btcUsdtCandleEntries);
             //futureSymbol.status = "x"
         } catch (error) {
             const errorDetails = {
@@ -351,7 +362,7 @@ async function onNewCandleSpawed() {
     }, 5 * 60 * 1000);
 }
 
-async function updateCandleEntryWithLastCandle(symbol:string){
+async function updateCandleEntryWithLastCandle(symbol:string, btcCandles:CandleEntry[]){
     var futureSymbol = props.futureSymbols.find(f => f.symbol == symbol)!;
 
     //futureSymbol.status = "retrieving kline"
@@ -470,7 +481,8 @@ async function updateCandleEntryWithLastCandle(symbol:string){
         pastKlineEntries,
         futureSymbol!.maxLeverage,
         pastKlineEntries.length - 1,
-        chocoMintoStore.startingTimeStamp);
+        chocoMintoStore.startingTimeStamp,
+        btcCandles);
 
     //klineDbUtility.initializeKlineData(symbol,pastKlineEntries);
 

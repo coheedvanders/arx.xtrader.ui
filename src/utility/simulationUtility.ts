@@ -9,7 +9,9 @@ import { totalFlowForCandle, getDominantFlowMovement } from '@/utility/flowMovem
 import { identifyMarketState } from '@/utility/marketState'
 import { GetConfluenceState } from "@/utility/confluenceState.ts"
 
+type TrendDirection = "uptrend" | "downtrend";
 export class SimulationUtility {
+    
     static async initializePastCandleEntryData(symbol: string, interval:string,maxCandles:number, supportAndResistancePeriodLength: number){
         var candles : CandleEntry[] = [];
         const raw = await KlineUtility.getRecentKlines(symbol, interval, maxCandles);
@@ -62,7 +64,8 @@ export class SimulationUtility {
         candles: CandleEntry[],
         _maxLeverage:number,
         entryIndex:number,
-        startingTimeStamp:number
+        startingTimeStamp:number,
+        btcCandles: CandleEntry[]
     ){
 
         let openPosition: CandleEntry | null = null;
@@ -77,6 +80,7 @@ export class SimulationUtility {
         var pointBearCandle: CandleEntry | null = null;
         var lastAvwap: PriceZone | null = null;
         var lastVoAvWap: PriceZone | null = null;
+        var lastBtcAvWap: PriceZone | null = null;
         var priceZoneAvWaps = new Map<number, PriceZone>();
         var movementPocAvwaps = new Map<number, PriceZone>();
         var volatilityRatioSpikes: CandleEntry[] | null = null;
@@ -96,7 +100,6 @@ export class SimulationUtility {
             var supportCandle = candles[i - 2];
 
             if(candle && candle.support && candle.resistance){
-
                 var _side = candle.close > candle.open ? "BUY" : "SELL";
 
                 var zoneAnalysis = candleAnalyzer.analyzeZoneInteraction(
@@ -139,6 +142,10 @@ export class SimulationUtility {
                 candle.candleData.ma100 = candleAnalyzer.calculateMovingAverage(movingCandles, 100)!;
                 candle.candleData.crossedEma = (candle.open < candle.candleData.ema200 && candle.close > candle.candleData.ema200) || (candle.open > candle.candleData.ema200 && candle.close < candle.candleData.ema200);
                 candle.candleData.buyerInterestRate = candleAnalyzer.buyerInterestScore(movingCandles,24);
+
+                if(candle.symbol != "BTCUSDT"){
+                    candle.candleData.btcProjectionCandle = candleAnalyzer.getBtcProjectionCandle(movingCandles,btcCandles.slice(0, i + 1));
+                }
                 
                 if(candle.candleData.volumeSpike){
                     candle.candleData.isAvwapPoint = true
@@ -323,6 +330,7 @@ export class SimulationUtility {
 
                 if(candle.candleData.totalFlowMovementZScore >= 2.5){
                     movementPocAvwaps.set(candle.openTime, candleAnalyzer.getAnchorVwap(movingCandles.filter(c => c.openTime >= candle.openTime)));
+                    candle.candleData.conditionMet = "zzz"
                 }
 
                 var crossedMovementPocAvwapCounter = 0;
@@ -364,6 +372,37 @@ export class SimulationUtility {
                     candle.candleData.confluenceState = GetConfluenceState(movingCandles,lastVolatilityRatioSpike.openTime,lastVolatilityRatioSpike.high,lastVolatilityRatioSpike.low)
                 }
 
+                if(lastBtcAvWap){
+                    lastBtcAvWap = candleAnalyzer.getAnchorVwap(movingCandles.filter(c => c.openTime >= _lastBtcSpike.openTime))
+                    candle.candleData.crossedBtcSpikeAvwap = (candle.close > lastBtcAvWap.mid && candle.open < lastBtcAvWap.mid) || (candle.close < lastBtcAvWap.mid && candle.open > lastBtcAvWap.mid);
+                }
+
+                if(btcCandles.length > 0){
+                    var btcCandle = btcCandles[i];
+                    if(btcCandle.candleData!.changePercentageZScore >= 3){
+                        candle.candleData.btcSpikeEvent = true;
+                        candle.candleData.btcSpikeSide = btcCandle.candleData?.side!
+
+                        if(candle.candleData.btcSpikeEvent){
+                            var _btcSpikeCandles = movingCandles.filter(c => c.candleData && c.candleData.btcSpikeEvent);
+                            var _lastBtcSpike = _btcSpikeCandles[_btcSpikeCandles.length - 1];
+                            lastBtcAvWap = candleAnalyzer.getAnchorVwap(movingCandles.filter(c => c.openTime >= _lastBtcSpike.openTime))
+                        }
+                    }
+                }
+
+                if(candle.candleData.ema200 > 0){
+                    var _highestAvWapMid = Array.from(priceZoneAvWaps.values()).reduce(
+                        (max, zone) => Math.max(max, zone.mid),
+                        -Infinity,
+                        )
+                    var _lowestAvWapMid = Array.from(priceZoneAvWaps.values()).reduce(
+                        (min, zone) => Math.min(min, zone.mid),
+                        Infinity,
+                        )
+                    candle.candleData.ema200Stretch = candleAnalyzer.getPriceStretchContext(candle,_highestAvWapMid,_lowestAvWapMid);
+                }
+
                 if(prevCandle.status == "OPEN"){
 
                     var _estimatedPnlPercentage = 0
@@ -373,120 +412,74 @@ export class SimulationUtility {
                         openPosition.duration = (candle.closeTime - openPosition.openTime) / (1000 * 60)
 
                         
-                        if(openPosition.duration > 59){
-                            if(candle.close > openPosition.close){
-                                candle.status = "LONG_WON"
-                                openPosition.status = "WON"
-                                _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,candle.close, "BUY", _maxLeverage);
-                                _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
+                        if(candle.low < openPosition.slPrice && candle.high > openPosition.tpPrice){
+                            candle.status = "LONG_MID"
+                            openPosition.status = "MID"
 
-                                openPosition.pnl = _estimatedPnl;
+                            openPosition = null
 
-                                openPosition = null
-                            }else{
-                                candle.status = "LONG_LOSS"
-                                openPosition.status = "LOSS"
-                                _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,candle.close, "BUY", _maxLeverage);
-                                _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
+                        } else if(candle.low < openPosition.slPrice){
+                            candle.status = "LONG_LOSS"
+                            openPosition.status = "LOSS"
+                            _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,openPosition.slPrice, "BUY", _maxLeverage);
+                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
 
-                                openPosition.pnl = _estimatedPnl;
+                            openPosition.pnl = _estimatedPnl;
 
-                                openPosition = null
-                            }
+                            openPosition = null
+                        }else if(candle.high > openPosition.tpPrice){
+                            candle.status = "LONG_WON"
+                            openPosition.status = "WON"
+                            _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,openPosition.tpPrice, "BUY", _maxLeverage);
+                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
+
+                            openPosition.pnl = _estimatedPnl;
+
+                            openPosition = null
                         }else{
-                            if(candle.low < openPosition.slPrice && candle.high > openPosition.tpPrice){
-                                candle.status = "LONG_MID"
-                                openPosition.status = "MID"
+                            candle.status = "OPEN"
 
-                                openPosition = null
+                            _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,candle.close, "BUY", _maxLeverage);
+                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
 
-                            } else if(candle.low < openPosition.slPrice){
-                                candle.status = "LONG_LOSS"
-                                openPosition.status = "LOSS"
-                                _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,openPosition.slPrice, "BUY", _maxLeverage);
-                                _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
-
-                                openPosition.pnl = _estimatedPnl;
-
-                                openPosition = null
-                            }else if(candle.high > openPosition.tpPrice){
-                                candle.status = "LONG_WON"
-                                openPosition.status = "WON"
-                                _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,openPosition.tpPrice, "BUY", _maxLeverage);
-                                _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
-
-                                openPosition.pnl = _estimatedPnl;
-
-                                openPosition = null
-                            }else{
-                                candle.status = "OPEN"
-
-                                _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,candle.close, "BUY", _maxLeverage);
-                                _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
-
-                                openPosition.pnl = _estimatedPnl;
-                            }
+                            openPosition.pnl = _estimatedPnl;
                         }
 
                     }else if(openPosition && openPosition.side == "SHORT"){
                         openPosition.duration = (candle.closeTime - openPosition.openTime) / (1000 * 60)
 
-                        if(candle.close > openPosition.close){
-                            if(candle.close < openPosition.close){
-                                candle.status = "SHORT_WON"
-                                openPosition.status = "WON"
-                                _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,candle.close, "SELL", _maxLeverage);
-                                _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
+                        if(candle.high > openPosition.slPrice && candle.low < openPosition.tpPrice){
+                            candle.status = "SHORT_MID"
+                            openPosition.status = "MID"
 
-                                openPosition.pnl = _estimatedPnl;
+                            openPosition = null
+                        }
+                        else if(candle.high > openPosition.slPrice){
+                            candle.status = "SHORT_LOSS"
+                            openPosition.status = "LOSS"
+                            _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,openPosition.slPrice, "SELL", _maxLeverage);
+                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
 
-
-                                openPosition = null
-                            }else{
-                                candle.status = "SHORT_LOSS"
-                                openPosition.status = "LOSS"
-                                _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,candle.close, "SELL", _maxLeverage);
-                                _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
-
-                                openPosition.pnl = _estimatedPnl;
+                            openPosition.pnl = _estimatedPnl;
 
 
-                                openPosition = null
-                            }
+                            openPosition = null
+                        }else if (candle.low < openPosition.tpPrice){
+                            candle.status = "SHORT_WON"
+                            openPosition.status = "WON"
+                            _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,openPosition.tpPrice, "SELL", _maxLeverage);
+                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
+
+                            openPosition.pnl = _estimatedPnl;
+
+                            openPosition = null
                         }else{
-                            if(candle.high > openPosition.slPrice && candle.low < openPosition.tpPrice){
-                                candle.status = "SHORT_MID"
-                                openPosition.status = "MID"
+                            candle.status = "OPEN"
 
-                                openPosition = null
-                            }
-                            else if(candle.high > openPosition.slPrice){
-                                candle.status = "SHORT_LOSS"
-                                openPosition.status = "LOSS"
-                                _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,openPosition.slPrice, "SELL", _maxLeverage);
-                                _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
+                            _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,candle.close, "SELL", _maxLeverage);
+                            _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
 
-                                openPosition.pnl = _estimatedPnl;
-
-
-                                openPosition = null
-                            }else if (candle.low < openPosition.tpPrice){
-                                candle.status = "SHORT_WON"
-                                openPosition.status = "WON"
-                                _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,openPosition.tpPrice, "SELL", _maxLeverage);
-                                _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
-
-                                openPosition.pnl = _estimatedPnl;
-
-                                openPosition = null
-                            }else{
-                                candle.status = "OPEN"
-
-                                _estimatedPnlPercentage = PnlUtility.calculatePNLPercent(openPosition!.close,candle.close, "SELL", _maxLeverage);
-                                _estimatedPnl = PnlUtility.calculateEstimatedPnl(openPosition.margin,_estimatedPnlPercentage, _maxLeverage);
-
-                                openPosition.pnl = _estimatedPnl;
-                            }
+                            openPosition.pnl = _estimatedPnl;
                         }
                     }
                 }else {
@@ -537,6 +530,7 @@ export class SimulationUtility {
 
                         //start
 
+                        //ZONE SIZES
                         var currentPriceZoneHigh = Math.max(...movingCandles.filter(c => c.priceZone == candle.priceZone).map(c => c.high),candle.priceZone.upper,candle.priceZone.lower);
                         var currentPriceZoneLow = Math.min(...movingCandles.filter(c => c.priceZone == candle.priceZone).map(c => c.low),candle.priceZone.upper,candle.priceZone.lower);
 
@@ -554,11 +548,96 @@ export class SimulationUtility {
                             var lastCandleInZone = movingCandles.filter(c => c.priceZone == priceZones[priceZones.length - 2] && c.candleData && c.candleData.zoneInhabitantCount == 24)[0];
                             if(lastCandleInZone){
                                 var pastPriceZoneConditionMet = lastCandleInZone.candleData?.conditionMet;
-                                if(pastPriceZoneConditionMet && !pastPriceZoneConditionMet.includes("PREV") && pastPriceZoneConditionMet != "MOVEMENT_POC_BREAK" && pastPriceZoneConditionMet != "BREAKS_VS" && pastPriceZoneConditionMet != "CROSSED_LAST_AVWAP"){
+                                if(pastPriceZoneConditionMet && !pastPriceZoneConditionMet.includes("PREV") && pastPriceZoneConditionMet != "RECENT_BTC_PROJECTION_CROSSING"){
                                     candle.candleData.conditionMet = "PREV_" + pastPriceZoneConditionMet.replace("PREV_","");
                                 }
                             }
                         }
+
+                        if(candle.candleData.btcProjectionCandle){
+                            const projection = candle.candleData.btcProjectionCandle
+                            candle.candleData.crossedBtcProjection =
+                                Math.min(candle.open, candle.close) <= projection.close &&
+                                Math.max(candle.open, candle.close) >= projection.close
+                        }
+
+                        
+                        candle.candleData.conditionMet = ""
+
+                        var pastCrossingCandles = movingCandles.slice(-5)
+                        var recentBtcCrossings = pastCrossingCandles.filter(c => c.candleData && c.candleData.crossedBtcSpikeAvwap);
+                        var recentFlowMovementCrossings = pastCrossingCandles.filter(c => c.candleData && c.candleData.crossedMovementPocCounter >= 1);
+
+                        if(recentBtcCrossings.length > 0 || recentFlowMovementCrossings.length > 0){
+                            var btcSpikeCandles = movingCandles.filter(c => c.candleData && c.candleData.btcSpikeEvent);
+                            if(btcSpikeCandles.length > 0){
+                                var lastBtcSpikeCandle = btcSpikeCandles[btcSpikeCandles.length - 1];
+                                var candlesAfterBtcSpike = movingCandles.filter(c => c.openTime >= lastBtcSpikeCandle.openTime);
+                                
+                                //SHORT1
+                                var SHORT1_BTCCANDLE_ABOVEEMA = lastBtcSpikeCandle.close > lastBtcSpikeCandle.candleData!.ema200
+                                var SHORT1_BTCCANDLE_BELOWEMA = lastBtcSpikeCandle.close < lastBtcSpikeCandle.candleData!.ema200
+                                var SHORT1_CURRENTCANDLE_BELOWEMA = candle.close < candle.candleData.ema200;
+                                var SHORT1_CLOSE_NEAR_EMA200 = candle.candleData.ema200Stretch?.absCloseDistanceAtr! < 1.8
+                                var SHORT1_CURRENT_CANDLE_BEAR = candle.candleData.side == "bear"
+                                var SHORT1_BTCCANDLE_IS_RECENT = movingCandles.slice(-10).filter(c => c.candleData && c.candleData.btcSpikeEvent).length >= 1
+                                var SHORT1_BTCCANDLE_IS_BEAR = lastBtcSpikeCandle.candleData?.side == "bear"
+                                
+                                if((SHORT1_BTCCANDLE_ABOVEEMA || SHORT1_BTCCANDLE_BELOWEMA)
+                                    && SHORT1_CLOSE_NEAR_EMA200
+                                    && SHORT1_CURRENTCANDLE_BELOWEMA
+                                    && SHORT1_CURRENT_CANDLE_BEAR
+                                    && SHORT1_BTCCANDLE_IS_RECENT
+                                    && SHORT1_BTCCANDLE_IS_BEAR
+                                ){
+                                    candle.candleData.conditionMet = "SHORT_1"
+                                }
+
+                                //SHORT2
+                                var SHORT2_ISCOMING_FROM_UPTREND = this.confirmTrend("uptrend",candlesAfterBtcSpike)
+                                var SHORT2_CANDLE_DISTANCE_FROM_EMA_IS_GOOD = candle.candleData && candle.candleData && candle.candleData!.ema200Stretch && candle.candleData!.ema200Stretch!.absCloseDistanceAtr! > 2
+                                var SHORT2_CURRENT_CANDLE_BEAR = candle.candleData.side == "bear"
+                                var SHORT2_FLOW_MOVEMENT_IS_RECENT = movingCandles.slice(-10).filter(c => c.candleData && c.candleData.dominantFlowMovement).length >= 1
+                                var SHORT2_CURRENTCANDLE_ABOVEEMA = candle.close > candle.candleData.ema200;
+
+                                if(SHORT2_ISCOMING_FROM_UPTREND
+                                    && SHORT2_CANDLE_DISTANCE_FROM_EMA_IS_GOOD
+                                    && SHORT2_CURRENT_CANDLE_BEAR
+                                    && SHORT2_FLOW_MOVEMENT_IS_RECENT
+                                    && SHORT2_CURRENTCANDLE_ABOVEEMA
+                                ){
+                                    candle.candleData.conditionMet = "SHORT_2"
+                                }
+
+                                //LONG1
+                                var LONG1_ISCOMING_FROM_DOWNTREND = this.confirmTrend("downtrend",candlesAfterBtcSpike)
+                                var LONG1_NEAR_LAST_BOTTOM_STRETCH = pastCrossingCandles.filter(c => c.candleData && c.candleData.ema200Stretch && c.candleData.ema200Stretch.absCloseDistanceAtr! > 4.5).length >= 1
+                                var LONG1_CURRENT_CANDLE_BULL = candle.candleData.side == "bull"
+                                var LONG1_BTCCANDLE_IS_RECENT = movingCandles.slice(-10).filter(c => c.candleData && c.candleData.btcSpikeEvent).length >= 1
+                                var LONG1_BTCCANDLE_IS_BEAR = lastBtcSpikeCandle.candleData?.side == "bear"
+
+                                if(LONG1_ISCOMING_FROM_DOWNTREND 
+                                    && LONG1_NEAR_LAST_BOTTOM_STRETCH 
+                                    && LONG1_CURRENT_CANDLE_BULL
+                                    && LONG1_BTCCANDLE_IS_RECENT
+                                    && LONG1_BTCCANDLE_IS_BEAR
+                                ){
+                                    candle.candleData.conditionMet = "LONG_1"
+                                }
+                            }
+                        }
+
+                        // var btcSpikeCandles = movingCandles.filter(c => c.candleData && c.candleData.btcSpikeEvent);
+                        // if(btcSpikeCandles.length > 0){
+                        //     var lastBtcSpikeCandle = btcSpikeCandles[btcSpikeCandles.length - 1];
+
+                        //     if(candle.high > lastBtcSpikeCandle.close && candle.low < lastBtcSpikeCandle.close){
+                        //         candle.candleData.conditionMet = "BREAKS_BTC_SPIKE_UP"
+                        //     }else if(candle.high > lastBtcSpikeCandle.open && candle.low < lastBtcSpikeCandle.open){
+                        //         candle.candleData.conditionMet = "BREAKS_BTC_SPIKE_DOWN"
+                        //     } 
+                        // }
+                        
 
                         // if(candle.candleData.hasRecentCrossedMovementPoc){
                         //     candle.candleData.conditionMet = "MOVEMENT_POC_BREAK";
@@ -691,6 +770,41 @@ export class SimulationUtility {
         if (downs / total >= threshold) return 'laddering_down';
         if (ups   / total >= threshold) return 'laddering_up';
         return null;
+    }
+
+    static confirmTrend(direction: TrendDirection, candles: CandleEntry[]): boolean {
+        if (candles.length === 0) return false;
+
+        // 1. Label agreement: majority of candles' lookbackTrend must match the direction
+        const labelMatches = candles.filter(c => {
+            const trend = c.candleData?.lookbackTrend;
+            if (!trend) return false;
+            return direction === "uptrend"
+            ? trend === "strong_uptrend" || trend === "mild_uptrend"
+            : trend === "strong_downtrend" || trend === "mild_downtrend";
+        }).length;
+
+        const labelConfirms = labelMatches / candles.length >= 0.5;
+
+        // 2. Price action agreement: first candle's open vs last candle's close
+        const first = candles[0];
+        const last = candles[candles.length - 1];
+        const netMove = last.close - first.open;
+
+        const priceConfirms = direction === "uptrend" ? netMove > 0 : netMove < 0;
+
+        // 3. Structure agreement: higher highs/higher lows (uptrend) or lower highs/lower lows (downtrend)
+        let structureUp = 0;
+        let structureDown = 0;
+        for (let i = 1; i < candles.length; i++) {
+            if (candles[i].high > candles[i - 1].high && candles[i].low > candles[i - 1].low) structureUp++;
+            if (candles[i].high < candles[i - 1].high && candles[i].low < candles[i - 1].low) structureDown++;
+        }
+        const structureConfirms = direction === "uptrend"
+            ? structureUp >= structureDown
+            : structureDown >= structureUp;
+
+        return labelConfirms && priceConfirms && structureConfirms;
     }
 
     static getTrendDirection(

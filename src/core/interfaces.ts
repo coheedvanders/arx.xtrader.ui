@@ -389,9 +389,47 @@ export interface CandleData {
   hasVolatilityRationSpike: boolean;
   crossedVoAvwapPoint: boolean,
   marketState:MarketStateResult | null,
-  confluenceState: ConfluenceStateResult | null
+  confluenceState: ConfluenceStateResult | null,
+  btcProjectionCandle: BtcProjectionCandle | null,
+  crossedBtcProjection: boolean,
+  btcSpikeEvent: boolean,
+  btcSpikeSide: string
+  crossedBtcSpikeAvwap: boolean,
+  ema200Stretch: PriceStretchResult | null
 }
 
+export interface PriceStretchResult {
+  // --- EMA200 stretch ---
+  /** Signed distance of close from EMA200, expressed in ATR units. Positive = above EMA200. */
+  closeDistanceAtr: number | null;
+  /** Signed distance of the candle's extreme (high if above EMA200, low if below) from EMA200, in ATR units. */
+  extremeDistanceAtr: number | null;
+  /** Signed percentage distance of close from EMA200: (close - ema200) / ema200 * 100. Display-only — not comparable across symbols. */
+  closeDistancePct: number | null;
+  absCloseDistanceAtr: number | null;
+  absExtremeDistanceAtr: number | null;
+  absCloseDistancePct: number | null;
+
+  // --- AVWAP band stretch ---
+  /** Signed distance of close from the upper AVWAP band, in ATR units. */
+  closeDistanceToUpperBandAtr: number | null;
+  /** Signed distance of close from the lower AVWAP band, in ATR units. */
+  closeDistanceToLowerBandAtr: number | null;
+  /** Position of close within the AVWAP band envelope: 0 = lower band, 1 = upper band, <0/>1 = outside. */
+  bandPositionRatio: number | null;
+  /** Categorical readout derived from bandPositionRatio. */
+  bandLocation: "above_upper" | "inside" | "below_lower" | null;
+}
+
+
+export interface BtcProjectionCandle {
+  /** Index into displayCandles this projected candle sits above/below. */
+  index: number
+  open: number
+  close: number
+  /** Direction taken from the BTC candle at this index, not from open/close here. */
+  side: 'bull' | 'bear'
+}
 
 export interface VolumeAnalysis {
   /** Total traded volume for the current candle. */

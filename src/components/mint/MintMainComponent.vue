@@ -139,6 +139,7 @@
         <ConditionMetComponent ref="conditionMetRef"/>
     </div>
 
+    <!-- tab 5 -->
     <div v-show="activeTab === 5">
         <TableComponent>
             <template #header>
@@ -179,6 +180,11 @@
                 </TableBodyComponent>
             </template>
         </TableComponent>
+    </div>
+
+    <!-- tab 6 -->
+    <div v-show="activeTab === 6">
+        <BtcProjectionCrossingComponent ref="btcProjectionCrossingRef"/>
     </div>
 
     <DialogComponent :model-value="UI_SHOW_REPLAY" width="95vw" @update:model-value="UI_SHOW_REPLAY = false">
@@ -241,6 +247,7 @@ import ConditionMetComponent from './ConditionMetComponent.vue';
 import { WalletSnifferUtility } from '@/utility/WalletSnifferUtility.ts';
 import FlowMovementScannerComponent from './FlowMovementScannerComponent.vue';
 import ThesisRecordComponent from './ThesisRecordComponent.vue';
+import BtcProjectionCrossingComponent from './BtcProjectionCrossingComponent.vue';
 
 const chocoMintoStore = useChocoMintoStore();
 const notificationStore = useNotificationStore();
@@ -295,7 +302,8 @@ const tabs = [
     { id: 2, label: 'Thesis Record' },
     { id: 3, label: 'Flow Movement Scanner' },
     { id: 4, label: 'Condition Met' },
-    { id: 5, label: 'Simulation Result' }
+    { id: 5, label: 'Simulation Result' },
+    { id: 6, label: 'BTC Projection Crossing' }
 ]
 
 var dates = [

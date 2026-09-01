@@ -1,4 +1,4 @@
-import type { BidAskWallResult, BinanceDepthSnapshot, BookLevel, Candle, CandleData, CandleEntry, OverboughtOversoldAnalysis, PastVolumeAnalysis, PriceZone, PriceZoneEvaluation, ReactionData, VolumeAnalysis, VolumeProfile, VolumeProfileBucket, ZoneAnalysis } from "@/core/interfaces";
+import type { BidAskWallResult, BinanceDepthSnapshot, BookLevel, BtcProjectionCandle, Candle, CandleData, CandleEntry, PriceStretchResult, OverboughtOversoldAnalysis, PastVolumeAnalysis, PriceZone, PriceZoneEvaluation, ReactionData, VolumeAnalysis, VolumeProfile, VolumeProfileBucket, ZoneAnalysis } from "@/core/interfaces";
 
 class CandlestickAnalyzer {
 
@@ -386,9 +386,54 @@ static buyerInterestScore(
         crossedVoAvwapPoint: false,
         hasRecentVolatityRatioChangeSpike: false,
         marketState: null,
-        confluenceState: null
+        confluenceState: null,
+        btcProjectionCandle: null,
+        crossedBtcProjection: false,
+        btcSpikeEvent: false,
+        btcSpikeSide: "",
+        crossedBtcSpikeAvwap: false,
+        ema200Stretch: null
     };
   }
+
+static getBtcProjectionCandle(
+  symbolCandles: CandleEntry[],
+  btcCandles: CandleEntry[]
+): BtcProjectionCandle | null {
+  const len = Math.min(symbolCandles.length, btcCandles.length)
+
+  if (len < 2) return null
+
+  let prevProjectedClose = symbolCandles[0].close!
+
+  let lastResult: BtcProjectionCandle | null = null
+
+  for (let i = 1; i < len; i++) {
+    const btcCandle = btcCandles[i]
+
+    const btcOpen = btcCandle.open!
+    const btcClose = btcCandle.close!
+
+    const btcChangePct =
+      btcOpen !== 0
+        ? (btcClose - btcOpen) / btcOpen
+        : 0
+
+    const projectedOpen = prevProjectedClose
+    const projectedClose = projectedOpen * (1 + btcChangePct)
+
+    lastResult = {
+      index: i,
+      open: projectedOpen,
+      close: projectedClose,
+      side: btcClose >= btcOpen ? 'bull' : 'bear',
+    }
+
+    prevProjectedClose = projectedClose
+  }
+
+  return lastResult
+}
 
 static getZScore(subject: number, pastData: number[]): number | null {
   const n = pastData.length
@@ -503,6 +548,88 @@ static getVolumeProfile(
     valueAreaLow: buckets[vaLowIndex].priceLow,
     valueAreaVolumePercent: totalVolume > 0 ? vaVolume / totalVolume : 0,
   }
+}
+
+/**
+ * Measures how far a candle's close (and its relevant extreme) is stretched
+ * from its EMA200, normalized by ATR.
+ *
+ * - closeDistanceAtr = (close - ema200) / atr
+ * - extremeDistanceAtr uses `high` when close is above EMA200, `low` when below
+ *   (sign preserved to indicate direction).
+ *
+ * Returns nulls if ema200 or atr are missing/invalid, instead of NaN/Infinity.
+ */
+static getPriceStretchContext(
+  candle: CandleEntry,
+  highestAvwapBand?: number | null,
+  lowestAvwapBand?: number | null
+): PriceStretchResult {
+  const result: PriceStretchResult = {
+    closeDistanceAtr: null,
+    extremeDistanceAtr: null,
+    closeDistancePct: null,
+    absCloseDistanceAtr: null,
+    absExtremeDistanceAtr: null,
+    absCloseDistancePct: null,
+    closeDistanceToUpperBandAtr: null,
+    closeDistanceToLowerBandAtr: null,
+    bandPositionRatio: null,
+    bandLocation: null,
+  };
+
+  const { close, high, low } = candle;
+  const { ema200, atr } = candle.candleData ?? {};
+
+  const hasValidCore =
+    Number.isFinite(close) &&
+    Number.isFinite(high) &&
+    Number.isFinite(low) &&
+    Number.isFinite(atr) &&
+    (atr as number) !== 0;
+
+  // --- EMA200 stretch ---
+  if (hasValidCore && Number.isFinite(ema200)) {
+    const closeDistanceAtr = (close - (ema200 as number)) / (atr as number);
+    const isAboveEma = close >= (ema200 as number);
+    const extremePrice = isAboveEma ? high : low;
+    const extremeDistanceAtr = (extremePrice - (ema200 as number)) / (atr as number);
+
+    result.closeDistanceAtr = closeDistanceAtr;
+    result.extremeDistanceAtr = extremeDistanceAtr;
+    result.absCloseDistanceAtr = Math.abs(closeDistanceAtr);
+    result.absExtremeDistanceAtr = Math.abs(extremeDistanceAtr);
+
+    if ((ema200 as number) !== 0) {
+      const closeDistancePct = ((close - (ema200 as number)) / (ema200 as number)) * 100;
+      result.closeDistancePct = closeDistancePct;
+      result.absCloseDistancePct = Math.abs(closeDistancePct);
+    }
+  }
+
+  // --- AVWAP band stretch ---
+  const hasValidBands =
+    hasValidCore &&
+    Number.isFinite(highestAvwapBand) &&
+    Number.isFinite(lowestAvwapBand) &&
+    (highestAvwapBand as number) >= (lowestAvwapBand as number);
+
+  if (hasValidBands) {
+    const upper = highestAvwapBand as number;
+    const lower = lowestAvwapBand as number;
+
+    result.closeDistanceToUpperBandAtr = (close - upper) / (atr as number);
+    result.closeDistanceToLowerBandAtr = (close - lower) / (atr as number);
+
+    const bandWidth = upper - lower;
+    if (bandWidth !== 0) {
+      const ratio = (close - lower) / bandWidth;
+      result.bandPositionRatio = ratio;
+      result.bandLocation = ratio > 1 ? "above_upper" : ratio < 0 ? "below_lower" : "inside";
+    }
+  }
+
+  return result;
 }
 
 static detectPriceMove(
