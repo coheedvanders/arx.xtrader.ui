@@ -128,7 +128,7 @@ const chocomintoStore = useChocoMintoStore()
 
 // NOTE: must match the base used in CandleEntryVisualizerComponent.vue's
 // fetchWalletMovement — adjust both together if whale_tracker_api.py moves.
-const WALLET_MOVEMENT_API_BASE = 'http://127.0.0.1:5000'
+const WALLET_MOVEMENT_API_BASE = import.meta.env.VITE_WALLET_SNIFFER_API
 const REST_BASE = 'https://fapi.binance.com'
 
 // Spike detection window: last 24 candles of the 15m interval (per spec).

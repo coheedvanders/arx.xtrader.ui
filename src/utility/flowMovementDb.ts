@@ -51,6 +51,30 @@ export interface FlowMovementDbEntry {
 
 let dbPromise: Promise<IDBDatabase> | null = null
 
+/**
+ * In-memory mirror of the IDB store, keyed by uppercase symbol.
+ *
+ * `getFlowMovement` is called once per candle by `totalFlowForCandle` /
+ * `getDominantFlowMovement`, and callers (the visualizer's z-score/dominant-
+ * flow loop, the scanner's sweep) walk hundreds of candles per symbol —
+ * without this cache that's hundreds of redundant IDB transactions fetching
+ * the exact same record back to back. IDB reads are cheap individually but
+ * the transaction-open overhead adds up fast at that call volume, which is
+ * what was actually making `totalFlowForCandle`/`getDominantFlowMovement`
+ * slow in a per-candle loop.
+ *
+ * `null` is a valid cached value (means "confirmed no entry for this
+ * symbol yet") and must be distinguished from "not cached yet" — hence a
+ * `Map<string, FlowMovementDbEntry | null>` checked with `.has()` rather
+ * than a plain object or a truthiness check. Every write path
+ * (`saveFlowMovement`, `deleteFlowMovement`) updates this cache at the same
+ * point it commits to IDB, so a caller can never read a stale entry after a
+ * legitimate write — this matters especially for `scannerVerified`, since
+ * the scanner sweep and `ensureFlowScannerCoverage` both write the same
+ * record from different call sites.
+ */
+const entryCache = new Map<string, FlowMovementDbEntry | null>()
+
 function openDb(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise
   dbPromise = new Promise((resolve, reject) => {
@@ -69,20 +93,31 @@ function openDb(): Promise<IDBDatabase> {
 
 export async function saveFlowMovement(entry: FlowMovementDbEntry): Promise<void> {
   const db = await openDb()
+  const normalized: FlowMovementDbEntry = { ...entry, symbol: entry.symbol.toUpperCase() }
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite')
-    tx.objectStore(STORE_NAME).put({ ...entry, symbol: entry.symbol.toUpperCase() })
-    tx.oncomplete = () => resolve()
+    tx.objectStore(STORE_NAME).put(normalized)
+    tx.oncomplete = () => {
+      entryCache.set(normalized.symbol, normalized)
+      resolve()
+    }
     tx.onerror = () => reject(tx.error)
   })
 }
 
 export async function getFlowMovement(symbol: string): Promise<FlowMovementDbEntry | null> {
+  const key = symbol.toUpperCase()
+  if (entryCache.has(key)) return entryCache.get(key)!
+
   const db = await openDb()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readonly')
-    const req = tx.objectStore(STORE_NAME).get(symbol.toUpperCase())
-    req.onsuccess = () => resolve((req.result as FlowMovementDbEntry) ?? null)
+    const req = tx.objectStore(STORE_NAME).get(key)
+    req.onsuccess = () => {
+      const result = (req.result as FlowMovementDbEntry) ?? null
+      entryCache.set(key, result)
+      resolve(result)
+    }
     req.onerror = () => reject(req.error)
   })
 }
@@ -92,17 +127,28 @@ export async function getAllFlowMovements(): Promise<FlowMovementDbEntry[]> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readonly')
     const req = tx.objectStore(STORE_NAME).getAll()
-    req.onsuccess = () => resolve((req.result as FlowMovementDbEntry[]) ?? [])
+    req.onsuccess = () => {
+      const results = (req.result as FlowMovementDbEntry[]) ?? []
+      // Warm the cache for every entry while we're here — a full sweep call
+      // up front means every later per-candle getFlowMovement() call in the
+      // same session is a pure in-memory cache hit, no IDB transaction at all.
+      for (const result of results) entryCache.set(result.symbol, result)
+      resolve(results)
+    }
     req.onerror = () => reject(req.error)
   })
 }
 
 export async function deleteFlowMovement(symbol: string): Promise<void> {
   const db = await openDb()
+  const key = symbol.toUpperCase()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite')
-    tx.objectStore(STORE_NAME).delete(symbol.toUpperCase())
-    tx.oncomplete = () => resolve()
+    tx.objectStore(STORE_NAME).delete(key)
+    tx.oncomplete = () => {
+      entryCache.set(key, null)
+      resolve()
+    }
     tx.onerror = () => reject(tx.error)
   })
 }
@@ -120,6 +166,11 @@ export async function deleteFlowMovement(symbol: string): Promise<void> {
  *
  * Returns 0 (not an error) if there's no cached entry for `symbol` yet, or
  * if the entry exists but nothing lands in that window.
+ *
+ * Only the FIRST call for a given `symbol` in a session actually touches
+ * IndexedDB — every call after that (including from
+ * `getDominantFlowMovement` for the same symbol) is served from the
+ * in-memory `entryCache`, so calling this in a per-candle loop is cheap.
  *
  * Example:
  *   const total = await totalFlowForCandle('BTCUSDT', 1787172300000, 15 * 60 * 1000)
@@ -142,6 +193,9 @@ export async function totalFlowForCandle(
  *
  * Returns `null` when there's no cached entry for `symbol`, no movements
  * land in that window, or inflow/outflow are exactly tied — never a guess.
+ *
+ * Shares the same `entryCache` as `totalFlowForCandle`, so calling both for
+ * the same symbol across a candle loop only costs one IDB read total.
  *
  * Example:
  *   const direction = await getDominantFlowMovement('BTCUSDT', 1787172300000, 15 * 60 * 1000)

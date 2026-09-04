@@ -8,6 +8,7 @@ import { PnlUtility } from "./PnlUtility.ts";
 import { totalFlowForCandle, getDominantFlowMovement } from '@/utility/flowMovementDb.ts'
 import { identifyMarketState } from '@/utility/marketState'
 import { GetConfluenceState } from "@/utility/confluenceState.ts"
+import { support } from "jszip";
 
 type TrendDirection = "uptrend" | "downtrend";
 export class SimulationUtility {
@@ -85,6 +86,9 @@ export class SimulationUtility {
         var movementPocAvwaps = new Map<number, PriceZone>();
         var volatilityRatioSpikes: CandleEntry[] | null = null;
 
+        var highestAvwapBand = 0;
+        var lowestAvwapBand = 0;
+
 
         for (let i = 1; i <= entryIndex; i++) {
             var movingCandles = candles.slice(0, i + 1);
@@ -102,46 +106,46 @@ export class SimulationUtility {
             if(candle && candle.support && candle.resistance){
                 var _side = candle.close > candle.open ? "BUY" : "SELL";
 
-                var zoneAnalysis = candleAnalyzer.analyzeZoneInteraction(
-                    _side,
-                    candle.close,
-                    movingCandles,
-                    candle.support,
-                    candle.resistance,
-                    20,  // check last 20 candles for interactions
-                    10,  // check last 10 for trend
-                    5,    // check last 5 for momentum
-                    50
-                );
+                // var zoneAnalysis = candleAnalyzer.analyzeZoneInteraction(
+                //     _side,
+                //     candle.close,
+                //     movingCandles,
+                //     candle.support,
+                //     candle.resistance,
+                //     20,  // check last 20 candles for interactions
+                //     10,  // check last 10 for trend
+                //     5,    // check last 5 for momentum
+                //     50
+                // );
 
 
-                var volumeAnalysis = candleAnalyzer.computeVolumeAnalysis(movingCandles,candle.close,20);
-                var overSoldBoughtAnalysis = candleAnalyzer.detectOverboughtOversold(volumeAnalysis, zoneAnalysis, candles)
+                //var volumeAnalysis = candleAnalyzer.computeVolumeAnalysis(movingCandles,candle.close,20);
+                //var overSoldBoughtAnalysis = candleAnalyzer.detectOverboughtOversold(volumeAnalysis, zoneAnalysis, candles)
                 var candleData = candleAnalyzer.analyzeCandlestick(movingCandles,i,true,5);
                 const pastVolumeAnalysis = candleAnalyzer.analyzePastVolumes(candles, i, 20);
                 var atr = candleAnalyzer.calculateATR(movingCandles,8);
-                var pastCandleAverageChange = movingCandles.slice(-20)
-                        .map(c => c.candleData?.change_percentage_v ?? 0)
-                        .map(Math.abs)
-                        .reduce((sum, val) => sum + val, 0) / 20
+                // var pastCandleAverageChange = movingCandles.slice(-20)
+                //         .map(c => c.candleData?.change_percentage_v ?? 0)
+                //         .map(Math.abs)
+                //         .reduce((sum, val) => sum + val, 0) / 20
 
-                candle.zoneAnalysis = zoneAnalysis;
+                // candle.zoneAnalysis = zoneAnalysis;
 
-                candle.volumeAnalysis = volumeAnalysis;
-                candle.pastVolumeAnalysis = pastVolumeAnalysis;
-                candle.overboughSoldAnalysis = overSoldBoughtAnalysis;
+                //candle.volumeAnalysis = volumeAnalysis;
+                //candle.pastVolumeAnalysis = pastVolumeAnalysis;
+                //candle.overboughSoldAnalysis = overSoldBoughtAnalysis;
                 candle.candleData = candleData;
                 candle.candleData.priceMove = candleAnalyzer.detectPriceMove(movingCandles, movingCandles.length - 1)
                 candle.candleData.volumeSpike = candleAnalyzer.hasVolumeSpike(movingCandles,20);
-                candle.overboughSoldAnalysis.extremeLevel = candleAnalyzer.detectOverState(movingCandles,8);
-                candle.candleData.pastCandleAverageChange = pastCandleAverageChange
+                //candle.overboughSoldAnalysis.extremeLevel = candleAnalyzer.detectOverState(movingCandles,8);
+                //candle.candleData.pastCandleAverageChange = pastCandleAverageChange
                 candle.candleData.atr = atr;
-                candle.isWeakening = candleAnalyzer.isWeakening(movingCandles);
+                //candle.isWeakening = candleAnalyzer.isWeakening(movingCandles);
                 candle.candleData.ema200 = candleAnalyzer.calculateEMA(movingCandles, 200);
-                candle.candleData.ma200 = candleAnalyzer.calculateMovingAverage(movingCandles, 200)!;
-                candle.candleData.ma100 = candleAnalyzer.calculateMovingAverage(movingCandles, 100)!;
-                candle.candleData.crossedEma = (candle.open < candle.candleData.ema200 && candle.close > candle.candleData.ema200) || (candle.open > candle.candleData.ema200 && candle.close < candle.candleData.ema200);
-                candle.candleData.buyerInterestRate = candleAnalyzer.buyerInterestScore(movingCandles,24);
+                //candle.candleData.ma200 = candleAnalyzer.calculateMovingAverage(movingCandles, 200)!;
+                //candle.candleData.ma100 = candleAnalyzer.calculateMovingAverage(movingCandles, 100)!;
+                //candle.candleData.crossedEma = (candle.open < candle.candleData.ema200 && candle.close > candle.candleData.ema200) || (candle.open > candle.candleData.ema200 && candle.close < candle.candleData.ema200);
+                //candle.candleData.buyerInterestRate = candleAnalyzer.buyerInterestScore(movingCandles,24);
 
                 if(candle.symbol != "BTCUSDT"){
                     candle.candleData.btcProjectionCandle = candleAnalyzer.getBtcProjectionCandle(movingCandles,btcCandles.slice(0, i + 1));
@@ -156,40 +160,40 @@ export class SimulationUtility {
                     candle.candleData.changePercentageZScore = candleAnalyzer.getCandleChangeZScore(movingCandles,50);
                 }
 
-                candle.isPoint = candle.candleData 
-                && candle.volumeAnalysis 
-                && candle.overboughSoldAnalysis 
-                && (candle.overboughSoldAnalysis.extremeLevel == "overbought" || candle.overboughSoldAnalysis.extremeLevel == "oversold")
-                && candle.candleData.volumeSpike
-                && candle.volumeAnalysis.zScore >= 3
-                && (candle.candleData.priceMove == "dragged_down" || candle.candleData.priceMove == "shoots_up")
-                && candle.candleData.changePercentageZScore > 3
+                // candle.isPoint = candle.candleData 
+                // && candle.volumeAnalysis 
+                // && candle.overboughSoldAnalysis 
+                // && (candle.overboughSoldAnalysis.extremeLevel == "overbought" || candle.overboughSoldAnalysis.extremeLevel == "oversold")
+                // && candle.candleData.volumeSpike
+                // && candle.volumeAnalysis.zScore >= 3
+                // && (candle.candleData.priceMove == "dragged_down" || candle.candleData.priceMove == "shoots_up")
+                // && candle.candleData.changePercentageZScore > 3
 
-                if(candle.candleData.changePercentageZScore > 3){
-                    pointCandle = candle;
-                    pointZoneChangePercentageAbs = Math.abs(candle.candleData.change_percentage_v);
-                    pointZoneOpenTime = candle.openTime;
+                // if(candle.candleData.changePercentageZScore > 3){
+                //     pointCandle = candle;
+                //     pointZoneChangePercentageAbs = Math.abs(candle.candleData.change_percentage_v);
+                //     pointZoneOpenTime = candle.openTime;
 
-                    if(candle.candleData.side == "bull"){
-                        pointZone = {
-                            upper: candle.close,
-                            mid: 0,
-                            lower: candle.open
-                        }
-                    }else{
-                        pointZone = {
-                            upper: candle.open,
-                            mid: 0,
-                            lower: candle.close
-                        }
-                    }
-                }
+                //     if(candle.candleData.side == "bull"){
+                //         pointZone = {
+                //             upper: candle.close,
+                //             mid: 0,
+                //             lower: candle.open
+                //         }
+                //     }else{
+                //         pointZone = {
+                //             upper: candle.open,
+                //             mid: 0,
+                //             lower: candle.close
+                //         }
+                //     }
+                // }
                 
 
-                var isHighlyVolatile = false;
-                if(movingCandles.length > 20){
-                    isHighlyVolatile = candleAnalyzer.isVolatilityExpanding(movingCandles.slice(-14).filter(c => c.candleData).map(c => c.candleData!.atr))
-                }
+                // var isHighlyVolatile = false;
+                // if(movingCandles.length > 20){
+                //     isHighlyVolatile = candleAnalyzer.isVolatilityExpanding(movingCandles.slice(-14).filter(c => c.candleData).map(c => c.candleData!.atr))
+                // }
 
                 if(candle.candleData.side == "bear"){
                     candle.close_atr_adjusted = candle.close - atr;
@@ -199,9 +203,9 @@ export class SimulationUtility {
 
                 candle.close_atr_abs_change = Math.abs(((candle.close - candle.close_atr_adjusted) / candle.close_atr_adjusted) * 100)
 
-                if(candle.overboughSoldAnalysis.extremeLevel != ""){
-                    candle.candleData.pastZoneOverStatePriceReaction = candleAnalyzer.getPreviousSessionOverStatePriceReaction(movingCandles,candle.overboughSoldAnalysis.extremeLevel)
-                }
+                // if(candle.overboughSoldAnalysis.extremeLevel != ""){
+                //     candle.candleData.pastZoneOverStatePriceReaction = candleAnalyzer.getPreviousSessionOverStatePriceReaction(movingCandles,candle.overboughSoldAnalysis.extremeLevel)
+                // }
 
                 //===============
                 //SESSION BASED PRICE ZONE
@@ -281,6 +285,9 @@ export class SimulationUtility {
 
                         candle.candleData.breakHighestAvWapMid = (candle.open < highestAvWapMid && candle.close > highestAvWapMid) && candle.candleData.side == "bull";
                         candle.candleData.breakLowestAvWapMid = (candle.open > lowestAvWapMid && candle.close < lowestAvWapMid) && candle.candleData.side == "bear";
+
+                        highestAvwapBand = highestAvWapMid;
+                        lowestAvwapBand = lowestAvWapMid
                     }
 
                     candle.candleData.crossedAvwapCount = crossedAvwapCounter;
@@ -308,40 +315,40 @@ export class SimulationUtility {
 
                 candle.candleData.lookbackTrend = trendDirection;
 
-                var last20Candles = movingCandles.slice(-20);
-                candle.candleData.hasRecentPosition = last20Candles.filter(c => c.side).length > 0;
-                if(candle.candleData.hasRecentPosition){
-                    var lastPositions = last20Candles.filter(c => c.side);
-                    var lastPosition = lastPositions[lastPositions.length - 1];
-                    candle.candleData.recentPositionSide = lastPosition.side;
-                }
+                // var last20Candles = movingCandles.slice(-20);
+                // candle.candleData.hasRecentPosition = last20Candles.filter(c => c.side).length > 0;
+                // if(candle.candleData.hasRecentPosition){
+                //     var lastPositions = last20Candles.filter(c => c.side);
+                //     var lastPosition = lastPositions[lastPositions.length - 1];
+                //     candle.candleData.recentPositionSide = lastPosition.side;
+                // }
 
-                const totalMovementFlow = await totalFlowForCandle(candle.symbol, candle.openTime, 15 * 60 * 1000)
-                candle.candleData.totalFlowMovement = totalMovementFlow;
+                // const totalMovementFlow = await totalFlowForCandle(candle.symbol, candle.openTime, 15 * 60 * 1000)
+                // candle.candleData.totalFlowMovement = totalMovementFlow;
 
-                if(i >= 26){
-                    candle.candleData.totalFlowMovementZScore = candleAnalyzer.getZScore(totalMovementFlow,movingCandles.slice(-10).filter(c => c.candleData && c.open < candle.openTime).map(c => c.candleData!.totalFlowMovement))!;
-                    candle.candleData.dominantFlowMovement = await getDominantFlowMovement(candle.symbol, candle.openTime, 15 * 60 * 1000)
-                }
+                // if(i >= 26){
+                //     candle.candleData.totalFlowMovementZScore = candleAnalyzer.getZScore(totalMovementFlow,movingCandles.slice(-10).filter(c => c.candleData && c.open < candle.openTime).map(c => c.candleData!.totalFlowMovement))!;
+                //     candle.candleData.dominantFlowMovement = await getDominantFlowMovement(candle.symbol, candle.openTime, 15 * 60 * 1000)
+                // }
 
-                for (const [key, priceZone] of movementPocAvwaps) {
-                    movementPocAvwaps.set(key, candleAnalyzer.getAnchorVwap(movingCandles.filter(c => c.openTime >= key)));
-                }
+                // for (const [key, priceZone] of movementPocAvwaps) {
+                //     movementPocAvwaps.set(key, candleAnalyzer.getAnchorVwap(movingCandles.filter(c => c.openTime >= key)));
+                // }
 
-                if(candle.candleData.totalFlowMovementZScore >= 2.5){
-                    movementPocAvwaps.set(candle.openTime, candleAnalyzer.getAnchorVwap(movingCandles.filter(c => c.openTime >= candle.openTime)));
-                    candle.candleData.conditionMet = "zzz"
-                }
+                // if(candle.candleData.totalFlowMovementZScore >= 2.5){
+                //     movementPocAvwaps.set(candle.openTime, candleAnalyzer.getAnchorVwap(movingCandles.filter(c => c.openTime >= candle.openTime)));
+                //     candle.candleData.conditionMet = "zzz"
+                // }
 
-                var crossedMovementPocAvwapCounter = 0;
-                for (const [key, avwapZone] of movementPocAvwaps) {
-                    var _crossedAvwap = (candle.open < avwapZone!.mid && candle.close > avwapZone!.mid) || (candle.open > avwapZone!.mid && candle.close < avwapZone!.mid)
-                    if(_crossedAvwap){
-                        crossedMovementPocAvwapCounter++;
-                    }
-                }
+                // var crossedMovementPocAvwapCounter = 0;
+                // for (const [key, avwapZone] of movementPocAvwaps) {
+                //     var _crossedAvwap = (candle.open < avwapZone!.mid && candle.close > avwapZone!.mid) || (candle.open > avwapZone!.mid && candle.close < avwapZone!.mid)
+                //     if(_crossedAvwap){
+                //         crossedMovementPocAvwapCounter++;
+                //     }
+                // }
 
-                candle.candleData.crossedMovementPocCounter = crossedMovementPocAvwapCounter
+                //candle.candleData.crossedMovementPocCounter = crossedMovementPocAvwapCounter
 
                 if(candle.priceZoneInteraction?.volatilityRatio! > prevCandle.priceZoneInteraction?.volatilityRatio!){
                     var volatilityRatioChange = (candle.priceZoneInteraction?.volatilityRatio! / prevCandle.priceZoneInteraction?.volatilityRatio!);
@@ -366,11 +373,11 @@ export class SimulationUtility {
                     candle.candleData.marketState = marketState!;
                 }
 
-                volatilityRatioSpikes = movingCandles.filter(c => c.candleData && c.candleData.hasVolatilityRationSpike)
-                if(volatilityRatioSpikes.length > 0){
-                    var lastVolatilityRatioSpike = volatilityRatioSpikes[volatilityRatioSpikes.length - 1];
-                    candle.candleData.confluenceState = GetConfluenceState(movingCandles,lastVolatilityRatioSpike.openTime,lastVolatilityRatioSpike.high,lastVolatilityRatioSpike.low)
-                }
+                // volatilityRatioSpikes = movingCandles.filter(c => c.candleData && c.candleData.hasVolatilityRationSpike)
+                // if(volatilityRatioSpikes.length > 0){
+                //     var lastVolatilityRatioSpike = volatilityRatioSpikes[volatilityRatioSpikes.length - 1];
+                //     candle.candleData.confluenceState = GetConfluenceState(movingCandles,lastVolatilityRatioSpike.openTime,lastVolatilityRatioSpike.high,lastVolatilityRatioSpike.low)
+                // }
 
                 if(lastBtcAvWap){
                     lastBtcAvWap = candleAnalyzer.getAnchorVwap(movingCandles.filter(c => c.openTime >= _lastBtcSpike.openTime))
@@ -391,17 +398,17 @@ export class SimulationUtility {
                     }
                 }
 
-                if(candle.candleData.ema200 > 0){
-                    var _highestAvWapMid = Array.from(priceZoneAvWaps.values()).reduce(
-                        (max, zone) => Math.max(max, zone.mid),
-                        -Infinity,
-                        )
-                    var _lowestAvWapMid = Array.from(priceZoneAvWaps.values()).reduce(
-                        (min, zone) => Math.min(min, zone.mid),
-                        Infinity,
-                        )
-                    candle.candleData.ema200Stretch = candleAnalyzer.getPriceStretchContext(candle,_highestAvWapMid,_lowestAvWapMid);
-                }
+                // if(candle.candleData.ema200 > 0){
+                //     var _highestAvWapMid = Array.from(priceZoneAvWaps.values()).reduce(
+                //         (max, zone) => Math.max(max, zone.mid),
+                //         -Infinity,
+                //         )
+                //     var _lowestAvWapMid = Array.from(priceZoneAvWaps.values()).reduce(
+                //         (min, zone) => Math.min(min, zone.mid),
+                //         Infinity,
+                //         )
+                //     candle.candleData.ema200Stretch = candleAnalyzer.getPriceStretchContext(candle,_highestAvWapMid,_lowestAvWapMid);
+                // }
 
                 if(prevCandle.status == "OPEN"){
 
@@ -487,14 +494,15 @@ export class SimulationUtility {
                     if(prevCandle.resistance
                         && prevCandle.support
                         && prevCandle.priceZone
-                        && prevCandle.overboughSoldAnalysis
-                        && prevCandle.volumeAnalysis
+                        //&& prevCandle.overboughSoldAnalysis
+                        //&& prevCandle.volumeAnalysis
                         && prevCandle.candleData
                         && candle.candleData
                         && candle.support
                         && candle.resistance
                         && candle.priceZone
-                        && supportCandle.candleData){
+                        && supportCandle.candleData
+                        && supportCandle.priceZone){
 
 
                         var closeAbsDistanceToMid = Math.abs(((candle.close - candle.priceZone.mid) / candle.priceZone.mid) * 100)
@@ -548,84 +556,88 @@ export class SimulationUtility {
                             var lastCandleInZone = movingCandles.filter(c => c.priceZone == priceZones[priceZones.length - 2] && c.candleData && c.candleData.zoneInhabitantCount == 24)[0];
                             if(lastCandleInZone){
                                 var pastPriceZoneConditionMet = lastCandleInZone.candleData?.conditionMet;
-                                if(pastPriceZoneConditionMet && !pastPriceZoneConditionMet.includes("PREV") && pastPriceZoneConditionMet != "RECENT_BTC_PROJECTION_CROSSING"){
+                                if(pastPriceZoneConditionMet && !pastPriceZoneConditionMet.includes("PREV") && pastPriceZoneConditionMet != "SHORT"){
                                     candle.candleData.conditionMet = "PREV_" + pastPriceZoneConditionMet.replace("PREV_","");
                                 }
                             }
                         }
 
-                        if(candle.candleData.btcProjectionCandle){
-                            const projection = candle.candleData.btcProjectionCandle
-                            candle.candleData.crossedBtcProjection =
-                                Math.min(candle.open, candle.close) <= projection.close &&
-                                Math.max(candle.open, candle.close) >= projection.close
-                        }
-
+                        // if(supportCandle.candleData.btcSpikeEvent
+                        //     && supportCandle.candleData.changePercentageZScore >= 3
+                        //     && supportCandle.candleData.btcSpikeSide == "bear"
+                        //     && prevCandle.candleData.side == "bear"
+                        //     && candle.candleData.side == "bull"
+                        // ){
+                        //     candle.side = "LONG"
+                        //     targetTpRoi = 3;
+                        //     candle.margin = 1;
+                        //     candle.slPrice = prevCandle.close_atr_adjusted
+                        // }
                         
-                        candle.candleData.conditionMet = ""
+                        //candle.candleData.conditionMet = ""
 
-                        var pastCrossingCandles = movingCandles.slice(-5)
-                        var recentBtcCrossings = pastCrossingCandles.filter(c => c.candleData && c.candleData.crossedBtcSpikeAvwap);
-                        var recentFlowMovementCrossings = pastCrossingCandles.filter(c => c.candleData && c.candleData.crossedMovementPocCounter >= 1);
+                        // var pastCrossingCandles = movingCandles.slice(-5)
+                        // var recentBtcCrossings = pastCrossingCandles.filter(c => c.candleData && c.candleData.crossedBtcSpikeAvwap);
+                        // var recentFlowMovementCrossings = pastCrossingCandles.filter(c => c.candleData && c.candleData.crossedMovementPocCounter >= 1);
 
-                        if(recentBtcCrossings.length > 0 || recentFlowMovementCrossings.length > 0){
-                            var btcSpikeCandles = movingCandles.filter(c => c.candleData && c.candleData.btcSpikeEvent);
-                            if(btcSpikeCandles.length > 0){
-                                var lastBtcSpikeCandle = btcSpikeCandles[btcSpikeCandles.length - 1];
-                                var candlesAfterBtcSpike = movingCandles.filter(c => c.openTime >= lastBtcSpikeCandle.openTime);
+                        // if(recentBtcCrossings.length > 0 || recentFlowMovementCrossings.length > 0){
+                        //     var btcSpikeCandles = movingCandles.filter(c => c.candleData && c.candleData.btcSpikeEvent);
+                        //     if(btcSpikeCandles.length > 0){
+                        //         var lastBtcSpikeCandle = btcSpikeCandles[btcSpikeCandles.length - 1];
+                        //         var candlesAfterBtcSpike = movingCandles.filter(c => c.openTime >= lastBtcSpikeCandle.openTime);
                                 
-                                //SHORT1
-                                var SHORT1_BTCCANDLE_ABOVEEMA = lastBtcSpikeCandle.close > lastBtcSpikeCandle.candleData!.ema200
-                                var SHORT1_BTCCANDLE_BELOWEMA = lastBtcSpikeCandle.close < lastBtcSpikeCandle.candleData!.ema200
-                                var SHORT1_CURRENTCANDLE_BELOWEMA = candle.close < candle.candleData.ema200;
-                                var SHORT1_CLOSE_NEAR_EMA200 = candle.candleData.ema200Stretch?.absCloseDistanceAtr! < 1.8
-                                var SHORT1_CURRENT_CANDLE_BEAR = candle.candleData.side == "bear"
-                                var SHORT1_BTCCANDLE_IS_RECENT = movingCandles.slice(-10).filter(c => c.candleData && c.candleData.btcSpikeEvent).length >= 1
-                                var SHORT1_BTCCANDLE_IS_BEAR = lastBtcSpikeCandle.candleData?.side == "bear"
+                        //         //SHORT1
+                        //         var SHORT1_BTCCANDLE_ABOVEEMA = lastBtcSpikeCandle.close > lastBtcSpikeCandle.candleData!.ema200
+                        //         var SHORT1_BTCCANDLE_BELOWEMA = lastBtcSpikeCandle.close < lastBtcSpikeCandle.candleData!.ema200
+                        //         var SHORT1_CURRENTCANDLE_BELOWEMA = candle.close < candle.candleData.ema200;
+                        //         var SHORT1_CLOSE_NEAR_EMA200 = candle.candleData.ema200Stretch?.absCloseDistanceAtr! < 1.8
+                        //         var SHORT1_CURRENT_CANDLE_BEAR = candle.candleData.side == "bear"
+                        //         var SHORT1_BTCCANDLE_IS_RECENT = movingCandles.slice(-10).filter(c => c.candleData && c.candleData.btcSpikeEvent).length >= 1
+                        //         var SHORT1_BTCCANDLE_IS_BEAR = lastBtcSpikeCandle.candleData?.side == "bear"
                                 
-                                if((SHORT1_BTCCANDLE_ABOVEEMA || SHORT1_BTCCANDLE_BELOWEMA)
-                                    && SHORT1_CLOSE_NEAR_EMA200
-                                    && SHORT1_CURRENTCANDLE_BELOWEMA
-                                    && SHORT1_CURRENT_CANDLE_BEAR
-                                    && SHORT1_BTCCANDLE_IS_RECENT
-                                    && SHORT1_BTCCANDLE_IS_BEAR
-                                ){
-                                    candle.candleData.conditionMet = "SHORT_1"
-                                }
+                        //         if((SHORT1_BTCCANDLE_ABOVEEMA || SHORT1_BTCCANDLE_BELOWEMA)
+                        //             && SHORT1_CLOSE_NEAR_EMA200
+                        //             && SHORT1_CURRENTCANDLE_BELOWEMA
+                        //             && SHORT1_CURRENT_CANDLE_BEAR
+                        //             && SHORT1_BTCCANDLE_IS_RECENT
+                        //             && SHORT1_BTCCANDLE_IS_BEAR
+                        //         ){
+                        //             candle.candleData.conditionMet = "SHORT_1"
+                        //         }
 
-                                //SHORT2
-                                var SHORT2_ISCOMING_FROM_UPTREND = this.confirmTrend("uptrend",candlesAfterBtcSpike)
-                                var SHORT2_CANDLE_DISTANCE_FROM_EMA_IS_GOOD = candle.candleData && candle.candleData && candle.candleData!.ema200Stretch && candle.candleData!.ema200Stretch!.absCloseDistanceAtr! > 2
-                                var SHORT2_CURRENT_CANDLE_BEAR = candle.candleData.side == "bear"
-                                var SHORT2_FLOW_MOVEMENT_IS_RECENT = movingCandles.slice(-10).filter(c => c.candleData && c.candleData.dominantFlowMovement).length >= 1
-                                var SHORT2_CURRENTCANDLE_ABOVEEMA = candle.close > candle.candleData.ema200;
+                        //         //SHORT2
+                        //         var SHORT2_ISCOMING_FROM_UPTREND = this.confirmTrend("uptrend",candlesAfterBtcSpike)
+                        //         var SHORT2_CANDLE_DISTANCE_FROM_EMA_IS_GOOD = candle.candleData && candle.candleData && candle.candleData!.ema200Stretch && candle.candleData!.ema200Stretch!.absCloseDistanceAtr! > 2
+                        //         var SHORT2_CURRENT_CANDLE_BEAR = candle.candleData.side == "bear"
+                        //         var SHORT2_FLOW_MOVEMENT_IS_RECENT = movingCandles.slice(-10).filter(c => c.candleData && c.candleData.dominantFlowMovement).length >= 1
+                        //         var SHORT2_CURRENTCANDLE_ABOVEEMA = candle.close > candle.candleData.ema200;
 
-                                if(SHORT2_ISCOMING_FROM_UPTREND
-                                    && SHORT2_CANDLE_DISTANCE_FROM_EMA_IS_GOOD
-                                    && SHORT2_CURRENT_CANDLE_BEAR
-                                    && SHORT2_FLOW_MOVEMENT_IS_RECENT
-                                    && SHORT2_CURRENTCANDLE_ABOVEEMA
-                                ){
-                                    candle.candleData.conditionMet = "SHORT_2"
-                                }
+                        //         if(SHORT2_ISCOMING_FROM_UPTREND
+                        //             && SHORT2_CANDLE_DISTANCE_FROM_EMA_IS_GOOD
+                        //             && SHORT2_CURRENT_CANDLE_BEAR
+                        //             && SHORT2_FLOW_MOVEMENT_IS_RECENT
+                        //             && SHORT2_CURRENTCANDLE_ABOVEEMA
+                        //         ){
+                        //             candle.candleData.conditionMet = "SHORT_2"
+                        //         }
 
-                                //LONG1
-                                var LONG1_ISCOMING_FROM_DOWNTREND = this.confirmTrend("downtrend",candlesAfterBtcSpike)
-                                var LONG1_NEAR_LAST_BOTTOM_STRETCH = pastCrossingCandles.filter(c => c.candleData && c.candleData.ema200Stretch && c.candleData.ema200Stretch.absCloseDistanceAtr! > 4.5).length >= 1
-                                var LONG1_CURRENT_CANDLE_BULL = candle.candleData.side == "bull"
-                                var LONG1_BTCCANDLE_IS_RECENT = movingCandles.slice(-10).filter(c => c.candleData && c.candleData.btcSpikeEvent).length >= 1
-                                var LONG1_BTCCANDLE_IS_BEAR = lastBtcSpikeCandle.candleData?.side == "bear"
+                        //         //LONG1
+                        //         var LONG1_ISCOMING_FROM_DOWNTREND = this.confirmTrend("downtrend",candlesAfterBtcSpike)
+                        //         var LONG1_NEAR_LAST_BOTTOM_STRETCH = pastCrossingCandles.filter(c => c.candleData && c.candleData.ema200Stretch && c.candleData.ema200Stretch.absCloseDistanceAtr! > 4.5).length >= 1
+                        //         var LONG1_CURRENT_CANDLE_BULL = candle.candleData.side == "bull"
+                        //         var LONG1_BTCCANDLE_IS_RECENT = movingCandles.slice(-10).filter(c => c.candleData && c.candleData.btcSpikeEvent).length >= 1
+                        //         var LONG1_BTCCANDLE_IS_BEAR = lastBtcSpikeCandle.candleData?.side == "bear"
 
-                                if(LONG1_ISCOMING_FROM_DOWNTREND 
-                                    && LONG1_NEAR_LAST_BOTTOM_STRETCH 
-                                    && LONG1_CURRENT_CANDLE_BULL
-                                    && LONG1_BTCCANDLE_IS_RECENT
-                                    && LONG1_BTCCANDLE_IS_BEAR
-                                ){
-                                    candle.candleData.conditionMet = "LONG_1"
-                                }
-                            }
-                        }
+                        //         if(LONG1_ISCOMING_FROM_DOWNTREND 
+                        //             && LONG1_NEAR_LAST_BOTTOM_STRETCH 
+                        //             && LONG1_CURRENT_CANDLE_BULL
+                        //             && LONG1_BTCCANDLE_IS_RECENT
+                        //             && LONG1_BTCCANDLE_IS_BEAR
+                        //         ){
+                        //             candle.candleData.conditionMet = "LONG_1"
+                        //         }
+                        //     }
+                        // }
 
                         // var btcSpikeCandles = movingCandles.filter(c => c.candleData && c.candleData.btcSpikeEvent);
                         // if(btcSpikeCandles.length > 0){
@@ -692,6 +704,50 @@ export class SimulationUtility {
                         var lastXCandleLow = Math.min(...lastXCandles.map(c => c.low))
                         var lastXCandleSpan = Math.abs(((lastXCandleHigh - lastXCandleLow) / lastXCandleLow) * 100);
                         candle.candleData.lastXCandleSpan = lastXCandleSpan;
+
+
+                        //ENTRY
+
+                        if(candle.candleData.conditionMet){
+                            var past3CandlesIsBull = movingCandles.slice(-4).filter(c => c.openTime < candle.openTime && c.candleData?.side == "bull");
+                            var currentCandleIsBear = candle.candleData.side = "bear";
+                            var candlesAboveHighestBand = movingCandles.slice(-4).filter(c => c.close > highestAvwapBand).length == 4;
+                            var candlesAboveUpperPriceZone = movingCandles.slice(-4).filter(c => c.priceZone && c.close > c.priceZone.upper).length == 4;
+
+                            if(past3CandlesIsBull
+                                && currentCandleIsBear
+                                && candlesAboveHighestBand
+                                && candlesAboveUpperPriceZone
+                            ){
+                                candle.candleData.extraInfo = "SHORT_POC"
+                            }
+
+                            var hasRecentShortPOC = movingCandles.slice(-13).filter(c => c.candleData && c.candleData.extraInfo == "SHORT_POC").length > 0;
+                            if(hasRecentShortPOC){
+                                candle.candleData.conditionMet = "RECENT_SHORT_POC"
+                            }
+
+
+                            var past3CandlesIsBear = movingCandles.slice(-4).filter(c => c.openTime < candle.openTime && c.candleData?.side == "bear");
+                            var currentCandleIsBull = candle.candleData.side = "bull";
+                            var candlesBelowLowestBand = movingCandles.slice(-4).filter(c => c.close < lowestAvwapBand).length == 4;
+                            var candlesBelowLowerPriceZone = movingCandles.slice(-4).filter(c => c.priceZone && c.close < c.priceZone.lower).length == 4;
+
+                            if(
+                                past3CandlesIsBear
+                                && currentCandleIsBull
+                                && candlesBelowLowestBand
+                                && candlesBelowLowerPriceZone
+                            ){
+                                candle.candleData.extraInfo = "LONG_POC"
+                            }
+
+                            var hasRecentLongPOC = movingCandles.slice(-13).filter(c => c.candleData && c.candleData.extraInfo == "LONG_POC").length > 0;
+                            if(hasRecentLongPOC){
+                                candle.candleData.conditionMet = "RECENT_LONG_POC"
+                            }
+                        }
+
                         //end
                     }
 

@@ -464,12 +464,12 @@ async function showEntryHistoryModal(symbol: string) {
 
 async function shoutAvCrosses() {
   var newPositions = chocoMintoStore.futureSymbols.filter(c => c.positionSide);
-  var recentVovs = chocoMintoStore.futureSymbols.filter(c => c.conditionMet == "RECENT_VOVS");
+  var recentShortDetected = chocoMintoStore.futureSymbols.filter(c => c.conditionMet == "SHORT");
 
   var message = "";
 
-  if(recentVovs.length > 0){
-    message = `${recentVovs.length} recent VOVS detected!`
+  if(recentShortDetected.length > 0){
+    message = `${recentShortDetected.length} SHORT position detected!`
   }
 
   if(newPositions.length > 0){

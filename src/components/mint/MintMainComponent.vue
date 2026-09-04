@@ -184,7 +184,8 @@
 
     <!-- tab 6 -->
     <div v-show="activeTab === 6">
-        <BtcProjectionCrossingComponent ref="btcProjectionCrossingRef"/>
+        <!-- <BtcProjectionCrossingComponent ref="btcProjectionCrossingRef"/> -->
+         <RiskMeasureComponent />
     </div>
 
     <DialogComponent :model-value="UI_SHOW_REPLAY" width="95vw" @update:model-value="UI_SHOW_REPLAY = false">
@@ -248,6 +249,7 @@ import { WalletSnifferUtility } from '@/utility/WalletSnifferUtility.ts';
 import FlowMovementScannerComponent from './FlowMovementScannerComponent.vue';
 import ThesisRecordComponent from './ThesisRecordComponent.vue';
 import BtcProjectionCrossingComponent from './BtcProjectionCrossingComponent.vue';
+import RiskMeasureComponent from './RiskMeasureComponent.vue';
 
 const chocoMintoStore = useChocoMintoStore();
 const notificationStore = useNotificationStore();
@@ -405,7 +407,7 @@ async function initializeFutureSymbols(){
                 var tokenMap = tokenMaps[symbol];
 
                 
-                if(!tokenMap || (tokenMap && tokenMap.chain != "ethereum")) continue;
+                //if(!tokenMap || (tokenMap && tokenMap.chain != "ethereum")) continue;
 
                 chocoMintoStore.futureSymbols.push({
                     symbol,
@@ -442,7 +444,7 @@ async function initializeFutureSymbols(){
                     slPrice: 0,
                     hasRecentPosition: false,
                     recentPositionSide: "",
-                    networkChain: tokenMap.chain,
+                    networkChain: "",
                     hasRecentCrossedMovementPoc: false,
                     hasRecentVolatilityChangeSpike:false
                 })
@@ -503,7 +505,7 @@ function symbolBasket_OnCompleted(){
     console.log("completionCount",completionCount.value);
     if(completionCount.value >= 4){
         notificationStore.showNotification("success","top-right","Scan Complete","The market scan has been completed.");
-        //conditionMetRef.value.shoutAvCrosses();
+        conditionMetRef.value.shoutAvCrosses();
 
         completionCount.value = 0;
     }

@@ -150,6 +150,10 @@
 
       <button @click="openOptimizeTrendModal">Optimize Trend</button>
 
+      <button @click="showHotkeysModal = true" title="Show all keyboard shortcuts">
+        Hotkeys
+      </button>
+
       <!-- ── Predict tool ─────────────────────────────────────────────────── -->
       <div class="tool-dropdown" ref="predictDropdownRef">
         <button
@@ -279,6 +283,41 @@
         Download FRVPs ({{ volumeProfiles.length }})
       </button>
 
+      <!-- ── Liquidity Heatmap tool ────────────────────────────────────── -->
+      <button
+        class="tool-btn"
+        :class="{ 'tool-btn-active': heatmapModeActive }"
+        @click="toggleHeatmapMode"
+        title="Click to enable, then click-drag from one candle to another. Simulates a real liquidation heatmap: a time × price grid where each candle's volume feeds both a long-side pool (below its open) and a short-side pool (above), weighted by that candle's Long/Short Ratio and OI buildup, spread across leverage-like distances out to ~2.5x ATR. Each candle's own traded range sweeps/clears whatever was resting in it first. Recomputes live as the range is dragged or resized."
+      >
+        {{ heatmapModeActive ? 'Liquidity Heatmap: pick a range…' : 'Liquidity Heatmap' }}
+      </button>
+
+      <button
+        class="tool-btn"
+        @click="applyAutoLiquidityHeatmap"
+        title="Auto-place a heatmap from the last BTC spike event (candleData.btcSpikeEvent) up to whichever candle you've selected (click a candle to select it). Same as pressing G."
+      >
+        Auto Heatmap (G)
+      </button>
+
+      <button
+        v-if="liquidityHeatmaps.length > 0"
+        class="tool-btn"
+        @click="liquidityHeatmaps = []"
+      >
+        Clear Heatmaps ({{ liquidityHeatmaps.length }})
+      </button>
+
+      <button
+        class="tool-btn"
+        :class="{ 'tool-btn-active': comboRangeModeActive }"
+        @click="toggleComboRangeMode"
+        title="Click to enable, then click-drag a candle range. On release, places a Liquidity Heatmap + a Fixed Range Volume Profile + an AVWAP anchored at the start of that range, all at once. Disarms itself after the drag. Same as pressing K."
+      >
+        {{ comboRangeModeActive ? 'Heatmap+VP+AVWAP: pick a range…' : 'Heatmap+VP+AVWAP (K)' }}
+      </button>
+
       <button
         v-if="volumeProfiles.length > 0"
         class="tool-btn"
@@ -324,6 +363,19 @@
           type="checkbox"
         />
         <span>Show All-Zones AVWAP Lines</span>
+      </label>
+
+      <button
+        class="tool-btn"
+        title="Places one open-ended AVWAP at EACH of the past N candles immediately before the selected candle (N = 'Past X Candles' below). Select a candle first, then press B."
+        @click="applyPastPocAvwap"
+      >
+        Past-X AVWAP (B)
+      </button>
+
+      <label class="predict-input-label" title="How many candles back the 'Past-X AVWAP' (B) tool anchors, counting backward from the candle before the one you selected. Saved automatically.">
+        <span>Past X Candles</span>
+        <input v-model.number="pastPocCandleCount" type="number" min="1" max="500" class="predict-number-input" />
       </label>
 
       <div class="tool-dropdown" ref="pzAvwapDropdownRef">
@@ -380,6 +432,24 @@
         @click="rangeDownloadBoxes = []"
       >
         Clear Range Boxes ({{ rangeDownloadBoxes.length }})
+      </button>
+
+      <!-- ── Combo Range Download tool ───────────────────────────────────── -->
+      <button
+        class="tool-btn"
+        :class="{ 'tool-btn-active': comboDownloadModeActive }"
+        @click="toggleComboDownloadMode"
+        title="Click to enable, then click-drag from one candle to another to select a range. A download button appears on the box — grabs OHLCV+EMA200+OI+L/S Ratio per candle, AVWAP points, any overlapping FRVP, AND any overlapping Liquidity Heatmap (the full 'K' combo) into one JSON."
+      >
+        {{ comboDownloadModeActive ? 'Download Combo Range: pick a range…' : 'Download Combo Range' }}
+      </button>
+
+      <button
+        v-if="comboDownloadBoxes.length > 0"
+        class="tool-btn"
+        @click="comboDownloadBoxes = []"
+      >
+        Clear Combo Boxes ({{ comboDownloadBoxes.length }})
       </button>
 
       <!-- ── Range Investigate tool ──────────────────────────────────────── -->
@@ -676,6 +746,15 @@
         <label>R:R</label>
         <span>{{ previewRR !== null ? previewRR.toFixed(2) : '—' }}</span>
       </span>
+      <span
+        v-if="previewLivePnl"
+        class="preview-stat pnl"
+        :class="{ 'pnl-positive': previewLivePnl.amount > 0, 'pnl-negative': previewLivePnl.amount < 0, 'pnl-live': previewLivePnl.isLive }"
+        :title="previewLivePnl.isLive ? 'At the latest live price — hover the chart to preview any price' : `At hovered price ${previewLivePnl.price.toFixed(4)}`"
+      >
+        <label>PnL{{ previewLivePnl.isLive ? '' : ' @ hover' }}</label>
+        <span>{{ formatPnlAmount(previewLivePnl.amount) }} USDT ({{ previewLivePnl.roi >= 0 ? '+' : '' }}{{ previewLivePnl.roi.toFixed(1) }}%)</span>
+      </span>
       <button
         class="preview-btn place-order"
         :disabled="placingOrder"
@@ -715,6 +794,33 @@
             class="crosshair-line vertical"
             style="display: none"
           />
+
+          <!-- Live preview PnL label — follows the horizontal crosshair line
+               while hovering the main pane with an active Preview Buy/Sell. -->
+          <g
+            v-if="previewPosition && previewLivePnl && !previewLivePnl.isLive && hoveredMouseY !== null"
+            class="preview-pnl-tooltip"
+            :transform="`translate(0, ${hoveredMouseY})`"
+          >
+            <rect
+              class="preview-pnl-tooltip-bg"
+              :class="{ 'pnl-positive': previewLivePnl.amount > 0, 'pnl-negative': previewLivePnl.amount < 0 }"
+              :x="svgWidth - 132"
+              y="-11"
+              width="132"
+              height="22"
+              rx="3"
+            />
+            <text
+              class="preview-pnl-tooltip-text"
+              :class="{ 'pnl-positive': previewLivePnl.amount > 0, 'pnl-negative': previewLivePnl.amount < 0 }"
+              :x="svgWidth - 66"
+              y="4"
+              text-anchor="middle"
+            >
+              {{ formatPnlAmount(previewLivePnl.amount) }} USDT ({{ previewLivePnl.roi >= 0 ? '+' : '' }}{{ previewLivePnl.roi.toFixed(1) }}%)
+            </text>
+          </g>
         </g>
 
         <!-- Price Zone Backgrounds (grouped by session) -->
@@ -1360,6 +1466,29 @@
           </template>
         </g>
 
+        <!-- Off-screen EMA cues: pinned ▲/▼ badges at the top/bottom edge when
+             an EMA line's current value is scrolled out of the visible chart -->
+        <g class="ema-offscreen-cues">
+          <g
+            v-for="cue in emaOffscreenCues"
+            :key="cue.key"
+            :transform="`translate(${cue.x}, ${cue.y})`"
+          >
+            <rect
+              :x="-4"
+              :y="-11"
+              :width="cue.label.length * 6.5 + 20"
+              height="16"
+              rx="3"
+              class="ema-offscreen-badge-bg"
+              :style="{ fill: cue.color }"
+            />
+            <text x="4" y="1" class="ema-offscreen-badge-text">
+              {{ cue.direction === 'above' ? '▲' : '▼' }} {{ cue.label }}
+            </text>
+          </g>
+        </g>
+
         <!-- Predicted Candles (probabilistic projection) -->
         <g v-if="predictionResult" class="predicted-candles">
           <polygon
@@ -1497,7 +1626,7 @@
               :y="priceToY(candle.low!) + 95"
               class="pattern-label"
             >
-              BTC_{{candle.candleData?.side}}
+              BTC_{{candle.candleData?.btcSpikeSide}}
             </text>
 
             <text
@@ -2017,6 +2146,104 @@
           </g>
         </g>
 
+        <!-- Liquidity Heatmap overlays -->
+        <g class="liquidity-heatmaps">
+          <g
+            v-for="heatmap in renderedLiquidityHeatmaps"
+            :key="`heatmap-${heatmap.id}`"
+            class="liquidity-heatmap"
+          >
+            <!-- per-candle stop-cloud cells, each hugging below price in an uptrend or above in a downtrend -->
+            <rect
+              v-for="(row, rIdx) in heatmap.rows"
+              :key="`heatmap-${heatmap.id}-row-${rIdx}`"
+              :x="row.x"
+              :y="row.y"
+              :width="row.width"
+              :height="row.height"
+              :fill="row.color"
+              class="heatmap-row"
+            />
+
+            <!-- range selection box outline -->
+            <rect
+              :x="heatmap.leftX"
+              :y="heatmap.rangeTop"
+              :width="heatmap.width"
+              :height="heatmap.rangeBottom - heatmap.rangeTop"
+              class="heatmap-range-rect"
+            />
+
+            <!-- Left/right edge resize handles -->
+            <line
+              :x1="heatmap.leftX" :x2="heatmap.leftX"
+              :y1="heatmap.rangeTop" :y2="heatmap.rangeBottom"
+              class="heatmap-edge-handle"
+              @mousedown="startHeatmapResizeLeft(heatmap.id, $event)"
+            />
+            <line
+              :x1="heatmap.rightX" :x2="heatmap.rightX"
+              :y1="heatmap.rangeTop" :y2="heatmap.rangeBottom"
+              class="heatmap-edge-handle"
+              @mousedown="startHeatmapResizeRight(heatmap.id, $event)"
+            />
+
+            <!-- hottest zone marker -->
+            <line
+              :x1="heatmap.leftX"
+              :x2="heatmap.rightX"
+              :y1="heatmap.hottestY"
+              :y2="heatmap.hottestY"
+              class="heatmap-hottest-line"
+            />
+            <text
+              :x="heatmap.rightX + 4"
+              :y="heatmap.hottestY + 3"
+              class="heatmap-hottest-label"
+            >
+              {{ heatmap.hottestPrice.toFixed(4) }}
+            </text>
+
+            <text
+              :x="heatmap.leftX + 4"
+              :y="heatmap.rangeTop - 6"
+              class="heatmap-summary-label"
+            >
+              Liquidity Heatmap · ATR {{ heatmap.atr.toFixed(4) }}
+            </text>
+            <text
+              :x="heatmap.rightX - 4"
+              :y="heatmap.rangeTop - 6"
+              class="heatmap-close-btn"
+              text-anchor="end"
+              @click="removeLiquidityHeatmap(heatmap.id)"
+            >
+              ✕ remove
+            </text>
+          </g>
+
+          <!-- live drag preview -->
+          <g v-if="draggingLiquidityHeatmapPreview" class="liquidity-heatmap heatmap-preview">
+            <rect
+              v-for="(row, rIdx) in draggingLiquidityHeatmapPreview.rows"
+              :key="`heatmap-preview-row-${rIdx}`"
+              :x="row.x"
+              :y="row.y"
+              :width="row.width"
+              :height="row.height"
+              :fill="row.color"
+              class="heatmap-row heatmap-preview-row"
+            />
+            <rect
+              :x="draggingLiquidityHeatmapPreview.leftX"
+              :y="draggingLiquidityHeatmapPreview.rangeTop"
+              :width="draggingLiquidityHeatmapPreview.width"
+              :height="draggingLiquidityHeatmapPreview.rangeBottom - draggingLiquidityHeatmapPreview.rangeTop"
+              class="heatmap-range-rect heatmap-range-rect-preview"
+            />
+          </g>
+        </g>
+
         <!-- Range Download tool overlay -->
         <g class="range-download-boxes">
           <g
@@ -2094,6 +2321,74 @@
             :width="draggingRangeDownloadPreview.rightX - draggingRangeDownloadPreview.leftX"
             :height="draggingRangeDownloadPreview.rangeBottom - draggingRangeDownloadPreview.rangeTop"
             class="range-dl-rect range-dl-rect-preview"
+          />
+        </g>
+
+        <!-- Combo Range Download tool overlay -->
+        <g class="combo-download-boxes">
+          <g
+            v-for="box in renderedComboDownloadBoxes"
+            :key="`combo-dl-${box.id}`"
+            class="combo-download-box"
+          >
+            <rect
+              :x="box.leftX"
+              :y="box.rangeTop"
+              :width="box.rightX - box.leftX"
+              :height="box.rangeBottom - box.rangeTop"
+              class="range-dl-rect combo-dl-rect"
+            />
+
+            <line
+              :x1="box.leftX" :x2="box.leftX"
+              :y1="box.rangeTop" :y2="box.rangeBottom"
+              class="range-dl-edge-handle"
+              @mousedown="startComboDownloadResizeLeft(box.id, $event)"
+            />
+            <line
+              :x1="box.rightX" :x2="box.rightX"
+              :y1="box.rangeTop" :y2="box.rangeBottom"
+              class="range-dl-edge-handle"
+              @mousedown="startComboDownloadResizeRight(box.id, $event)"
+            />
+
+            <text
+              :x="box.leftX + 4"
+              :y="box.rangeTop - 6"
+              class="range-dl-summary-label combo-dl-summary-label"
+            >
+              Combo {{ box.endIndex - box.startIndex + 1 }} candles
+            </text>
+
+            <text
+              :x="box.rightX - 4"
+              :y="box.rangeTop - 6"
+              class="range-dl-close-btn"
+              text-anchor="end"
+              @click="removeComboDownloadBox(box.id)"
+            >
+              ✕ remove
+            </text>
+
+            <text
+              :x="(box.leftX + box.rightX) / 2"
+              :y="box.rangeTop - 20"
+              class="range-dl-download-btn combo-dl-download-btn"
+              text-anchor="middle"
+              @click="downloadComboRangeData(box.id)"
+            >
+              ⬇ download combo range
+            </text>
+          </g>
+
+          <!-- live drag preview -->
+          <rect
+            v-if="draggingComboDownloadPreview"
+            :x="draggingComboDownloadPreview.leftX"
+            :y="draggingComboDownloadPreview.rangeTop"
+            :width="draggingComboDownloadPreview.rightX - draggingComboDownloadPreview.leftX"
+            :height="draggingComboDownloadPreview.rangeBottom - draggingComboDownloadPreview.rangeTop"
+            class="range-dl-rect combo-dl-rect range-dl-rect-preview"
           />
         </g>
 
@@ -2688,6 +2983,25 @@
 
       <div v-if="!props.overlayMode && showBtcOverlay && btcOverlayCandles.length" class="overlay-vs-label">
         {{ props.symbol.toUpperCase() }} <span class="vs">vs</span> BTC
+      </div>
+    </div>
+
+    <!-- Hotkeys Modal -->
+    <div v-if="showHotkeysModal" class="modal-overlay" @click.self="showHotkeysModal = false">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Keyboard Shortcuts</h2>
+          <button class="close-btn" @click="showHotkeysModal = false">×</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="detail-grid">
+            <div v-for="hk in HOTKEY_LIST" :key="hk.key" class="detail-item">
+              <label>{{ hk.key }}</label>
+              <span>{{ hk.description }}</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -3664,9 +3978,10 @@ const props = withDefaults(defineProps<Props>(), {
 // ─── State ────────────────────────────────────────────────────────────────────
 const selectedCandleIndex = ref<number | null>(null)
 const showModal = ref(false)
+const showHotkeysModal = ref(false)
 const hoveredCandleIndex = ref<number | null>(null)
 const candleWidth = ref(8)
-const connectVolumeSpikesvSpikes = ref(true)
+const connectVolumeSpikesvSpikes = ref(false)
 const showVolume = ref(true)
 /** Numeric candle property currently plotted in the volume-style indicator panel. */
 const selectedPropertyPath = ref('volume')
@@ -3674,7 +3989,7 @@ const showOiBar = ref(true)
 const showMovementPanel = ref(false)
 const showMovementDetail = ref(false)
 const selectedMovementCandleIndex = ref<number | null>(null)
-const showEma = ref(true)
+const showEma = ref(false)
 const showMa = ref(false)
 /** "Overlay BTC" toggle — re-renders this same component (in overlayMode) on top of the chart with BTC candles, purely for eyeballing structure/shape against whatever symbol is currently loaded. */
 const showBtcOverlay = ref(false)
@@ -3692,7 +4007,7 @@ const btcOverlayOpacity = ref(0.6)
  * BTC did" path anchored at the real candle[0] close. Body-only (no wicks),
  * colored white/bull-gray/bear reusing the .overlay-instance palette.
  */
-const showBtcProjection = ref(!props.overlayMode)
+const showBtcProjection = ref(false)
 /** Opacity of the projection candles, mirrors btcOverlayOpacity's pattern. */
 const btcProjectionOpacity = ref(0.7)
 const candleGap = 5
@@ -3707,6 +4022,10 @@ const chartContainer = ref<HTMLElement | null>(null)
 const crosshairGroup = ref<SVGGElement | null>(null)
 const priceRangeMin = ref(0)
 const priceRangeMax = ref(0)
+/** Price under the mouse in the main chart pane, live-updated on mousemove; null when the mouse isn't over the chart (or is outside the main pane). Drives the live preview PnL readout below. */
+const hoveredPrice = ref<number | null>(null)
+/** Y (SVG-relative) of the mouse, kept alongside hoveredPrice so the floating PnL label can follow the crosshair. */
+const hoveredMouseY = ref<number | null>(null)
 let isAdjustingHeight = false
 let isDraggingChart = false
 
@@ -4318,6 +4637,85 @@ const showAvwapBands = ref(false)
 /** Toggles the individual per-zone AVWAP lines placed by "Fill PZ AVWAP > All Zones". Hidden by default — those zones instead render collapsed into a single high/low channel cloud (see allZonesAvwapCloud). */
 const showAllZonesAvwapLines = ref(false)
 
+// ─── "Past-X AVWAP" tool ("B" hotkey) ──────────────────────────────────────
+//
+// Places one open-ended AVWAP anchored at EACH of the N candles immediately
+// before the currently selected candle — N separate AVWAP lines, not one
+// AVWAP spanning the range.
+//
+// Example: candles [0][1]...[12], "Past X Candles" = 8, selected candle = 11.
+// Starting point is candle 10 (the one just before the selection), then
+// walking back 8 candles: AVWAPs get anchored at candles 10, 9, 8, 7, 6, 5,
+// 4, 3 — each one its own AVWAP, each running open-ended forward.
+const PAST_POC_CANDLE_COUNT_STORAGE_KEY = 'candleVisualizer.pastPocCandleCount'
+
+function loadStoredPastPocCandleCount(): number {
+  try {
+    const raw = localStorage.getItem(PAST_POC_CANDLE_COUNT_STORAGE_KEY)
+    const parsed = raw !== null ? parseInt(raw, 10) : NaN
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 8
+  } catch {
+    // localStorage unavailable (e.g. private browsing / SSR) — fall back to default
+    return 8
+  }
+}
+
+/** "Past X Candles" input above the AVWAP toolbar — how many candles back the "B" hotkey anchors. Persisted to localStorage, default 8. */
+const pastPocCandleCount = ref<number>(loadStoredPastPocCandleCount())
+
+watch(pastPocCandleCount, (value) => {
+  try {
+    localStorage.setItem(PAST_POC_CANDLE_COUNT_STORAGE_KEY, String(value))
+  } catch {
+    // ignore write failures (e.g. storage full / disabled)
+  }
+})
+
+/**
+ * "B" hotkey / "Past-X AVWAP" button: places one open-ended AVWAP anchored
+ * at EACH of the `pastPocCandleCount` candles immediately preceding the
+ * currently selected candle (selectedCandleIndex — set by clicking a candle
+ * to open its details modal) — not a single AVWAP spanning the range.
+ *
+ * Example: candles [0][1]...[12], "Past X Candles" = 8, selected candle = 11.
+ * Starting point is candle 10 (the one just before the selection), then
+ * walking back 8 candles from there: this places 8 separate AVWAPs, anchored
+ * at candles 10, 9, 8, 7, 6, 5, 4, 3 — each running open-ended forward like
+ * a normal single-click AVWAP placement.
+ */
+function applyPastPocAvwap() {
+  if (selectedCandleIndex.value === null) {
+    useNotificationStore().showNotification(
+      'warning',
+      'top-right',
+      'Past-X AVWAP',
+      'Select a candle first (click one to open its details), then press B.'
+    )
+    return
+  }
+
+  const count = pastPocCandleCount.value > 0 ? pastPocCandleCount.value : 8
+  const startAnchor = selectedCandleIndex.value - 1
+
+  if (startAnchor < 0) {
+    useNotificationStore().showNotification(
+      'warning',
+      'top-right',
+      'Past-X AVWAP',
+      'No candle before the selected one to anchor from.'
+    )
+    return
+  }
+
+  const lowestAnchor = Math.max(0, startAnchor - count + 1)
+  const newAvwaps: AnchoredVwap[] = []
+  for (let anchorIndex = startAnchor; anchorIndex >= lowestAnchor; anchorIndex--) {
+    newAvwaps.push({ id: ++avwapIdCounter, anchorIndex, endIndex: null })
+  }
+
+  anchoredVwaps.value.push(...newAvwaps)
+}
+
 function toggleAvwapMode() {
   avwapModeActive.value = !avwapModeActive.value
 }
@@ -4469,6 +4867,12 @@ function handleCandleMouseDownForAvwap(index: number, event: MouseEvent) {
 
   anchoredVwaps.value.push({ id: ++avwapIdCounter, anchorIndex: index, endIndex: null })
   avwapModeActive.value = false
+  // avwapModeActive is already flipped off above (by the time the click
+  // event that follows this mousedown reaches handleCandleClick), so that
+  // handler alone can no longer tell this was an AVWAP placement — flag it
+  // here instead so the candle-details modal doesn't pop open right after
+  // anchoring.
+  suppressNextCandleClick.value = true
 }
 
 /**
@@ -4718,6 +5122,14 @@ function handleCandleMouseDown(index: number, event: MouseEvent) {
     handleCandleMouseDownForAvwap(index, event)
     return
   }
+  if (comboRangeModeActive.value) {
+    handleCandleMouseDownForComboRange(index, event)
+    return
+  }
+  if (comboDownloadModeActive.value) {
+    handleCandleMouseDownForComboDownload(index, event)
+    return
+  }
   if (rangeDownloadModeActive.value) {
     handleCandleMouseDownForRangeDownload(index, event)
     return
@@ -4728,6 +5140,10 @@ function handleCandleMouseDown(index: number, event: MouseEvent) {
   }
   if (summarizeModeActive.value) {
     handleCandleMouseDownForSummarize(index, event)
+    return
+  }
+  if (heatmapModeActive.value) {
+    handleCandleMouseDownForHeatmap(index, event)
     return
   }
   handleCandleMouseDownForVp(index, event)
@@ -5171,13 +5587,20 @@ function toggleVpMode() {
   vpModeActive.value = !vpModeActive.value
 }
 
+/** Set right before avwapModeActive disarms on candle placement, so the click event that immediately follows that mousedown can be told apart from an ordinary candle click. See handleCandleMouseDownForAvwap. */
+const suppressNextCandleClick = ref(false)
+
 /** Wraps openCandleModal so the modal doesn't pop open mid-drag/mid-click while the VP, Anchored VWAP, or Predict-pick tools are armed. */
 function handleCandleClick(index: number) {
+  if (suppressNextCandleClick.value) {
+    suppressNextCandleClick.value = false
+    return
+  }
   if (predictPickModeActive.value) {
     selectPredictFromCandle(index)
     return
   }
-  if (vpModeActive.value || avwapModeActive.value) return
+  if (vpModeActive.value || avwapModeActive.value || heatmapModeActive.value || comboRangeModeActive.value) return
   openCandleModal(index)
 }
 
@@ -5294,6 +5717,252 @@ function handleCandleMouseDownForVp(index: number, event: MouseEvent) {
     vpDragging.value = false
     vpStartIndex.value = null
     vpEndIndex.value = null
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+// ─── Liquidity Heatmap tool ─────────────────────────────────────────────────
+//
+// Click-drag a candle range exactly like the Volume Profile tool above. The
+// range is a plain {startIndex, endIndex} — all the actual math lives in
+// computeLiquidityHeatmap (further down, next to computeVolumeProfile),
+// which is a pure function of that range called from a computed
+// (renderedLiquidityHeatmaps). That's what makes it "dynamic": dragging
+// either edge handle after placement mutates startIndex/endIndex, Vue's
+// reactivity reruns the computed, and the heatmap recolors itself — no
+// separate recompute step needed, same mechanism the VP tool already uses.
+interface LiquidityHeatmapRange {
+  id: number
+  startIndex: number
+  endIndex: number
+}
+
+let heatmapIdCounter = 0
+const heatmapModeActive = ref(false)
+const heatmapDragging = ref(false)
+const heatmapStartIndex = ref<number | null>(null)
+const heatmapEndIndex = ref<number | null>(null)
+const liquidityHeatmaps = ref<LiquidityHeatmapRange[]>([])
+
+function toggleHeatmapMode() {
+  heatmapModeActive.value = !heatmapModeActive.value
+}
+
+/**
+ * "G" hotkey / "Auto Heatmap" button: places a Liquidity Heatmap without
+ * click-dragging. End = the currently selected candle (selectedCandleIndex —
+ * set by clicking a candle to open its details modal). Start = the nearest
+ * candle at or before that one with candleData.btcSpikeEvent === true, found
+ * by walking backwards from the selection. In other words it heatmaps
+ * everything from the last BTC spike event up to whatever candle you had
+ * selected.
+ */
+function applyAutoLiquidityHeatmap() {
+  if (selectedCandleIndex.value === null) {
+    useNotificationStore().showNotification(
+      'warning',
+      'top-right',
+      'Liquidity Heatmap',
+      'Select a candle first (click one to open its details), then press G.'
+    )
+    return
+  }
+
+  const endIndex = selectedCandleIndex.value
+  let startIndex: number | null = null
+  for (let i = endIndex; i >= 0; i--) {
+    if (displayCandles.value[i]?.candleData?.btcSpikeEvent) {
+      startIndex = i
+      break
+    }
+  }
+
+  if (startIndex === null) {
+    useNotificationStore().showNotification(
+      'warning',
+      'top-right',
+      'Liquidity Heatmap',
+      'No BTC spike event found at or before the selected candle.'
+    )
+    return
+  }
+
+  if (startIndex === endIndex) {
+    useNotificationStore().showNotification(
+      'warning',
+      'top-right',
+      'Liquidity Heatmap',
+      'The selected candle is itself the BTC spike event — select a later candle.'
+    )
+    return
+  }
+
+  liquidityHeatmaps.value.push({ id: ++heatmapIdCounter, startIndex, endIndex })
+}
+
+function removeLiquidityHeatmap(id: number) {
+  liquidityHeatmaps.value = liquidityHeatmaps.value.filter(h => h.id !== id)
+}
+
+function findLiquidityHeatmap(id: number): LiquidityHeatmapRange | undefined {
+  return liquidityHeatmaps.value.find(h => h.id === id)
+}
+
+/** Drag the left edge of a placed heatmap to adjust startIndex. */
+function startHeatmapResizeLeft(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const heatmap = findLiquidityHeatmap(id)
+  if (!heatmap) return
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    const raw = clientXToCandleIndex(moveEvent.clientX)
+    if (raw === null) return
+    const snapped = Math.round(raw)
+    heatmap.startIndex = Math.max(0, Math.min(snapped, heatmap.endIndex - 1))
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/** Drag the right edge of a placed heatmap to adjust endIndex. */
+function startHeatmapResizeRight(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const heatmap = findLiquidityHeatmap(id)
+  if (!heatmap) return
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    const raw = clientXToCandleIndex(moveEvent.clientX)
+    if (raw === null) return
+    const snapped = Math.max(0, Math.min(displayCandles.value.length - 1, Math.round(raw)))
+    heatmap.endIndex = Math.max(heatmap.startIndex + 1, snapped)
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+function handleCandleMouseDownForHeatmap(index: number, event: MouseEvent) {
+  if (!heatmapModeActive.value) return
+  event.preventDefault()
+  event.stopPropagation()
+
+  heatmapDragging.value = true
+  heatmapStartIndex.value = index
+  heatmapEndIndex.value = index
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    if (!heatmapDragging.value || !chartContainer.value) return
+    const rect = chartContainer.value.querySelector('svg')?.getBoundingClientRect()
+    if (!rect) return
+    const x = moveEvent.clientX - rect.left
+    const rawIndex = Math.round((x - 10 - candleWidth.value / 2) / (candleWidth.value + candleGap))
+    heatmapEndIndex.value = Math.max(0, Math.min(displayCandles.value.length - 1, rawIndex))
+  }
+
+  const handleUp = () => {
+    if (heatmapStartIndex.value !== null && heatmapEndIndex.value !== null) {
+      const s = Math.min(heatmapStartIndex.value, heatmapEndIndex.value)
+      const e = Math.max(heatmapStartIndex.value, heatmapEndIndex.value)
+      if (e > s) {
+        liquidityHeatmaps.value.push({ id: ++heatmapIdCounter, startIndex: s, endIndex: e })
+      }
+    }
+    heatmapDragging.value = false
+    heatmapStartIndex.value = null
+    heatmapEndIndex.value = null
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+// ─── "K" hotkey / Heatmap+VP+AVWAP combo tool ──────────────────────────────
+//
+// Press "K" to arm, then click-drag a candle range exactly like the
+// Liquidity Heatmap / Volume Profile tools above (in fact it drives their
+// own drag-preview state directly, so dragging shows both previews at once).
+// On mouseup it places all three in one shot for that range:
+//   - a Liquidity Heatmap
+//   - a Fixed Range Volume Profile (with OI rate loaded, same as the VP tool)
+//   - an Anchored VWAP anchored at the START of the selection (open-ended,
+//     same as a normal single-click AVWAP anchor)
+// One-shot like the AVWAP tool: it disarms itself after the drag completes.
+const comboRangeModeActive = ref(false)
+
+function toggleComboRangeMode() {
+  comboRangeModeActive.value = !comboRangeModeActive.value
+}
+
+function handleCandleMouseDownForComboRange(index: number, event: MouseEvent) {
+  if (!comboRangeModeActive.value) return
+  event.preventDefault()
+  event.stopPropagation()
+
+  // Drive the existing heatmap + VP drag-preview state directly so both
+  // live previews render together while dragging — no separate preview
+  // computeds needed.
+  heatmapDragging.value = true
+  heatmapStartIndex.value = index
+  heatmapEndIndex.value = index
+  vpDragging.value = true
+  vpStartIndex.value = index
+  vpEndIndex.value = index
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    if (!chartContainer.value) return
+    const rect = chartContainer.value.querySelector('svg')?.getBoundingClientRect()
+    if (!rect) return
+    const x = moveEvent.clientX - rect.left
+    const rawIndex = Math.round((x - 10 - candleWidth.value / 2) / (candleWidth.value + candleGap))
+    const clamped = Math.max(0, Math.min(displayCandles.value.length - 1, rawIndex))
+    heatmapEndIndex.value = clamped
+    vpEndIndex.value = clamped
+  }
+
+  const handleUp = () => {
+    if (heatmapStartIndex.value !== null && heatmapEndIndex.value !== null) {
+      const s = Math.min(heatmapStartIndex.value, heatmapEndIndex.value)
+      const e = Math.max(heatmapStartIndex.value, heatmapEndIndex.value)
+      if (e > s) {
+        liquidityHeatmaps.value.push({ id: ++heatmapIdCounter, startIndex: s, endIndex: e })
+
+        const vpId = ++vpIdCounter
+        volumeProfiles.value.push({ id: vpId, startIndex: s, endIndex: e })
+        loadOiRateForProfile(vpId, s, e)
+
+        anchoredVwaps.value.push({ id: ++avwapIdCounter, anchorIndex: s, endIndex: null })
+      } else {
+        useNotificationStore().showNotification(
+          'warning',
+          'top-right',
+          'Heatmap + VP + AVWAP',
+          'Drag across more than one candle to select a range.'
+        )
+      }
+    }
+
+    heatmapDragging.value = false
+    heatmapStartIndex.value = null
+    heatmapEndIndex.value = null
+    vpDragging.value = false
+    vpStartIndex.value = null
+    vpEndIndex.value = null
+    comboRangeModeActive.value = false // one-shot, same as the AVWAP tool
     document.removeEventListener('mousemove', handleMove)
     document.removeEventListener('mouseup', handleUp)
   }
@@ -5875,6 +6544,265 @@ function analyzeRangeData(id: number) {
   }, 0)
 }
 
+// ─── Combo Range Download tool ─────────────────────────────────────────────
+//
+// Same click-drag box mechanic as Range Download, but the export additionally
+// includes every placed Liquidity Heatmap overlapping the selection — i.e.
+// the full "K" combo (Heatmap + FRVP + AVWAP) plus the raw candles, all in
+// one JSON. Kept as its own independent box array/state so it doesn't
+// collide with Range Download's own boxes.
+interface ComboDownloadBox {
+  id: number
+  startIndex: number
+  endIndex: number
+}
+
+const comboDownloadModeActive = ref(false)
+const comboDownloadBoxes = ref<ComboDownloadBox[]>([])
+let comboDownloadIdCounter = 0
+
+const comboDownloadDragging = ref(false)
+const comboDownloadStartIndex = ref<number | null>(null)
+const comboDownloadEndIndex = ref<number | null>(null)
+
+function toggleComboDownloadMode() {
+  comboDownloadModeActive.value = !comboDownloadModeActive.value
+}
+
+function removeComboDownloadBox(id: number) {
+  comboDownloadBoxes.value = comboDownloadBoxes.value.filter(b => b.id !== id)
+}
+
+function findComboDownloadBox(id: number): ComboDownloadBox | undefined {
+  return comboDownloadBoxes.value.find(b => b.id === id)
+}
+
+/** Same left-edge-drag resize as Range Download's box. */
+function startComboDownloadResizeLeft(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const box = findComboDownloadBox(id)
+  if (!box) return
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    const raw = clientXToCandleIndex(moveEvent.clientX)
+    if (raw === null) return
+    const snapped = Math.round(raw)
+    box.startIndex = Math.max(0, Math.min(snapped, box.endIndex - 1))
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/** Same right-edge-drag resize as Range Download's box. */
+function startComboDownloadResizeRight(id: number, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  const box = findComboDownloadBox(id)
+  if (!box) return
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    const raw = clientXToCandleIndex(moveEvent.clientX)
+    if (raw === null) return
+    const snapped = Math.max(0, Math.min(displayCandles.value.length - 1, Math.round(raw)))
+    box.endIndex = Math.max(box.startIndex + 1, snapped)
+  }
+  const handleUp = () => {
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/** Pixel geometry — identical framing to Range Download's box (high↔low of every candle in the span); shared helper, doesn't care which box array it's called for. */
+const renderedComboDownloadBoxes = computed(() => {
+  return comboDownloadBoxes.value
+    .map(b => {
+      const geo = computeRangeDownloadBoxGeometry(b.startIndex, b.endIndex)
+      return geo ? { ...geo, id: b.id, startIndex: b.startIndex, endIndex: b.endIndex } : null
+    })
+    .filter((b): b is NonNullable<typeof b> => b !== null)
+})
+
+/** Live preview of the box while the user is still dragging. */
+const draggingComboDownloadPreview = computed(() => {
+  if (!comboDownloadDragging.value || comboDownloadStartIndex.value === null || comboDownloadEndIndex.value === null) return null
+  const s = Math.min(comboDownloadStartIndex.value, comboDownloadEndIndex.value)
+  const e = Math.max(comboDownloadStartIndex.value, comboDownloadEndIndex.value)
+  if (e <= s) return null
+  return computeRangeDownloadBoxGeometry(s, e)
+})
+
+function handleCandleMouseDownForComboDownload(index: number, event: MouseEvent) {
+  if (!comboDownloadModeActive.value) return
+  event.preventDefault()
+  event.stopPropagation()
+
+  comboDownloadDragging.value = true
+  comboDownloadStartIndex.value = index
+  comboDownloadEndIndex.value = index
+
+  const handleMove = (moveEvent: MouseEvent) => {
+    if (!comboDownloadDragging.value || !chartContainer.value) return
+    const rect = chartContainer.value.querySelector('svg')?.getBoundingClientRect()
+    if (!rect) return
+    const x = moveEvent.clientX - rect.left
+    const rawIndex = Math.round((x - 10 - candleWidth.value / 2) / (candleWidth.value + candleGap))
+    comboDownloadEndIndex.value = Math.max(0, Math.min(displayCandles.value.length - 1, rawIndex))
+  }
+
+  const handleUp = () => {
+    if (comboDownloadStartIndex.value !== null && comboDownloadEndIndex.value !== null) {
+      const s = Math.min(comboDownloadStartIndex.value, comboDownloadEndIndex.value)
+      const e = Math.max(comboDownloadStartIndex.value, comboDownloadEndIndex.value)
+      if (e > s) {
+        comboDownloadBoxes.value.push({ id: ++comboDownloadIdCounter, startIndex: s, endIndex: e })
+      }
+    }
+    comboDownloadDragging.value = false
+    comboDownloadStartIndex.value = null
+    comboDownloadEndIndex.value = null
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+/**
+ * Builds the exportable payload for one Combo Download box. Same
+ * candles/AVWAP/FRVP shape as buildRangeExportPayload, PLUS every placed
+ * Liquidity Heatmap whose own [start,end] span overlaps this range (not
+ * clipped to the selection, same rule as FRVP — a heatmap only means
+ * something over the span it was actually simulated from). Heatmap cells
+ * are exported by real price bounds + candle index (candleIndex/priceLow/
+ * priceHigh on HeatmapCell), never pixel x/y — this is meant to be handed
+ * straight to an LLM, not re-rendered.
+ */
+function buildComboRangeExportPayload(id: number) {
+  const box = findComboDownloadBox(id)
+  if (!box) return null
+  const { startIndex, endIndex } = box
+
+  const candles = displayCandles.value.slice(startIndex, endIndex + 1).map((c, i) => {
+    const idx = startIndex + i
+    const oi = oiPerCandle.value[idx] ?? null
+    const ls = lsRatioPerCandle.value[idx] ?? null
+    return {
+      index: idx,
+      openTime: c.openTime,
+      openTimeIso: c.openTime ? new Date(c.openTime).toISOString() : null,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: c.volume,
+      ema200: c.candleData?.ema200 ?? null,
+      openInterest: oi,
+      longShortRatio: ls ? { longAccount: ls.longAccount, shortAccount: ls.shortAccount } : null,
+    }
+  })
+
+  const anchoredVwapsInRange = anchoredVwapSeries.value
+    .map(a => {
+      const points = a.points.filter(p => p.index >= startIndex && p.index <= endIndex)
+      if (points.length === 0) return null
+      return {
+        id: a.id,
+        anchorIndex: a.anchorIndex,
+        isOpenEnded: a.isOpenEnded,
+        points: points.map(p => ({
+          index: p.index,
+          openTimeIso: displayCandles.value[p.index]?.openTime
+            ? new Date(displayCandles.value[p.index].openTime!).toISOString()
+            : null,
+          mid: p.mid,
+          upper: p.upper,
+          lower: p.lower,
+        })),
+      }
+    })
+    .filter((a): a is NonNullable<typeof a> => a !== null)
+
+  const fixedRangeVolumeProfilesInRange = volumeProfiles.value
+    .filter(meta => meta.startIndex <= endIndex && meta.endIndex >= startIndex)
+    .map(meta => {
+      const profile = computeVolumeProfile(meta.startIndex, meta.endIndex)
+      if (!profile) return null
+      return {
+        ownRange: { startIndex: meta.startIndex, endIndex: meta.endIndex },
+        rangeHighPrice: profile.rangeHighPrice,
+        rangeLowPrice: profile.rangeLowPrice,
+        pocPrice: profile.pocPrice,
+        totalVolume: profile.totalVolume,
+        buckets: profile.rows.map(r => ({
+          priceLow: r.priceLow,
+          priceHigh: r.priceHigh,
+          buyVolume: r.buyVolume,
+          sellVolume: r.sellVolume,
+          totalVolume: r.buyVolume + r.sellVolume,
+          isPoc: Math.abs((r.priceLow + r.priceHigh) / 2 - profile.pocPrice) < 1e-9,
+        })),
+      }
+    })
+    .filter((p): p is NonNullable<typeof p> => p !== null)
+
+  const liquidityHeatmapsInRange = liquidityHeatmaps.value
+    .filter(meta => meta.startIndex <= endIndex && meta.endIndex >= startIndex)
+    .map(meta => {
+      const heatmap = computeLiquidityHeatmap(meta.startIndex, meta.endIndex)
+      if (!heatmap) return null
+      return {
+        ownRange: { startIndex: meta.startIndex, endIndex: meta.endIndex },
+        atr: heatmap.atr,
+        hottestPrice: heatmap.hottestPrice,
+        cells: heatmap.rows.map(r => ({
+          candleIndex: r.candleIndex,
+          priceLow: r.priceLow,
+          priceHigh: r.priceHigh,
+          intensity: r.intensity,
+        })),
+      }
+    })
+    .filter((h): h is NonNullable<typeof h> => h !== null)
+
+  return {
+    symbol: props.symbol.toUpperCase(),
+    interval: props.interval,
+    generatedAt: new Date().toISOString(),
+    range: {
+      startIndex,
+      endIndex,
+      candleCount: candles.length,
+    },
+    candles,
+    anchoredVwaps: anchoredVwapsInRange,
+    fixedRangeVolumeProfiles: fixedRangeVolumeProfilesInRange,
+    liquidityHeatmaps: liquidityHeatmapsInRange,
+  }
+}
+
+function downloadComboRangeData(id: number) {
+  const payload = buildComboRangeExportPayload(id)
+  if (!payload) return
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${props.symbol.toLowerCase()}_combo_range_${payload.range.startIndex}-${payload.range.endIndex}_${Date.now()}.json`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
 // ─── Range Investigate: fetch + run ─────────────────────────────────────────
 //
 // Unlike Range Download's "Analyze" (fully synchronous off state already in
@@ -6394,6 +7322,271 @@ function computeVolumeProfile(startIndex: number, endIndex: number) {
     sellPct,
   }
 }
+
+// ─── Liquidity Heatmap computation ─────────────────────────────────────────
+//
+// See the "Liquidity Heatmap tool" comment above (near handleCandleMouseDownForHeatmap)
+// for the interaction model. Modeled on how real liquidation heatmaps (e.g.
+// Coinglass/Binance) actually work: a genuine TIME (x) × PRICE (y) grid, not
+// a Volume Profile and not a single directional ribbon. Both a long-side
+// pool (below price — where longs' liquidations sit) and a short-side pool
+// (above price — shorts' liquidations) exist SIMULTANEOUSLY at all times,
+// and the grid evolves left→right as a running simulation:
+//
+//   1. Each candle's volume splits into a long-side contribution and a
+//      short-side contribution, weighted by that candle's actual Long/Short
+//      Ratio split (not just whichever side is dominant), boosted when Open
+//      Interest was building on it (fresh positions → fresh liquidation
+//      risk). Each side is spread across several sub-distances from that
+//      candle's OPEN out toward an ATR-scaled max distance, fading with
+//      distance (mimicking a spread of leverage tiers rather than one fixed
+//      stop distance), and ADDED into a running per-price-bucket pool that
+//      persists across candles.
+//   2. Before adding its own contribution, each candle's actual traded
+//      range [low, high] CLEARS (sweeps) whatever was already resting in
+//      the buckets it traded through — that liquidity has been grabbed and
+//      is gone until something rebuilds it.
+//   3. A snapshot of the pool is taken after every candle — that's the
+//      column you see at that candle's x position. So a bright cell can
+//      dim/disappear in a later column once price sweeps it, and a level
+//      several candles back that's never been revisited stays lit all the
+//      way across.
+//
+// Colors are normalized against the single hottest cell across the WHOLE
+// grid (every column, every bucket), so a pool built up 30 candles ago and
+// one built on the last candle are on the same brightness scale.
+const HEATMAP_MAX_DISTANCE_ATR = 2.5 // furthest a projected liquidation cluster can sit from its entry candle's open, in ATRs
+const HEATMAP_ATR_PERIOD = 14
+const HEATMAP_NUM_BUCKETS = 60 // vertical (price) resolution of the grid
+const HEATMAP_DECAY_STEPS = 12 // how many sub-distances a single candle's contribution is spread across, near→far
+const HEATMAP_MIN_RENDER_RATIO = 0.03 // skip cells below this fraction of the grid's hottest cell — keeps it from being a wall of near-invisible noise
+
+/** Simple ATR ending at `endIndex`, using up to `period` preceding candles (fewer if there isn't enough history yet). Sizes the projection distance so it scales with current volatility instead of a fixed price offset. */
+function computeAtrEndingAt(endIndex: number, period: number): number {
+  const from = Math.max(1, endIndex - period + 1)
+  let sum = 0
+  let count = 0
+  for (let i = from; i <= endIndex; i++) {
+    const c = displayCandles.value[i]
+    const prev = displayCandles.value[i - 1]
+    if (c?.high == null || c?.low == null || prev?.close == null) continue
+    const tr = Math.max(c.high - c.low, Math.abs(c.high - prev.close), Math.abs(c.low - prev.close))
+    sum += tr
+    count++
+  }
+  return count > 0 ? sum / count : 0
+}
+
+/** Low→high heat gradient: faint blue (cold) → yellow → red (hot). Opacity rises with intensity too, so a cold cell reads as "barely there" rather than just a different hue. */
+function heatColor(intensity: number): string {
+  const t = Math.max(0, Math.min(1, intensity))
+  if (t < 0.5) {
+    const k = t / 0.5
+    const r = Math.round(59 + (250 - 59) * k)
+    const g = Math.round(130 + (204 - 130) * k)
+    const b = Math.round(246 + (21 - 246) * k)
+    return `rgba(${r},${g},${b},${0.08 + t * 0.5})`
+  }
+  const k = (t - 0.5) / 0.5
+  const r = Math.round(250 + (239 - 250) * k)
+  const g = Math.round(204 + (68 - 204) * k)
+  const b = Math.round(21 + (68 - 21) * k)
+  return `rgba(${r},${g},${b},${0.33 + k * 0.55})`
+}
+
+interface HeatmapCell {
+  x: number
+  y: number
+  width: number
+  height: number
+  intensity: number
+  color: string
+  /** Which candle column this cell belongs to — kept alongside the pixel geometry so export/analysis code can group cells without inverting candleX(). */
+  candleIndex: number
+  /** Real price bounds of this bucket (bLow/bHigh from the pooling grid), kept alongside pixel y/height for the same reason. */
+  priceLow: number
+  priceHigh: number
+}
+
+/** Adds `weight` into every bucket [low, high] overlaps, split proportionally by overlap fraction — same mechanic computeVolumeProfile uses for volume-at-price. */
+function distributeIntoPool(pool: number[], low: number, high: number, weight: number, rangeLow: number, bucketHeight: number, numBuckets: number) {
+  if (weight <= 0 || high <= low) return
+  const startIdx = Math.max(0, Math.floor((low - rangeLow) / bucketHeight))
+  const endIdx = Math.min(numBuckets - 1, Math.floor((high - rangeLow) / bucketHeight))
+  for (let idx = startIdx; idx <= endIdx; idx++) {
+    const bLow = rangeLow + idx * bucketHeight
+    const bHigh = bLow + bucketHeight
+    const overlapLow = Math.max(low, bLow)
+    const overlapHigh = Math.min(high, bHigh)
+    if (overlapHigh > overlapLow) {
+      pool[idx] += weight * ((overlapHigh - overlapLow) / (high - low))
+    }
+  }
+}
+
+/** Zeroes every bucket a candle's actual [low, high] traded through — that resting liquidity has been swept/grabbed. */
+function clearSweptRange(pool: number[], low: number, high: number, rangeLow: number, bucketHeight: number, numBuckets: number) {
+  if (high <= low) return
+  const startIdx = Math.max(0, Math.floor((low - rangeLow) / bucketHeight))
+  const endIdx = Math.min(numBuckets - 1, Math.floor((high - rangeLow) / bucketHeight))
+  for (let idx = startIdx; idx <= endIdx; idx++) pool[idx] = 0
+}
+
+function computeLiquidityHeatmap(startIndex: number, endIndex: number) {
+  const atr = computeAtrEndingAt(endIndex, HEATMAP_ATR_PERIOD)
+  if (atr <= 0) return null
+  const maxDistance = atr * HEATMAP_MAX_DISTANCE_ATR
+
+  let candlesLow = Infinity
+  let candlesHigh = -Infinity
+  for (let i = startIndex; i <= endIndex; i++) {
+    const c = displayCandles.value[i]
+    if (c?.low == null || c?.high == null) continue
+    if (c.low < candlesLow) candlesLow = c.low
+    if (c.high > candlesHigh) candlesHigh = c.high
+  }
+  if (!isFinite(candlesLow) || !isFinite(candlesHigh)) return null
+
+  const rangeLow = candlesLow - maxDistance
+  const rangeHigh = candlesHigh + maxDistance
+  const bucketHeight = (rangeHigh - rangeLow) / HEATMAP_NUM_BUCKETS
+  if (bucketHeight <= 0) return null
+
+  // Normalize volume and OI-delta boosts against the biggest values actually
+  // seen in this range, so contribution size is relative to this
+  // symbol/window rather than a fixed absolute threshold.
+  let maxVolume = 0
+  let maxAbsOiDelta = 0
+  for (let i = startIndex; i <= endIndex; i++) {
+    const c = displayCandles.value[i]
+    if (c?.volume != null) maxVolume = Math.max(maxVolume, c.volume)
+    const now = oiPerCandle.value[i]
+    const prev = i > 0 ? oiPerCandle.value[i - 1] : null
+    if (now != null && prev != null) maxAbsOiDelta = Math.max(maxAbsOiDelta, Math.abs(now - prev))
+  }
+
+  const pool = new Array(HEATMAP_NUM_BUCKETS).fill(0)
+  const stepSize = maxDistance / HEATMAP_DECAY_STEPS
+  // One pool snapshot per candle column — the running simulation described above.
+  const columnSnapshots: number[][] = []
+
+  for (let i = startIndex; i <= endIndex; i++) {
+    const c = displayCandles.value[i]
+    if (c?.low == null || c?.high == null || c.open == null) {
+      columnSnapshots.push(pool.slice())
+      continue
+    }
+
+    // 1) SWEEP — this candle's own traded range consumes whatever resting
+    // liquidity earlier candles built up inside it.
+    clearSweptRange(pool, c.low, c.high, rangeLow, bucketHeight, HEATMAP_NUM_BUCKETS)
+
+    // 2) NEW CONTRIBUTION — split into long-side (below open) and
+    // short-side (above open) pools by this candle's actual L/S ratio, both
+    // always present simultaneously (just weighted differently), boosted
+    // when OI was building.
+    const vol = c.volume ?? 0
+    const volumeNorm = maxVolume > 0 ? vol / maxVolume : 0
+    const oiNow = oiPerCandle.value[i]
+    const oiPrev = i > 0 ? oiPerCandle.value[i - 1] : null
+    const oiDelta = oiNow != null && oiPrev != null ? oiNow - oiPrev : 0
+    const freshPositionBoost = maxAbsOiDelta > 0 ? Math.max(oiDelta, 0) / maxAbsOiDelta : 0
+    const ls = lsRatioPerCandle.value[i]
+    const longAccount = ls?.longAccount ?? 0.5
+    const shortAccount = ls?.shortAccount ?? 0.5
+
+    const longWeight = volumeNorm * longAccount * (1 + freshPositionBoost)
+    const shortWeight = volumeNorm * shortAccount * (1 + freshPositionBoost)
+
+    for (let s = 0; s < HEATMAP_DECAY_STEPS; s++) {
+      const decay = 1 - s / HEATMAP_DECAY_STEPS // 1.0 near the open, fading toward 0 at the ATR-scaled max distance
+      if (decay <= 0) break
+
+      const longLow = c.open - (s + 1) * stepSize
+      const longHigh = c.open - s * stepSize
+      distributeIntoPool(pool, longLow, longHigh, longWeight * decay, rangeLow, bucketHeight, HEATMAP_NUM_BUCKETS)
+
+      const shortLow = c.open + s * stepSize
+      const shortHigh = c.open + (s + 1) * stepSize
+      distributeIntoPool(pool, shortLow, shortHigh, shortWeight * decay, rangeLow, bucketHeight, HEATMAP_NUM_BUCKETS)
+    }
+
+    columnSnapshots.push(pool.slice())
+  }
+
+  // Global max across every column/bucket — puts the whole grid's colors on one comparable scale.
+  let globalMax = 0
+  for (const snap of columnSnapshots) {
+    for (const v of snap) if (v > globalMax) globalMax = v
+  }
+  if (globalMax <= 0) return null
+
+  const leftEdgeX = candleX(startIndex) - candleWidth.value / 2
+  const boxRightX = candleX(endIndex) + candleWidth.value / 2
+  const rows: HeatmapCell[] = []
+  let hottest: { price: number; intensity: number } | null = null
+
+  columnSnapshots.forEach((snap, colOffset) => {
+    const i = startIndex + colOffset
+    const x = candleX(i) - candleWidth.value / 2
+    snap.forEach((value, bucketIdx) => {
+      const intensity = value / globalMax
+      if (intensity < HEATMAP_MIN_RENDER_RATIO) return
+      const bLow = rangeLow + bucketIdx * bucketHeight
+      const bHigh = bLow + bucketHeight
+      const mid = (bLow + bHigh) / 2
+      if (!hottest || intensity > hottest.intensity) hottest = { price: mid, intensity }
+      rows.push({
+        x,
+        y: priceToY(bHigh),
+        width: candleWidth.value,
+        height: Math.max(priceToY(bLow) - priceToY(bHigh), 0.5),
+        intensity,
+        color: heatColor(intensity),
+        candleIndex: i,
+        priceLow: bLow,
+        priceHigh: bHigh,
+      })
+    })
+  })
+
+  if (rows.length === 0) return null
+
+  const hottestPrice = hottest ? hottest.price : (rangeHigh + rangeLow) / 2
+
+  return {
+    startIndex,
+    endIndex,
+    leftX: leftEdgeX,
+    rightX: boxRightX,
+    width: boxRightX - leftEdgeX,
+    rangeTop: priceToY(rangeHigh),
+    rangeBottom: priceToY(rangeLow),
+    rows,
+    hottestY: priceToY(hottestPrice),
+    hottestPrice,
+    atr,
+  }
+}
+
+/** All finalized (click-drag-completed) liquidity heatmaps, recomputed reactively — computeLiquidityHeatmap is a pure function of (startIndex, endIndex), so dragging an edge handle or panning/zooming the price scale reruns this automatically. */
+const renderedLiquidityHeatmaps = computed(() => {
+  return liquidityHeatmaps.value
+    .map(h => {
+      const heatmap = computeLiquidityHeatmap(h.startIndex, h.endIndex)
+      return heatmap ? { ...heatmap, id: h.id } : null
+    })
+    .filter((h): h is NonNullable<typeof h> => h !== null)
+})
+
+/** Live preview of the heatmap while the user is still dragging out the range. */
+const draggingLiquidityHeatmapPreview = computed(() => {
+  if (!heatmapDragging.value || heatmapStartIndex.value === null || heatmapEndIndex.value === null) return null
+  const s = Math.min(heatmapStartIndex.value, heatmapEndIndex.value)
+  const e = Math.max(heatmapStartIndex.value, heatmapEndIndex.value)
+  if (e <= s) return null
+  return computeLiquidityHeatmap(s, e)
+})
 
 /**
  * Builds the exportable payload for a single placed FRVP range - the raw
@@ -7363,6 +8556,11 @@ function formatNotional(n: number): string {
   return n.toFixed(0)
 }
 
+/** Signed USDT amount for the live PnL readout, e.g. "+12.34" / "-3.10". */
+function formatPnlAmount(n: number): string {
+  return `${n >= 0 ? '+' : ''}${n.toFixed(2)}`
+}
+
 // ─── displayCandles: replace last item with live data when available ──────────
 /**
  * Drop-in replacement for `props.candles` across all computeds below.
@@ -7499,6 +8697,34 @@ const previewRR = computed<number | null>(() => {
   const risk = Math.abs(pos.entryPrice - pos.slPrice)
   if (risk === 0) return null
   return reward / risk
+})
+
+/**
+ * Live unrealized PnL (in USDT) of the current preview position at whatever
+ * price the mouse is currently hovering on the chart — recomputes on every
+ * mousemove via `hoveredPrice`. Sized the same way as the order-book impact
+ * estimate above: notional = margin × maxLeverage, quantity = notional / entryPrice.
+ * Null whenever there's no preview position or the mouse isn't over the main pane.
+ */
+const previewLivePnl = computed<{ price: number; amount: number; roi: number; isLive: boolean } | null>(() => {
+  const pos = previewPosition.value
+  if (!pos || !pos.entryPrice) return null
+
+  // Prefer whatever price the mouse is hovering on the chart; fall back to
+  // the latest live candle close so the stat still shows something useful
+  // (and keeps ticking with the market) when the mouse isn't over the chart.
+  const isLive = hoveredPrice.value == null
+  const price = hoveredPrice.value ?? displayCandles.value[displayCandles.value.length - 1]?.close ?? null
+  if (price == null) return null
+
+  const leverage = maxLeverage.value > 0 ? maxLeverage.value : 1
+  const notional = pos.margin * leverage
+  const qty = notional / pos.entryPrice
+  const priceDiff = pos.side === 'LONG' ? price - pos.entryPrice : pos.entryPrice - price
+  const amount = qty * priceDiff
+  const roi = pos.margin > 0 ? (amount / pos.margin) * 100 : 0
+
+  return { price, amount, roi, isLive }
 })
 
 const placingOrder = ref(false)
@@ -8023,16 +9249,51 @@ function handlePredictDropdownOutsideClick(event: MouseEvent) {
 // ─── Keyboard shortcuts ─────────────────────────────────────────────────────
 //
 //   c = clear rectangles, AVWAPs (keeps any "All Zones" AVWAP), volume
-//       profiles, lines, range download boxes, range investigate boxes, and
-//       price ranges
+//       profiles, lines, range download boxes, range investigate boxes,
+//       price ranges, and liquidity heatmaps
 //   a = toggle Anchored VWAP pick mode
 //   p = toggle Volume Profile pick mode
-//   r = toggle Price Range pick mode
+//   r = toggle Rectangle draw mode
+//   t = toggle Price Range pick mode
 //   l = toggle Line placement mode
+//   e = scroll chart to the latest candle
+//   s = scroll chart to the start (earliest candle)
+//   h = toggle Liquidity Heatmap pick mode (click-drag a range)
+//   g = Auto Liquidity Heatmap — place a heatmap from the last BTC spike
+//       event (candleData.btcSpikeEvent) up to the currently selected candle
+//   b = Past-X AVWAP — places one open-ended AVWAP anchored at EACH of the
+//       "Past X Candles" (default 8, editable, saved to localStorage) just
+//       before the currently selected candle
+//   x = toggle both EMA overlays (base EMA + Cross TF EMA 1h/4h/1d) together;
+//       an off-screen line (e.g. 1H EMA200 far above/below visible price)
+//       shows a pinned ▲/▼ cue at the chart edge instead of just vanishing
+//   k = arm the Heatmap+VP+AVWAP combo tool — click-drag a candle range and
+//       on release it places a Liquidity Heatmap, a Fixed Range Volume
+//       Profile, and an open-ended AVWAP anchored at the start of that
+//       range, all in one shot. Disarms itself after the drag (one-shot).
 //
 // Ignored while typing in an input/textarea/select or a contenteditable
 // element (e.g. the line label field), and while any modifier key is held,
 // so browser/OS shortcuts (Ctrl+C, Cmd+R, etc.) are left alone.
+//
+// HOTKEY_LIST below drives the "Hotkeys" modal — keep it in sync with the
+// switch cases (and the summary above) whenever a shortcut is added/changed.
+const HOTKEY_LIST: { key: string; description: string }[] = [
+  { key: 'C', description: 'Clear rectangles, AVWAPs (keeps any "All Zones" AVWAP), volume profiles, lines, range download boxes, range investigate boxes, price ranges, and liquidity heatmaps' },
+  { key: 'A', description: 'Toggle Anchored VWAP pick mode' },
+  { key: 'P', description: 'Toggle Volume Profile pick mode' },
+  { key: 'R', description: 'Toggle Rectangle draw mode' },
+  { key: 'T', description: 'Toggle Price Range pick mode' },
+  { key: 'L', description: 'Toggle Line placement mode' },
+  { key: 'E', description: 'Scroll chart to the latest candle' },
+  { key: 'S', description: 'Scroll chart to the start (earliest candle)' },
+  { key: 'H', description: 'Toggle Liquidity Heatmap pick mode (click-drag a range)' },
+  { key: 'G', description: 'Auto Liquidity Heatmap — from the last BTC spike event up to the selected candle' },
+  { key: 'B', description: 'Past-X AVWAP — places one AVWAP anchored at EACH of the "Past X Candles" (default 8, editable) just before the selected candle' },
+  { key: 'X', description: 'Toggle EMA + Cross TF EMA overlays together — an off-screen line shows a ▲/▼ cue pinned to the chart edge' },
+  { key: 'K', description: 'Arm Heatmap+VP+AVWAP combo — click-drag a candle range to place a Liquidity Heatmap, an FRVP, and an AVWAP anchored at the start of that range, all at once' },
+]
+
 function handleHotkeys(event: KeyboardEvent) {
   if (event.ctrlKey || event.metaKey || event.altKey) return
 
@@ -8051,6 +9312,7 @@ function handleHotkeys(event: KeyboardEvent) {
       rangeDownloadBoxes.value = []
       rangeInvestigateBoxes.value = []
       priceRanges.value = []
+      liquidityHeatmaps.value = []
       break
     case 'a':
       toggleAvwapMode()
@@ -8059,10 +9321,34 @@ function handleHotkeys(event: KeyboardEvent) {
       toggleVpMode()
       break
     case 'r':
+      toggleRectMode()
+      break
+    case 't':
       togglePriceRangeMode()
       break
     case 'l':
       toggleLineMode()
+      break
+    case 'e':
+      scrollToRight()
+      break
+    case 's':
+      if (chartContainer.value) chartContainer.value.scrollLeft = 0
+      break
+    case 'h':
+      toggleHeatmapMode()
+      break
+    case 'g':
+      applyAutoLiquidityHeatmap()
+      break
+    case 'b':
+      applyPastPocAvwap()
+      break
+    case 'x':
+      toggleEmaOverlays()
+      break
+    case 'k':
+      toggleComboRangeMode()
       break
   }
 }
@@ -8343,6 +9629,18 @@ const emaPoints = computed(() => {
   return points.join(' ')
 })
 
+/** Chart-space x/y of the EMA line's most recent (rightmost) plotted point — used to test whether it's currently off the top/bottom of the visible chart (see `emaOffscreenCues`). */
+const baseEmaLastPoint = computed<{ x: number; y: number } | null>(() => {
+  let last: { x: number; y: number } | null = null
+  for (let i = 0; i < displayCandles.value.length; i++) {
+    const ema9 = displayCandles.value[i].candleData?.ema200 ?? baseEma200Fallback.value[i]
+    if (ema9 !== undefined && ema9 !== null) {
+      last = { x: candleX(i), y: priceToY(ema9) }
+    }
+  }
+  return last
+})
+
 /** MA200 line points — plotted orange when "Show MA" is enabled. */
 const ma200Points = computed(() => {
   const points: string[] = []
@@ -8399,7 +9697,7 @@ const CROSS_TF_EMA_LABELS: Record<CrossTfEmaTimeframe, string> = {
   '1d': '1D EMA200',
 }
 
-const showCrossTfEma = ref(true)
+const showCrossTfEma = ref(false)
 const crossTfEmaSeries = ref<Record<CrossTfEmaTimeframe, CrossTfEmaPoint[]>>({
   '1h': [],
   '4h': [],
@@ -8521,10 +9819,67 @@ const crossTfEmaLines = computed(() => {
       points: points.join(' '),
       labelX: lastX + candleWidth.value + 8,
       labelY: lastY + 4,
+      lastY,
       hasPoints: points.length > 0,
     }
   })
 })
+
+// ─── EMA off-screen cue ("X" hotkey shows both EMA overlays) ──────────────
+//
+// When an EMA line's current (rightmost) value sits above the top of the
+// visible chart or below the bottom, the line itself is scrolled out of
+// view and easy to miss. This renders a small pinned arrow + label at the
+// top/bottom edge of the chart, at the line's x-position, so it's still
+// obvious e.g. "1H EMA200" is way above price even though you can't see
+// the line itself.
+const EMA_OFFSCREEN_EDGE_MARGIN = 14
+
+interface EmaOffscreenCue {
+  key: string
+  label: string
+  color: string
+  direction: 'above' | 'below'
+  x: number
+  y: number
+}
+
+const emaOffscreenCues = computed<EmaOffscreenCue[]>(() => {
+  const cues: EmaOffscreenCue[] = []
+
+  if (showEma.value && baseEmaLastPoint.value) {
+    const { x, y } = baseEmaLastPoint.value
+    if (y < 0) {
+      cues.push({ key: 'ema-base', label: 'EMA', color: '#ffffff', direction: 'above', x, y: EMA_OFFSCREEN_EDGE_MARGIN })
+    } else if (y > svgHeight) {
+      cues.push({ key: 'ema-base', label: 'EMA', color: '#ffffff', direction: 'below', x, y: svgHeight - EMA_OFFSCREEN_EDGE_MARGIN })
+    }
+  }
+
+  if (showCrossTfEma.value) {
+    for (const line of crossTfEmaLines.value) {
+      if (!line.hasPoints) continue
+      if (line.lastY < 0) {
+        cues.push({ key: `cross-tf-${line.tf}`, label: line.label, color: line.color, direction: 'above', x: line.labelX, y: EMA_OFFSCREEN_EDGE_MARGIN })
+      } else if (line.lastY > svgHeight) {
+        cues.push({ key: `cross-tf-${line.tf}`, label: line.label, color: line.color, direction: 'below', x: line.labelX, y: svgHeight - EMA_OFFSCREEN_EDGE_MARGIN })
+      }
+    }
+  }
+
+  return cues
+})
+
+/**
+ * "X" hotkey: toggles both EMA overlays (the base "Show EMA" line and the
+ * "Cross TF EMA" 1h/4h/1d lines) together as a single switch — on if either
+ * was off, off if both were already on.
+ */
+function toggleEmaOverlays() {
+  const turnOn = !(showEma.value && showCrossTfEma.value)
+  showEma.value = turnOn
+  showCrossTfEma.value = turnOn
+}
 
 // ─── Multi-TF candle overlay (1H/4H/1D) ────────────────────────────────────
 // Renders higher-timeframe candles faded behind the base chart, using the
@@ -9159,7 +10514,7 @@ const dynamicPropertyBaseline = computed(() => {
 // as oiPerCandle below, just bucketed instead of forward-filled since
 // movement is sparse/event-based rather than a continuous series.
 // NOTE: adjust this to wherever your whale_tracker_api.py Flask app is served
-const WALLET_MOVEMENT_API_BASE = 'http://127.0.0.1:5000'
+const WALLET_MOVEMENT_API_BASE = import.meta.env.VITE_ORDER_MAKER_API
 
 const walletMovements = ref<WalletMovement[]>([])
 const movementLoading = ref(false)
@@ -10371,6 +11726,16 @@ const handleMouseMove = (event: MouseEvent) => {
   const v = crosshairGroup.value.querySelector('.crosshair-line.vertical') as SVGLineElement
   if (h) { h.setAttribute('y1', String(y)); h.setAttribute('y2', String(y)); h.style.display = 'block' }
   if (v) { v.setAttribute('x1', String(x)); v.setAttribute('x2', String(x)); v.style.display = 'block' }
+
+  // Only meaningful within the main price pane (below it is the volume/OI/etc.
+  // sub-panel stack, where yToPrice would extrapolate nonsense).
+  if (y >= 0 && y <= svgHeight) {
+    hoveredPrice.value = yToPrice(y)
+    hoveredMouseY.value = y
+  } else {
+    hoveredPrice.value = null
+    hoveredMouseY.value = null
+  }
 }
 
 const handleMouseLeave = () => {
@@ -10379,11 +11744,14 @@ const handleMouseLeave = () => {
   const v = crosshairGroup.value.querySelector('.crosshair-line.vertical') as SVGLineElement
   if (h) h.style.display = 'none'
   if (v) v.style.display = 'none'
+  hoveredPrice.value = null
+  hoveredMouseY.value = null
 }
 
 const startChartDrag = (event: MouseEvent) => {
   if ((event.target as SVGElement).classList?.contains('price-label')) return
   if (vpModeActive.value) return // let handleCandleMouseDownForVp own dragging while the VP tool is armed
+  if (heatmapModeActive.value) return // same, for handleCandleMouseDownForHeatmap
   isDraggingChart = true
   const startX = event.clientX
   const startY = event.clientY
@@ -10965,6 +12333,32 @@ const predictionTooltip = computed(() => {
 .preview-stat.rr span:last-child { color: #64b5f6; font-weight: bold; }
 .preview-stat.rr.rr-bad span:last-child { color: #ef5350; }
 
+/* Live PnL stat — ticks with the live price by default, and re-labels
+   itself when hovering the chart so it reads as a "what if" preview. */
+.preview-stat.pnl span:last-child { font-weight: bold; color: #999; }
+.preview-stat.pnl.pnl-positive span:last-child { color: #26a69a; }
+.preview-stat.pnl.pnl-negative span:last-child { color: #ef5350; }
+.preview-stat.pnl.pnl-live label { color: #666; }
+
+/* Floating PnL tooltip that follows the crosshair over the chart while a
+   Preview Buy/Sell is active. */
+.preview-pnl-tooltip { pointer-events: none; }
+.preview-pnl-tooltip-bg {
+  fill: #0d0d0d;
+  stroke: #444;
+  stroke-width: 1;
+}
+.preview-pnl-tooltip-bg.pnl-positive { stroke: #26a69a; }
+.preview-pnl-tooltip-bg.pnl-negative { stroke: #ef5350; }
+.preview-pnl-tooltip-text {
+  font-size: 11px;
+  font-family: monospace;
+  font-weight: 700;
+  fill: #ccc;
+}
+.preview-pnl-tooltip-text.pnl-positive { fill: #26a69a; }
+.preview-pnl-tooltip-text.pnl-negative { fill: #ef5350; }
+
 .preview-btn.place-order {
   background: rgba(100,181,246,0.2);
   border-color: #64b5f6;
@@ -11191,6 +12585,24 @@ const predictionTooltip = computed(() => {
 }
 .range-dl-analyze-btn:hover { fill: #93c5fd; }
 
+/* ── Combo Range Download tool ────────────────────────────────────────── */
+/* Reuses .range-dl-* for edges/close/download button styling, tinted purple
+   (matching the "K" combo tool's identity) so it reads as distinct from the
+   plain Range Download box on screen. */
+.combo-download-boxes { pointer-events: none; }
+
+.combo-dl-rect {
+  fill: rgba(171,71,188,0.07);
+  stroke: rgba(206,147,216,0.6);
+}
+
+.combo-dl-summary-label { fill: rgba(206,147,216,0.75); }
+
+.combo-dl-download-btn {
+  fill: #ce93d8;
+}
+.combo-dl-download-btn:hover { fill: #e1bee7; }
+
 /* ── Range Investigate tool ───────────────────────────────────────────── */
 .candle.range-investigate-target {
   cursor: crosshair;
@@ -11402,6 +12814,65 @@ const predictionTooltip = computed(() => {
 .vp-stats-buy { fill: #26a69a; }
 .vp-stats-sell { fill: #ef5350; }
 .vp-stats-sep { fill: rgba(255,255,255,0.4); }
+
+/* ── Liquidity Heatmap ───────────────────────────────────────────────── */
+.heatmap-row {
+  stroke: none;
+  pointer-events: none;
+}
+.heatmap-preview-row {
+  opacity: 0.6;
+}
+
+.heatmap-range-rect {
+  fill: none;
+  stroke: rgba(255,255,255,0.25);
+  stroke-width: 1;
+  stroke-dasharray: 4,3;
+  pointer-events: none;
+}
+.heatmap-range-rect-preview {
+  stroke: rgba(255,255,255,0.4);
+}
+
+.heatmap-edge-handle {
+  stroke: transparent;
+  stroke-width: 10;
+  cursor: ew-resize;
+  pointer-events: stroke;
+}
+
+.heatmap-hottest-line {
+  stroke: #ffffff;
+  stroke-width: 1.5;
+  stroke-dasharray: 6,3;
+  opacity: 0.9;
+  pointer-events: none;
+}
+.heatmap-hottest-label {
+  fill: #ffffff;
+  font-size: 10px;
+  font-weight: bold;
+  font-family: monospace;
+  pointer-events: none;
+}
+
+.heatmap-summary-label {
+  fill: rgba(255,255,255,0.6);
+  font-size: 10px;
+  font-family: monospace;
+  pointer-events: none;
+}
+
+.heatmap-close-btn {
+  fill: rgba(255,255,255,0.5);
+  font-size: 10px;
+  font-family: monospace;
+  cursor: pointer;
+}
+.heatmap-close-btn:hover {
+  fill: #ef5350;
+}
 
 /* ── FRVP confluence analysis modal ──────────────────────────────────────
    NOTE: DialogComponent renders on a white background, so all text/border
@@ -12654,6 +14125,9 @@ const predictionTooltip = computed(() => {
 
 .cross-tf-ema-line { opacity: 0.85; pointer-events: none; }
 .cross-tf-ema-label { font-size: 10px; font-family: monospace; font-weight: 600; pointer-events: none; }
+
+.ema-offscreen-badge-bg { opacity: 0.9; pointer-events: none; }
+.ema-offscreen-badge-text { font-size: 10px; font-family: monospace; font-weight: 700; fill: #0d0d0d; pointer-events: none; }
 
 .multi-tf-candles { }
 .multi-tf-candle { opacity: 0.4; }
