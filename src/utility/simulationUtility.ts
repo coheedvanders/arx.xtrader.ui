@@ -9,6 +9,7 @@ import { totalFlowForCandle, getDominantFlowMovement } from '@/utility/flowMovem
 import { identifyMarketState } from '@/utility/marketState'
 import { GetConfluenceState } from "@/utility/confluenceState.ts"
 import { support } from "jszip";
+import { analyzeFrvps } from "./analyzeFrvps.ts";
 
 type TrendDirection = "uptrend" | "downtrend";
 export class SimulationUtility {
@@ -556,7 +557,13 @@ export class SimulationUtility {
                             var lastCandleInZone = movingCandles.filter(c => c.priceZone == priceZones[priceZones.length - 2] && c.candleData && c.candleData.zoneInhabitantCount == 24)[0];
                             if(lastCandleInZone){
                                 var pastPriceZoneConditionMet = lastCandleInZone.candleData?.conditionMet;
-                                if(pastPriceZoneConditionMet && !pastPriceZoneConditionMet.includes("PREV") && pastPriceZoneConditionMet != "SHORT"){
+                                if(pastPriceZoneConditionMet && !pastPriceZoneConditionMet.includes("PREV") 
+                                    && pastPriceZoneConditionMet != "SHORT" 
+                                    && pastPriceZoneConditionMet != "SHORT_POC" 
+                                    && pastPriceZoneConditionMet != "RECENT_SHORT_POC" 
+                                    && pastPriceZoneConditionMet != "LONG_POC"
+                                    && pastPriceZoneConditionMet != "RECENT_LONG_POC"
+                                ){
                                     candle.candleData.conditionMet = "PREV_" + pastPriceZoneConditionMet.replace("PREV_","");
                                 }
                             }
@@ -574,7 +581,7 @@ export class SimulationUtility {
                         //     candle.slPrice = prevCandle.close_atr_adjusted
                         // }
                         
-                        //candle.candleData.conditionMet = ""
+                        candle.candleData.conditionMet = ""
 
                         // var pastCrossingCandles = movingCandles.slice(-5)
                         // var recentBtcCrossings = pastCrossingCandles.filter(c => c.candleData && c.candleData.crossedBtcSpikeAvwap);
@@ -708,45 +715,52 @@ export class SimulationUtility {
 
                         //ENTRY
 
-                        if(candle.candleData.conditionMet){
+                        
+                        //if(candle.candleData.conditionMet){
+                            var quickFrvp = candleAnalyzer.getVolumeProfile(movingCandles.filter(c => c.openTime >= prevCandle.openTime));
+
                             var past3CandlesIsBull = movingCandles.slice(-4).filter(c => c.openTime < candle.openTime && c.candleData?.side == "bull");
                             var currentCandleIsBear = candle.candleData.side = "bear";
                             var candlesAboveHighestBand = movingCandles.slice(-4).filter(c => c.close > highestAvwapBand).length == 4;
                             var candlesAboveUpperPriceZone = movingCandles.slice(-4).filter(c => c.priceZone && c.close > c.priceZone.upper).length == 4;
-
+                            var candleBreakFrvpFromAbove = candle.open > quickFrvp?.pocPrice! && candle.close < quickFrvp?.pocPrice!
+                            var isComingFromUptrend = this.confirmTrend("uptrend",movingCandles.slice(-10));
+                            
                             if(past3CandlesIsBull
                                 && currentCandleIsBear
                                 && candlesAboveHighestBand
-                                && candlesAboveUpperPriceZone
+                                //&& candlesAboveUpperPriceZone
+                                //&& candleBreakFrvpFromAbove
+                                && isComingFromUptrend
                             ){
-                                candle.candleData.extraInfo = "SHORT_POC"
+                                candle.candleData.conditionMet = "SHORT_SCALP"
                             }
 
-                            var hasRecentShortPOC = movingCandles.slice(-13).filter(c => c.candleData && c.candleData.extraInfo == "SHORT_POC").length > 0;
-                            if(hasRecentShortPOC){
-                                candle.candleData.conditionMet = "RECENT_SHORT_POC"
-                            }
+                            // var hasRecentShortPOC = movingCandles.slice(-8).filter(c => c.candleData && c.candleData.extraInfo == "SHORT_POC").length > 0;
+                            // if(hasRecentShortPOC){
+                            //     candle.candleData.conditionMet = "RECENT_SHORT_POC"
+                            // }
 
 
-                            var past3CandlesIsBear = movingCandles.slice(-4).filter(c => c.openTime < candle.openTime && c.candleData?.side == "bear");
-                            var currentCandleIsBull = candle.candleData.side = "bull";
-                            var candlesBelowLowestBand = movingCandles.slice(-4).filter(c => c.close < lowestAvwapBand).length == 4;
-                            var candlesBelowLowerPriceZone = movingCandles.slice(-4).filter(c => c.priceZone && c.close < c.priceZone.lower).length == 4;
+                            // var past3CandlesIsBear = movingCandles.slice(-4).filter(c => c.openTime < candle.openTime && c.candleData?.side == "bear");
+                            // var currentCandleIsBull = candle.candleData.side = "bull";
+                            // var candlesBelowLowestBand = movingCandles.slice(-4).filter(c => c.close < lowestAvwapBand).length == 4;
+                            // var candlesBelowLowerPriceZone = movingCandles.slice(-4).filter(c => c.priceZone && c.close < c.priceZone.lower).length == 4;
 
-                            if(
-                                past3CandlesIsBear
-                                && currentCandleIsBull
-                                && candlesBelowLowestBand
-                                && candlesBelowLowerPriceZone
-                            ){
-                                candle.candleData.extraInfo = "LONG_POC"
-                            }
+                            // if(
+                            //     past3CandlesIsBear
+                            //     && currentCandleIsBull
+                            //     && candlesBelowLowestBand
+                            //     && candlesBelowLowerPriceZone
+                            // ){
+                            //     candle.candleData.extraInfo = "LONG_POC"
+                            // }
 
-                            var hasRecentLongPOC = movingCandles.slice(-13).filter(c => c.candleData && c.candleData.extraInfo == "LONG_POC").length > 0;
+                            var hasRecentLongPOC = movingCandles.slice(-8).filter(c => c.candleData && c.candleData.extraInfo == "LONG_POC").length > 0;
                             if(hasRecentLongPOC){
                                 candle.candleData.conditionMet = "RECENT_LONG_POC"
                             }
-                        }
+                        //}
 
                         //end
                     }

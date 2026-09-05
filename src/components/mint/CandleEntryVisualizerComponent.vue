@@ -452,6 +452,14 @@
         Clear Combo Boxes ({{ comboDownloadBoxes.length }})
       </button>
 
+      <button
+        v-if="comboAnalysisResult"
+        class="tool-btn"
+        @click="clearComboAnalysis"
+      >
+        Clear Combo Analysis Overlay
+      </button>
+
       <!-- ── Range Investigate tool ──────────────────────────────────────── -->
       <button
         class="tool-btn"
@@ -2371,13 +2379,23 @@
             </text>
 
             <text
-              :x="(box.leftX + box.rightX) / 2"
+              :x="(box.leftX + box.rightX) / 2 - 6"
               :y="box.rangeTop - 20"
               class="range-dl-download-btn combo-dl-download-btn"
-              text-anchor="middle"
+              text-anchor="end"
               @click="downloadComboRangeData(box.id)"
             >
-              ⬇ download combo range
+              ⬇ download combo
+            </text>
+
+            <text
+              :x="(box.leftX + box.rightX) / 2 + 6"
+              :y="box.rangeTop - 20"
+              class="range-dl-analyze-btn combo-dl-analyze-btn"
+              text-anchor="start"
+              @click="analyzeComboRangeAction(box.id)"
+            >
+              ▶ Analyze Combo
             </text>
           </g>
 
@@ -2960,6 +2978,104 @@
             </div>
           </foreignObject>
         </g>
+
+        <!-- Combo Range Analysis overlay — deterministic annotations from
+             analyzeComboRange(), drawn directly on the chart at real price
+             levels (see comboAnnotationsToRender). Rendered last so it sits
+             on top of candles/heatmap/AVWAP/FRVP/boxes. -->
+        <g v-if="comboAnalysisResult" class="combo-analysis-overlay">
+          <g
+            v-for="(ann, i) in comboAnnotationsToRender"
+            :key="`combo-ann-${i}-${ann.type}-${ann.price}`"
+            class="combo-annotation"
+            :class="[
+              `combo-ann-${ann.type.toLowerCase()}`,
+              { 'combo-ann-confluence': ann.confluence, 'combo-ann-untouched': ann.untouched === true },
+            ]"
+          >
+            <!-- ZONE: horizontal band between priceLow/priceHigh -->
+            <template v-if="ann.visual === 'ZONE' && ann.priceLow != null && ann.priceHigh != null">
+              <rect
+                :x="0"
+                :y="Math.min(priceToY(ann.priceHigh), priceToY(ann.priceLow))"
+                :width="svgWidth"
+                :height="Math.max(Math.abs(priceToY(ann.priceLow) - priceToY(ann.priceHigh)), 2)"
+                class="combo-ann-zone-rect"
+              />
+              <text
+                :x="svgWidth - 6"
+                :y="Math.min(priceToY(ann.priceHigh), priceToY(ann.priceLow)) - 4"
+                text-anchor="end"
+                class="combo-ann-label"
+              >
+                {{ ann.label }}<tspan v-if="ann.strength != null" class="combo-ann-strength"> · {{ Math.round(ann.strength) }}</tspan>
+              </text>
+            </template>
+
+            <!-- LINE: single full-width horizontal level -->
+            <template v-else-if="ann.visual === 'LINE'">
+              <line
+                :x1="0" :x2="svgWidth"
+                :y1="priceToY(ann.price)" :y2="priceToY(ann.price)"
+                class="combo-ann-line"
+              />
+              <text
+                :x="svgWidth - 6"
+                :y="priceToY(ann.price) - 4"
+                text-anchor="end"
+                class="combo-ann-label"
+              >
+                {{ ann.label }}
+              </text>
+            </template>
+
+            <!-- BADGE: informational marker (e.g. EMA200 relation) without a duplicate line -->
+            <template v-else-if="ann.visual === 'BADGE'">
+              <text
+                :x="svgWidth - 6"
+                :y="priceToY(ann.price) - 4"
+                text-anchor="end"
+                class="combo-ann-label combo-ann-badge-label"
+              >
+                {{ ann.label }}
+              </text>
+            </template>
+
+            <!-- MARKER: current price dot + label -->
+            <template v-else-if="ann.visual === 'MARKER'">
+              <line
+                :x1="0" :x2="svgWidth"
+                :y1="priceToY(ann.price)" :y2="priceToY(ann.price)"
+                class="combo-ann-current-price-line"
+              />
+              <circle
+                :cx="svgWidth - 40"
+                :cy="priceToY(ann.price)"
+                r="4"
+                class="combo-ann-current-price-dot"
+              />
+              <text
+                :x="svgWidth - 50"
+                :y="priceToY(ann.price) - 6"
+                text-anchor="end"
+                class="combo-ann-label combo-ann-current-price-label"
+              >
+                {{ ann.label }}
+              </text>
+            </template>
+
+            <!-- confluence / untouched badges, shown under the label for zones -->
+            <text
+              v-if="(ann.visual === 'ZONE' || ann.visual === 'LINE') && ann.confluence"
+              :x="svgWidth - 6"
+              :y="(ann.priceLow != null && ann.priceHigh != null ? Math.min(priceToY(ann.priceHigh), priceToY(ann.priceLow)) : priceToY(ann.price)) + 12"
+              text-anchor="end"
+              class="combo-ann-badge combo-ann-badge-confluence"
+            >
+              CONFLUENCE{{ ann.confluenceReason ? ` · ${ann.confluenceReason}` : '' }}
+            </text>
+          </g>
+        </g>
       </svg>
 
       <!-- BTC overlay: same component re-rendered on top, structure-only comparison -->
@@ -3477,6 +3593,186 @@
 
       <div v-else class="range-analysis-empty">
         Draw a Range Download box on the chart, then click "▶ Analyze".
+      </div>
+    </div>
+  </DialogComponent>
+
+  <!-- Combo Range Analysis dialog — supplementary to the on-chart overlay -->
+  <DialogComponent v-model="showComboAnalysis" :width="'900px'">
+    <DialogHeaderComponent>
+      {{ props.symbol.toUpperCase() }} · Combo Range Analysis
+    </DialogHeaderComponent>
+
+    <div style="max-height:90vh;overflow:auto;">
+      <div v-if="comboAnalysisLoading" class="range-analysis-empty">
+        Analyzing combo range…
+      </div>
+
+      <div v-else-if="comboAnalysisError" class="range-analysis-empty range-analysis-error">
+        {{ comboAnalysisError }}
+      </div>
+
+      <div v-else-if="comboAnalysisResult" class="range-analysis combo-analysis">
+        <div class="range-analysis-meta">
+          <span>Symbol: {{ comboAnalysisResult.symbol }}</span>
+          <span>Interval: {{ comboAnalysisResult.interval }}</span>
+          <span>Price: {{ comboAnalysisResult.currentPrice.toFixed(4) }}</span>
+          <span>Structure: {{ comboAnalysisResult.marketStructure }}</span>
+        </div>
+
+        <div class="range-bias-card" :class="`range-bias-${comboAnalysisResult.bias.toLowerCase()}`">
+          <div class="range-bias-label">{{ comboAnalysisResult.bias }}</div>
+          <div class="range-bias-confidence">{{ comboAnalysisResult.score.confidence }} / 100 · {{ comboAnalysisResult.convictionLabel }}</div>
+          <div class="range-bias-caveat">Deterministic read from candles + AVWAP + FRVP + Liquidity Heatmap — not a guaranteed outcome</div>
+        </div>
+
+        <!-- Bullish vs bearish pressure -->
+        <div class="investigate-prediction-bars combo-pressure-bars">
+          <div class="investigate-prediction-bar-row">
+            <span class="investigate-prediction-bar-label">Bullish</span>
+            <div class="investigate-prediction-bar-track">
+              <div class="investigate-prediction-bar-fill combo-bar-bullish" :style="{ width: comboAnalysisResult.score.bullishPressure + '%' }" />
+            </div>
+            <span class="investigate-prediction-bar-value">{{ comboAnalysisResult.score.bullishPressure }}</span>
+          </div>
+          <div class="investigate-prediction-bar-row">
+            <span class="investigate-prediction-bar-label">Bearish</span>
+            <div class="investigate-prediction-bar-track">
+              <div class="investigate-prediction-bar-fill combo-bar-bearish" :style="{ width: comboAnalysisResult.score.bearishPressure + '%' }" />
+            </div>
+            <span class="investigate-prediction-bar-value">{{ comboAnalysisResult.score.bearishPressure }}</span>
+          </div>
+        </div>
+
+        <!-- Component confluence breakdown -->
+        <div class="range-section">
+          <h4>Confluence Breakdown</h4>
+          <div class="investigate-prediction-bars combo-score-bars">
+            <div
+              v-for="comp in [
+                { label: 'Trend', value: comboAnalysisResult.score.trend },
+                { label: 'Price Action', value: comboAnalysisResult.score.priceAction },
+                { label: 'Value (POC)', value: comboAnalysisResult.score.value },
+                { label: 'AVWAP', value: comboAnalysisResult.score.avwap },
+                { label: 'Liquidity', value: comboAnalysisResult.score.liquidity },
+                { label: 'Positioning', value: comboAnalysisResult.score.positioning },
+              ]"
+              :key="comp.label"
+              class="investigate-prediction-bar-row"
+            >
+              <span class="investigate-prediction-bar-label">{{ comp.label }}</span>
+              <div class="investigate-prediction-bar-track combo-score-track">
+                <div
+                  class="investigate-prediction-bar-fill"
+                  :class="comp.value >= 0 ? 'combo-bar-bullish' : 'combo-bar-bearish'"
+                  :style="{ width: Math.min(100, Math.abs(comp.value)) + '%', marginLeft: comp.value >= 0 ? '50%' : (50 - Math.min(50, Math.abs(comp.value))) + '%' }"
+                />
+              </div>
+              <span class="investigate-prediction-bar-value">{{ comp.value }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Decision zone / reclaim / invalidation / target -->
+        <div class="range-trade-card combo-decision-card">
+          <div class="range-trade-row" v-if="comboAnalysisResult.decisionZone">
+            <span class="range-trade-label">Decision Zone</span>
+            <span>{{ comboAnalysisResult.decisionZone.low.toFixed(4) }} – {{ comboAnalysisResult.decisionZone.high.toFixed(4) }}</span>
+          </div>
+          <div class="range-trade-row" v-if="comboAnalysisResult.reclaimLevel != null">
+            <span class="range-trade-label">↑ Reclaim</span>
+            <span>{{ comboAnalysisResult.reclaimLevel.toFixed(4) }}</span>
+          </div>
+          <div class="range-trade-row" v-if="comboAnalysisResult.invalidationLevel != null">
+            <span class="range-trade-label">↓ Invalidation</span>
+            <span>{{ comboAnalysisResult.invalidationLevel.toFixed(4) }}</span>
+          </div>
+          <div class="range-trade-row" v-if="comboAnalysisResult.targetZone">
+            <span class="range-trade-label">→ Target</span>
+            <span>{{ comboAnalysisResult.targetZone.low.toFixed(4) }} – {{ comboAnalysisResult.targetZone.high.toFixed(4) }}</span>
+          </div>
+        </div>
+
+        <!-- Liquidity zones -->
+        <div class="range-section" v-if="comboAnalysisResult.liquidityZones.length">
+          <h4>Liquidity Zones</h4>
+          <div class="combo-liquidity-grid">
+            <div
+              v-for="(z, i) in [...comboAnalysisResult.liquidityZones].sort((a, b) => b.strengthScore - a.strengthScore)"
+              :key="`combo-liq-${i}`"
+              class="combo-liquidity-card"
+              :class="[`combo-liq-side-${z.side.toLowerCase()}`, { 'combo-liq-confluence': z.confluence }]"
+            >
+              <div class="combo-liquidity-card-header">
+                <span>{{ z.priceLow.toFixed(4) }} – {{ z.priceHigh.toFixed(4) }}</span>
+                <span class="combo-liquidity-side-tag">{{ z.side }}</span>
+              </div>
+              <div class="investigate-prediction-bar-track">
+                <div
+                  class="investigate-prediction-bar-fill"
+                  :class="z.strengthScore >= 65 ? 'combo-bar-strong' : z.strengthScore >= 35 ? 'combo-bar-medium' : 'combo-bar-weak'"
+                  :style="{ width: z.strengthScore + '%' }"
+                />
+              </div>
+              <div class="combo-liquidity-card-tags">
+                <span class="combo-tag">{{ z.strengthScore }} strength</span>
+                <span class="combo-tag" v-if="z.untouched">UNTOUCHED</span>
+                <span class="combo-tag" v-else>TESTED</span>
+                <span class="combo-tag combo-tag-confluence" v-if="z.confluence">CONFLUENCE · {{ z.confluenceReasons.join(' + ') }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Positioning -->
+        <div class="range-section">
+          <h4>Positioning (OI / Long-Short)</h4>
+          <div class="investigate-prediction-bars">
+            <div class="investigate-prediction-bar-row" v-if="comboAnalysisResult.positioning.longPercent != null">
+              <span class="investigate-prediction-bar-label">Long</span>
+              <div class="investigate-prediction-bar-track">
+                <div class="investigate-prediction-bar-fill combo-bar-bullish" :style="{ width: comboAnalysisResult.positioning.longPercent + '%' }" />
+              </div>
+              <span class="investigate-prediction-bar-value">{{ comboAnalysisResult.positioning.longPercent.toFixed(1) }}%</span>
+            </div>
+            <div class="investigate-prediction-bar-row" v-if="comboAnalysisResult.positioning.shortPercent != null">
+              <span class="investigate-prediction-bar-label">Short</span>
+              <div class="investigate-prediction-bar-track">
+                <div class="investigate-prediction-bar-fill combo-bar-bearish" :style="{ width: comboAnalysisResult.positioning.shortPercent + '%' }" />
+              </div>
+              <span class="investigate-prediction-bar-value">{{ comboAnalysisResult.positioning.shortPercent.toFixed(1) }}%</span>
+            </div>
+          </div>
+          <p class="combo-positioning-classification">
+            {{ comboAnalysisResult.positioning.classification }}
+            <span class="combo-tag combo-tag-crowding" :class="`combo-crowding-${comboAnalysisResult.positioning.crowding.toLowerCase()}`">
+              {{ comboAnalysisResult.positioning.crowding }} CROWDING
+            </span>
+          </p>
+        </div>
+
+        <div v-if="comboAnalysisResult.supportingSignals.length" class="range-section">
+          <h4>Supporting Signals</h4>
+          <ul class="range-warning-list">
+            <li v-for="(s, i) in comboAnalysisResult.supportingSignals" :key="`combo-support-${i}`">✓ {{ s }}</li>
+          </ul>
+        </div>
+
+        <div v-if="comboAnalysisResult.contradictingSignals.length" class="range-section">
+          <h4>Contradicting Signals</h4>
+          <ul class="range-warning-list">
+            <li v-for="(s, i) in comboAnalysisResult.contradictingSignals" :key="`combo-contra-${i}`">⚠ {{ s }}</li>
+          </ul>
+        </div>
+
+        <div class="range-section">
+          <h4>Trading Read</h4>
+          <p class="range-thesis">{{ comboAnalysisResult.tradingRead }}</p>
+        </div>
+      </div>
+
+      <div v-else class="range-analysis-empty">
+        Draw a Combo Download box on the chart, then click "▶ Analyze Combo".
       </div>
     </div>
   </DialogComponent>
@@ -6802,6 +7098,673 @@ function downloadComboRangeData(id: number) {
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
 }
+
+// ─── Combo Range Analyze (deterministic, no AI/API) ────────────────────────
+//
+// Runs entirely over the same payload shape buildComboRangeExportPayload()
+// produces — no network calls, no randomness, no future-candle lookahead.
+// The result is BOTH a structured dialog summary AND a set of chartAnnotations
+// that get drawn directly onto the price chart (see combo-analysis-overlay
+// in the template) — the numbers are meaningless on their own, so every
+// conclusion below carries a matching annotation telling the UI exactly what
+// to plot and where.
+
+type ComboAnnotationType =
+  | 'POC' | 'EMA200'
+  | 'AVWAP_MID' | 'AVWAP_UPPER' | 'AVWAP_LOWER' | 'AVWAP_CLUSTER'
+  | 'LIQUIDITY' | 'SUPPORT' | 'RESISTANCE'
+  | 'RECLAIM' | 'INVALIDATION' | 'TARGET'
+  | 'CURRENT_PRICE' | 'SWEEP_RISK' | 'DECISION_ZONE'
+
+interface ComboChartAnnotation {
+  type: ComboAnnotationType
+  price: number
+  priceLow?: number
+  priceHigh?: number
+  label: string
+  description?: string
+  strength?: number
+  confluence?: boolean
+  confluenceReason?: string
+  untouched?: boolean
+  side?: 'ABOVE' | 'BELOW' | 'CURRENT'
+  /** Higher renders on top and survives label-decluttering first. */
+  priority: number
+  visual: 'LINE' | 'ZONE' | 'MARKER' | 'ARROW' | 'BADGE'
+}
+
+interface ComboLiquidityZone {
+  priceLow: number
+  priceHigh: number
+  peakIntensity: number
+  averageIntensity: number
+  /** 0–100, blends peak/average intensity with how many candles it persisted across. */
+  strengthScore: number
+  /** Fraction (0–1) of the combo range's own candles that contributed to this zone. */
+  persistence: number
+  distancePercent: number
+  side: 'ABOVE' | 'BELOW' | 'CURRENT'
+  untouched: boolean
+  confluence: boolean
+  confluenceReasons: string[]
+  label: string
+}
+
+interface ComboAvwapLevel {
+  avwapId: number
+  type: 'MID' | 'UPPER' | 'LOWER'
+  price: number
+  role: 'SUPPORT' | 'RESISTANCE' | 'VALUE' | 'NEUTRAL'
+}
+
+interface ComboAnalysisResult {
+  symbol: string
+  interval: string
+  currentPrice: number
+  pocPrice: number | null
+  ema200: number | null
+  priceToPocPercent: number | null
+  priceToEma200Percent: number | null
+  marketStructure: 'BULLISH' | 'BEARISH' | 'NEUTRAL'
+
+  priceAction: {
+    direction: 'UP' | 'DOWN' | 'FLAT'
+    momentumScore: number
+    priceChangePercent: number
+    rangeExpansion: boolean
+    volumeTrend: 'RISING' | 'FALLING' | 'FLAT'
+    breakoutAttempt: boolean
+    rejection: boolean
+  }
+
+  avwapLevels: ComboAvwapLevel[]
+  liquidityZones: ComboLiquidityZone[]
+
+  positioning: {
+    latestOi: number | null
+    oiChangePercent: number | null
+    longPercent: number | null
+    shortPercent: number | null
+    classification: string
+    crowding: 'LOW' | 'MEDIUM' | 'HIGH'
+  }
+
+  score: {
+    trend: number
+    priceAction: number
+    value: number
+    avwap: number
+    liquidity: number
+    positioning: number
+    bullishPressure: number
+    bearishPressure: number
+    /** -100..100 weighted total. */
+    total: number
+    confidence: number
+  }
+
+  bias: 'LONG' | 'SHORT' | 'NEUTRAL'
+  convictionLabel: string
+  supportingSignals: string[]
+  contradictingSignals: string[]
+
+  decisionZone: { low: number; high: number } | null
+  reclaimLevel: number | null
+  invalidationLevel: number | null
+  targetZone: { low: number; high: number } | null
+
+  tradingRead: string
+
+  chartAnnotations: ComboChartAnnotation[]
+}
+
+const comboAnalysisResult = ref<ComboAnalysisResult | null>(null)
+const showComboAnalysis = ref(false)
+const comboAnalysisLoading = ref(false)
+const comboAnalysisError = ref<string | null>(null)
+
+function comboPct(a: number, b: number): number {
+  return b === 0 ? 0 : ((a - b) / b) * 100
+}
+
+function comboClamp(n: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, n))
+}
+
+/** Maps a signed "how bullish is this reading" percent-ish value onto a -100..100 component score, saturating gently past ±threshold so one huge outlier can't blow out a single component. */
+function comboDirectionalScore(signedMagnitude: number, saturateAt: number): number {
+  return comboClamp((signedMagnitude / saturateAt) * 100, -100, 100)
+}
+
+type ComboAnalysisPayload = ReturnType<typeof buildComboRangeExportPayload>
+
+function analyzeComboRange(payload: NonNullable<ComboAnalysisPayload>): ComboAnalysisResult | null {
+  const candles = payload.candles
+  if (candles.length === 0) return null
+  const last = candles[candles.length - 1]
+  if (last.close == null) return null
+  const currentPrice = last.close
+
+  // ── Value / trend reference (POC + EMA200) ────────────────────────────────
+  const primaryFrvp = payload.fixedRangeVolumeProfiles.length
+    ? payload.fixedRangeVolumeProfiles.reduce((biggest, p) => (p.totalVolume > biggest.totalVolume ? p : biggest))
+    : null
+  const pocPrice = primaryFrvp?.pocPrice ?? null
+  const ema200 = last.ema200 ?? null
+  const priceToPocPercent = pocPrice != null ? comboPct(currentPrice, pocPrice) : null
+  const priceToEma200Percent = ema200 != null ? comboPct(currentPrice, ema200) : null
+
+  let marketStructure: ComboAnalysisResult['marketStructure'] = 'NEUTRAL'
+  if (pocPrice != null && ema200 != null) {
+    if (currentPrice > pocPrice && currentPrice > ema200) marketStructure = 'BULLISH'
+    else if (currentPrice < pocPrice && currentPrice < ema200) marketStructure = 'BEARISH'
+  } else if (pocPrice != null) {
+    marketStructure = currentPrice > pocPrice ? 'BULLISH' : currentPrice < pocPrice ? 'BEARISH' : 'NEUTRAL'
+  } else if (ema200 != null) {
+    marketStructure = currentPrice > ema200 ? 'BULLISH' : currentPrice < ema200 ? 'BEARISH' : 'NEUTRAL'
+  }
+
+  // ── Price action over the tail of the selected range ──────────────────────
+  const lookbackN = Math.min(10, candles.length)
+  const lookback = candles.slice(-lookbackN)
+  const priorLookback = candles.slice(-lookbackN, -1) // excludes `last`
+  const priceChangePercent = comboPct(currentPrice, lookback[0].open ?? currentPrice)
+  const direction: ComboAnalysisResult['priceAction']['direction'] =
+    priceChangePercent > 0.05 ? 'UP' : priceChangePercent < -0.05 ? 'DOWN' : 'FLAT'
+
+  let upCloses = 0, downCloses = 0
+  for (const c of lookback) {
+    if (c.open == null || c.close == null) continue
+    if (c.close > c.open) upCloses++
+    else if (c.close < c.open) downCloses++
+  }
+  const momentumScore = lookback.length > 0 ? ((upCloses - downCloses) / lookback.length) * 100 : 0
+
+  const priorRanges = priorLookback
+    .filter(c => c.high != null && c.low != null)
+    .map(c => (c.high as number) - (c.low as number))
+  const avgPriorRange = priorRanges.length > 0 ? priorRanges.reduce((a, b) => a + b, 0) / priorRanges.length : 0
+  const lastRange = last.high != null && last.low != null ? last.high - last.low : 0
+  const rangeExpansion = avgPriorRange > 0 && lastRange > avgPriorRange * 1.3
+
+  const priorVolumes = priorLookback.map(c => c.volume ?? 0).filter(v => v > 0)
+  const avgPriorVolume = priorVolumes.length > 0 ? priorVolumes.reduce((a, b) => a + b, 0) / priorVolumes.length : 0
+  const lastVolume = last.volume ?? 0
+  const volumeTrend: ComboAnalysisResult['priceAction']['volumeTrend'] =
+    avgPriorVolume > 0 && lastVolume > avgPriorVolume * 1.15 ? 'RISING'
+      : avgPriorVolume > 0 && lastVolume < avgPriorVolume * 0.85 ? 'FALLING'
+      : 'FLAT'
+
+  const priorHighs = priorLookback.filter(c => c.high != null).map(c => c.high as number)
+  const breakoutAttempt = priorHighs.length > 0 && last.high != null && last.high >= Math.max(...priorHighs)
+
+  const lastBody = last.open != null && last.close != null ? Math.abs(last.close - last.open) : 0
+  const upperWick = last.high != null ? last.high - Math.max(last.open ?? last.high, last.close ?? last.high) : 0
+  const lowerWick = last.low != null ? Math.min(last.open ?? last.low, last.close ?? last.low) - last.low : 0
+  const rejection = lastBody > 0 && (upperWick > lastBody * 1.5 || lowerWick > lastBody * 1.5)
+
+  // ── AVWAP levels (latest point of each placed AVWAP) ──────────────────────
+  const avwapLevels: ComboAvwapLevel[] = []
+  for (const a of payload.anchoredVwaps) {
+    if (a.points.length === 0) continue
+    const latest = a.points[a.points.length - 1]
+    const nearMid = latest.mid != null && Math.abs(comboPct(currentPrice, latest.mid)) < 0.15
+    if (latest.mid != null) {
+      avwapLevels.push({ avwapId: a.id, type: 'MID', price: latest.mid, role: nearMid ? 'VALUE' : currentPrice > latest.mid ? 'SUPPORT' : 'RESISTANCE' })
+    }
+    if (latest.upper != null) {
+      avwapLevels.push({ avwapId: a.id, type: 'UPPER', price: latest.upper, role: currentPrice > latest.upper ? 'SUPPORT' : 'RESISTANCE' })
+    }
+    if (latest.lower != null) {
+      avwapLevels.push({ avwapId: a.id, type: 'LOWER', price: latest.lower, role: currentPrice > latest.lower ? 'SUPPORT' : 'RESISTANCE' })
+    }
+  }
+
+  // ── Liquidity zones: merge adjacent/overlapping heatmap cells by price ─────
+  const MEANINGFUL_INTENSITY = 0.3
+  const MERGE_GAP_PCT = 0.15 // cells within 0.15% of price are treated as the same pool
+  interface RawCell { candleIndex: number; priceLow: number; priceHigh: number; intensity: number }
+  const rawCells: RawCell[] = []
+  for (const hm of payload.liquidityHeatmaps) {
+    for (const cell of hm.cells) {
+      if (cell.intensity >= MEANINGFUL_INTENSITY) rawCells.push(cell)
+    }
+  }
+  rawCells.sort((a, b) => a.priceLow - b.priceLow)
+
+  const mergedZones: { priceLow: number; priceHigh: number; cells: RawCell[] }[] = []
+  for (const cell of rawCells) {
+    const gap = currentPrice * (MERGE_GAP_PCT / 100)
+    const open = mergedZones.find(z => cell.priceLow <= z.priceHigh + gap && cell.priceHigh >= z.priceLow - gap)
+    if (open) {
+      open.priceLow = Math.min(open.priceLow, cell.priceLow)
+      open.priceHigh = Math.max(open.priceHigh, cell.priceHigh)
+      open.cells.push(cell)
+    } else {
+      mergedZones.push({ priceLow: cell.priceLow, priceHigh: cell.priceHigh, cells: [cell] })
+    }
+  }
+
+  const liquidityZones: ComboLiquidityZone[] = mergedZones.map(z => {
+    const intensities = z.cells.map(c => c.intensity)
+    const peakIntensity = Math.max(...intensities)
+    const averageIntensity = intensities.reduce((a, b) => a + b, 0) / intensities.length
+    const distinctCandles = new Set(z.cells.map(c => c.candleIndex))
+    const persistence = comboClamp(distinctCandles.size / Math.max(1, payload.range.candleCount), 0, 1)
+    const zoneMid = (z.priceLow + z.priceHigh) / 2
+    const distancePercent = comboPct(zoneMid, currentPrice)
+    const side: ComboLiquidityZone['side'] = z.priceHigh < currentPrice ? 'BELOW' : z.priceLow > currentPrice ? 'ABOVE' : 'CURRENT'
+
+    // Untouched: no candle AFTER this zone's own liquidity formed has traded through it.
+    const formedByIndex = Math.max(...Array.from(distinctCandles))
+    let untouched = true
+    for (const c of candles) {
+      if (c.index <= formedByIndex) continue
+      if (c.high == null || c.low == null) continue
+      if (c.high >= z.priceLow && c.low <= z.priceHigh) { untouched = false; break }
+    }
+
+    const confluenceReasons: string[] = []
+    const tol = currentPrice * 0.003 // ~0.3% tolerance for "sits at" a level
+    if (pocPrice != null && pocPrice >= z.priceLow - tol && pocPrice <= z.priceHigh + tol) confluenceReasons.push('POC')
+    for (const lvl of avwapLevels) {
+      if (lvl.price >= z.priceLow - tol && lvl.price <= z.priceHigh + tol) {
+        const tag = `AVWAP ${lvl.type}`
+        if (!confluenceReasons.includes(tag)) confluenceReasons.push(tag)
+      }
+    }
+    const confluence = confluenceReasons.length > 0
+
+    const strengthScore = Math.round(comboClamp((peakIntensity * 0.7 + averageIntensity * 0.3) * 100, 0, 100))
+    const strengthTier = strengthScore >= 65 ? 'STRONG' : strengthScore >= 35 ? 'MEDIUM' : 'WEAK'
+    const labelParts = [
+      `${z.priceLow.toFixed(4)}–${z.priceHigh.toFixed(4)}`,
+      strengthTier,
+      untouched ? 'UNTOUCHED' : 'TESTED',
+    ]
+    if (confluence) labelParts.push(`CONFLUENCE (${confluenceReasons.join(' + ')})`)
+
+    return {
+      priceLow: z.priceLow,
+      priceHigh: z.priceHigh,
+      peakIntensity,
+      averageIntensity,
+      strengthScore,
+      persistence,
+      distancePercent,
+      side,
+      untouched,
+      confluence,
+      confluenceReasons,
+      label: labelParts.join(' · '),
+    }
+  })
+
+  const zonesAbove = liquidityZones.filter(z => z.side === 'ABOVE').sort((a, b) => a.distancePercent - b.distancePercent)
+  const zonesBelow = liquidityZones.filter(z => z.side === 'BELOW').sort((a, b) => Math.abs(a.distancePercent) - Math.abs(b.distancePercent))
+  const nearestAbove = zonesAbove[0] ?? null
+  const nearestBelow = zonesBelow[0] ?? null
+  const strongestAbove = [...zonesAbove].sort((a, b) => b.strengthScore - a.strengthScore)[0] ?? null
+  const strongestBelow = [...zonesBelow].sort((a, b) => b.strengthScore - a.strengthScore)[0] ?? null
+
+  // ── Positioning (OI + Long/Short) ──────────────────────────────────────────
+  const latestOi = last.openInterest
+  const priorOis = candles.slice(0, -1).slice(-10).map(c => c.openInterest).filter((v): v is number => v != null)
+  const avgPriorOi = priorOis.length > 0 ? priorOis.reduce((a, b) => a + b, 0) / priorOis.length : null
+  const oiChangePercent = latestOi != null && avgPriorOi != null && avgPriorOi > 0 ? comboPct(latestOi, avgPriorOi) : null
+  const longPercent = last.longShortRatio ? last.longShortRatio.longAccount * 100 : null
+  const shortPercent = last.longShortRatio ? last.longShortRatio.shortAccount * 100 : null
+
+  let classification = 'Insufficient OI/positioning data'
+  if (oiChangePercent != null) {
+    if (direction === 'UP' && oiChangePercent > 0) classification = 'Fresh long participation (price up, OI expanding)'
+    else if (direction === 'UP' && oiChangePercent < 0) classification = 'Short covering (price up, OI contracting)'
+    else if (direction === 'DOWN' && oiChangePercent > 0) classification = 'Fresh short participation (price down, OI expanding)'
+    else if (direction === 'DOWN' && oiChangePercent < 0) classification = 'Long liquidation / unwind (price down, OI contracting)'
+    else classification = 'No clear directional positioning shift'
+  }
+  const longSkew = longPercent != null ? Math.abs(longPercent - 50) : 0
+  const crowding: ComboAnalysisResult['positioning']['crowding'] =
+    longSkew > 15 && (oiChangePercent ?? 0) > 5 ? 'HIGH' : longSkew > 8 || (oiChangePercent ?? 0) > 3 ? 'MEDIUM' : 'LOW'
+
+  // ── Weighted confluence score (-100..100) ──────────────────────────────────
+  const trendScore = comboDirectionalScore(
+    (priceToPocPercent ?? 0) * 0.5 + (priceToEma200Percent ?? 0) * 0.5,
+    5,
+  )
+  const priceActionScore = comboDirectionalScore(momentumScore + priceChangePercent * 5, 100)
+  const valueScore = priceToPocPercent != null ? comboDirectionalScore(priceToPocPercent, 4) : 0
+  const avwapScore = (() => {
+    if (avwapLevels.length === 0) return 0
+    const supportCount = avwapLevels.filter(l => l.role === 'SUPPORT').length
+    const resistanceCount = avwapLevels.filter(l => l.role === 'RESISTANCE').length
+    return comboDirectionalScore((supportCount - resistanceCount) * 20, 100)
+  })()
+  const liquidityScore = (() => {
+    const belowPull = strongestBelow ? strongestBelow.strengthScore : 0
+    const abovePull = strongestAbove ? strongestAbove.strengthScore : 0
+    // Strong untouched liquidity BELOW price is downside risk (bearish tilt);
+    // strong untouched liquidity ABOVE is the upside magnet (bullish tilt) —
+    // matches "liquidity draws price toward it" framing used in the read-out.
+    return comboDirectionalScore(abovePull - belowPull, 100)
+  })()
+  const positioningScore = (() => {
+    if (oiChangePercent == null) return 0
+    const base = direction === 'UP' && oiChangePercent > 0 ? 40
+      : direction === 'DOWN' && oiChangePercent > 0 ? -40
+      : direction === 'UP' && oiChangePercent < 0 ? 15 // short covering: bullish but weaker conviction
+      : direction === 'DOWN' && oiChangePercent < 0 ? -15
+      : 0
+    const crowdingPenalty = crowding === 'HIGH' ? 0.6 : crowding === 'MEDIUM' ? 0.85 : 1
+    return base * crowdingPenalty
+  })()
+
+  const weights = { trend: 0.25, priceAction: 0.20, value: 0.15, avwap: 0.15, liquidity: 0.15, positioning: 0.10 }
+  const total = comboClamp(
+    trendScore * weights.trend +
+    priceActionScore * weights.priceAction +
+    valueScore * weights.value +
+    avwapScore * weights.avwap +
+    liquidityScore * weights.liquidity +
+    positioningScore * weights.positioning,
+    -100, 100,
+  )
+  const bullishPressure = Math.round(comboClamp(50 + total / 2, 0, 100))
+  const bearishPressure = Math.round(comboClamp(50 - total / 2, 0, 100))
+  const confidence = Math.round(Math.abs(total))
+
+  const bias: ComboAnalysisResult['bias'] = total >= 30 ? 'LONG' : total <= -30 ? 'SHORT' : 'NEUTRAL'
+  const convictionLabel = Math.abs(total) >= 60 ? 'STRONG CONVICTION' : Math.abs(total) >= 30 ? 'MODERATE CONVICTION' : 'LOW CONVICTION'
+
+  // ── Signals (dynamic, built from the actual computed values above) ────────
+  const supportingSignals: string[] = []
+  const contradictingSignals: string[] = []
+  const isBullishLean = total >= 0
+
+  if (pocPrice != null) {
+    const aboveText = `Price remains ${currentPrice > pocPrice ? 'above' : 'below'} FRVP POC (${pocPrice.toFixed(4)}, ${priceToPocPercent!.toFixed(1)}%)`
+    ;(currentPrice > pocPrice ? supportingSignals : contradictingSignals).push(
+      currentPrice > pocPrice === isBullishLean ? aboveText : aboveText,
+    )
+  }
+  if (ema200 != null) {
+    const txt = `Price is ${currentPrice > ema200 ? 'above' : 'below'} EMA200 (${priceToEma200Percent!.toFixed(1)}%)`
+    ;((currentPrice > ema200) === isBullishLean ? supportingSignals : contradictingSignals).push(txt)
+  }
+  if (oiChangePercent != null) {
+    const txt = `OI ${oiChangePercent >= 0 ? 'expanded' : 'contracted'} ${Math.abs(oiChangePercent).toFixed(1)}% alongside the recent move (${classification.toLowerCase()})`
+    ;(positioningScore >= 0 === isBullishLean ? supportingSignals : contradictingSignals).push(txt)
+  }
+  if (crowding !== 'LOW' && longPercent != null) {
+    contradictingSignals.push(`${longPercent > 50 ? 'Long' : 'Short'} positioning is crowded (${longPercent.toFixed(1)}% long) — conviction penalty applied`)
+  }
+  const nearestAvwapAbove = avwapLevels.filter(l => l.price > currentPrice).sort((a, b) => a.price - b.price)[0]
+  const nearestAvwapBelow = avwapLevels.filter(l => l.price < currentPrice).sort((a, b) => b.price - a.price)[0]
+  if (rejection && nearestAvwapAbove) {
+    contradictingSignals.push(`Price rejected the nearest AVWAP ${nearestAvwapAbove.type.toLowerCase()} band (${nearestAvwapAbove.price.toFixed(4)})`)
+  }
+  if (strongestBelow) {
+    const txt = `${strongestBelow.strengthScore >= 65 ? 'Strong' : 'Moderate'} ${strongestBelow.untouched ? 'untouched' : 'tested'} liquidity sits below price (${strongestBelow.priceLow.toFixed(4)}–${strongestBelow.priceHigh.toFixed(4)})`
+    ;(isBullishLean ? contradictingSignals : supportingSignals).push(txt)
+  }
+  if (strongestAbove) {
+    const txt = `${strongestAbove.strengthScore >= 65 ? 'Strong' : 'Moderate'} ${strongestAbove.untouched ? 'untouched' : 'tested'} liquidity sits above price (${strongestAbove.priceLow.toFixed(4)}–${strongestAbove.priceHigh.toFixed(4)})`
+    ;(isBullishLean ? supportingSignals : contradictingSignals).push(txt)
+  }
+
+  // ── Decision zone + reclaim/invalidation/target ────────────────────────────
+  const reclaimLevel = isBullishLean ? (nearestAvwapAbove?.price ?? null) : (nearestAvwapBelow?.price ?? null)
+  const invalidationLevel = isBullishLean ? (nearestAvwapBelow?.price ?? null) : (nearestAvwapAbove?.price ?? null)
+  const decisionZone = reclaimLevel != null && invalidationLevel != null
+    ? { low: Math.min(reclaimLevel, invalidationLevel), high: Math.max(reclaimLevel, invalidationLevel) }
+    : null
+  const targetSourceZone = isBullishLean ? (nearestAbove ?? strongestAbove) : (nearestBelow ?? strongestBelow)
+  const targetZone = targetSourceZone ? { low: targetSourceZone.priceLow, high: targetSourceZone.priceHigh } : null
+  const sweepRiskZone = isBullishLean ? strongestBelow : strongestAbove
+
+  const tradingRead = (() => {
+    const dz = decisionZone
+      ? `${bias === 'LONG' ? 'Bullish' : bias === 'SHORT' ? 'Bearish' : 'Neutral'} continuation while ${decisionZone.low.toFixed(4)}–${decisionZone.high.toFixed(4)} is reclaimed/held.`
+      : `${bias} bias, but no clear AVWAP decision zone is currently framing price.`
+    const sweep = sweepRiskZone
+      ? ` Failure there increases the probability of a sweep toward ${sweepRiskZone.priceLow.toFixed(4)}–${sweepRiskZone.priceHigh.toFixed(4)} before continuation.`
+      : ''
+    const target = targetZone
+      ? ` A clean continuation opens ${targetZone.low.toFixed(4)}–${targetZone.high.toFixed(4)} as the next liquidity target.`
+      : ''
+    return dz + sweep + target
+  })()
+
+  // ── Chart annotations — the visual bridge for everything computed above ───
+  const chartAnnotations: ComboChartAnnotation[] = []
+
+  chartAnnotations.push({
+    type: 'CURRENT_PRICE',
+    price: currentPrice,
+    label: `PRICE ${currentPrice.toFixed(4)}`,
+    visual: 'MARKER',
+    priority: 100,
+  })
+
+  if (decisionZone) {
+    chartAnnotations.push({
+      type: 'DECISION_ZONE',
+      price: (decisionZone.low + decisionZone.high) / 2,
+      priceLow: decisionZone.low,
+      priceHigh: decisionZone.high,
+      label: `DECISION ZONE ${decisionZone.low.toFixed(4)}–${decisionZone.high.toFixed(4)}`,
+      description: 'Area the market is currently fighting over',
+      visual: 'ZONE',
+      priority: 95,
+    })
+  }
+  if (reclaimLevel != null) {
+    chartAnnotations.push({
+      type: 'RECLAIM',
+      price: reclaimLevel,
+      label: `↑ RECLAIM ${reclaimLevel.toFixed(4)}`,
+      description: 'Holding above here strengthens the continuation thesis',
+      visual: 'LINE',
+      priority: 90,
+    })
+  }
+  if (invalidationLevel != null) {
+    chartAnnotations.push({
+      type: 'INVALIDATION',
+      price: invalidationLevel,
+      label: `↓ INVALIDATION ${invalidationLevel.toFixed(4)}`,
+      description: 'Losing this level invalidates the current thesis',
+      visual: 'LINE',
+      priority: 90,
+    })
+  }
+  if (targetZone) {
+    chartAnnotations.push({
+      type: 'TARGET',
+      price: (targetZone.low + targetZone.high) / 2,
+      priceLow: targetZone.low,
+      priceHigh: targetZone.high,
+      label: `→ TARGET ${targetZone.low.toFixed(4)}–${targetZone.high.toFixed(4)}`,
+      visual: 'ZONE',
+      priority: 85,
+      confluence: targetSourceZone?.confluence,
+      untouched: targetSourceZone?.untouched,
+    })
+  }
+  if (sweepRiskZone) {
+    chartAnnotations.push({
+      type: 'SWEEP_RISK',
+      price: (sweepRiskZone.priceLow + sweepRiskZone.priceHigh) / 2,
+      priceLow: sweepRiskZone.priceLow,
+      priceHigh: sweepRiskZone.priceHigh,
+      label: `${isBullishLean ? '↓' : '↑'} SWEEP RISK ${sweepRiskZone.priceLow.toFixed(4)}–${sweepRiskZone.priceHigh.toFixed(4)}`,
+      description: 'Strong untouched liquidity that may get grabbed first',
+      visual: 'ZONE',
+      priority: 80,
+      confluence: sweepRiskZone.confluence,
+      untouched: sweepRiskZone.untouched,
+    })
+  }
+
+  if (pocPrice != null) {
+    chartAnnotations.push({
+      type: 'POC',
+      price: pocPrice,
+      label: `POC ${pocPrice.toFixed(4)}`,
+      description: `Price is ${Math.abs(priceToPocPercent!).toFixed(1)}% ${currentPrice >= pocPrice ? 'above' : 'below'} value`,
+      visual: 'LINE',
+      priority: 55,
+    })
+  }
+  if (ema200 != null) {
+    chartAnnotations.push({
+      type: 'EMA200',
+      price: ema200,
+      label: `EMA200 · PRICE ${currentPrice >= ema200 ? 'ABOVE' : 'BELOW'}`,
+      description: `${Math.abs(priceToEma200Percent!).toFixed(1)}% ${currentPrice >= ema200 ? 'above' : 'below'} EMA200`,
+      visual: 'BADGE',
+      priority: 50,
+    })
+  }
+
+  // Cluster nearby AVWAP levels so overlapping bands don't spam the chart with lines.
+  const AVWAP_CLUSTER_GAP_PCT = 0.4
+  const sortedLevels = [...avwapLevels].sort((a, b) => a.price - b.price)
+  const avwapClusters: ComboAvwapLevel[][] = []
+  for (const lvl of sortedLevels) {
+    const open = avwapClusters[avwapClusters.length - 1]
+    if (open && Math.abs(comboPct(lvl.price, open[0].price)) <= AVWAP_CLUSTER_GAP_PCT) open.push(lvl)
+    else avwapClusters.push([lvl])
+  }
+  for (const cluster of avwapClusters) {
+    const avgPrice = cluster.reduce((s, l) => s + l.price, 0) / cluster.length
+    const role = cluster.some(l => l.role === 'VALUE') ? 'VALUE' : currentPrice > avgPrice ? 'SUPPORT' : 'RESISTANCE'
+    const roleTag = role === 'VALUE' ? 'VALUE' : role === 'SUPPORT' ? 'SUPPORT' : 'RESISTANCE'
+    const isNearestToPrice =
+      (role === 'RESISTANCE' && nearestAvwapAbove && cluster.some(l => l.price === nearestAvwapAbove.price)) ||
+      (role === 'SUPPORT' && nearestAvwapBelow && cluster.some(l => l.price === nearestAvwapBelow.price))
+    chartAnnotations.push({
+      type: cluster.length > 1 ? 'AVWAP_CLUSTER' : (`AVWAP_${cluster[0].type}` as ComboAnnotationType),
+      price: avgPrice,
+      label: cluster.length > 1
+        ? `AVWAP ${roleTag} CLUSTER (${cluster.length})`
+        : `AVWAP ${cluster[0].type} · ${roleTag}`,
+      description: `${cluster.length} AVWAP level${cluster.length > 1 ? 's' : ''} near ${avgPrice.toFixed(4)}`,
+      visual: 'LINE',
+      priority: isNearestToPrice ? 70 : 45,
+    })
+  }
+
+  // Liquidity zones — every merged zone above the meaningful-intensity floor.
+  for (const z of liquidityZones) {
+    const isPrimary = z === nearestAbove || z === nearestBelow || z === strongestAbove || z === strongestBelow
+    chartAnnotations.push({
+      type: 'LIQUIDITY',
+      price: (z.priceLow + z.priceHigh) / 2,
+      priceLow: z.priceLow,
+      priceHigh: z.priceHigh,
+      label: z.label,
+      strength: z.strengthScore,
+      confluence: z.confluence,
+      confluenceReason: z.confluenceReasons.join(' + '),
+      untouched: z.untouched,
+      side: z.side,
+      visual: 'ZONE',
+      priority: isPrimary ? 65 + z.strengthScore / 10 : 20 + z.strengthScore / 10,
+    })
+  }
+
+  return {
+    symbol: payload.symbol,
+    interval: payload.interval,
+    currentPrice,
+    pocPrice,
+    ema200,
+    priceToPocPercent,
+    priceToEma200Percent,
+    marketStructure,
+    priceAction: { direction, momentumScore, priceChangePercent, rangeExpansion, volumeTrend, breakoutAttempt, rejection },
+    avwapLevels,
+    liquidityZones,
+    positioning: { latestOi, oiChangePercent, longPercent, shortPercent, classification, crowding },
+    score: {
+      trend: Math.round(trendScore),
+      priceAction: Math.round(priceActionScore),
+      value: Math.round(valueScore),
+      avwap: Math.round(avwapScore),
+      liquidity: Math.round(liquidityScore),
+      positioning: Math.round(positioningScore),
+      bullishPressure,
+      bearishPressure,
+      total: Math.round(total),
+      confidence,
+    },
+    bias,
+    convictionLabel,
+    supportingSignals,
+    contradictingSignals,
+    decisionZone,
+    reclaimLevel,
+    invalidationLevel,
+    targetZone,
+    tradingRead,
+    chartAnnotations,
+  }
+}
+
+/**
+ * "Analyze Combo" on a Combo Download box — builds the exact same payload
+ * downloadComboRangeData() would export, runs it through analyzeComboRange()
+ * synchronously, and opens the result in a dedicated dialog. Also drives the
+ * chart overlay (see comboAnnotationsToRender) — no separate data path.
+ */
+function analyzeComboRangeAction(id: number) {
+  comboAnalysisError.value = null
+  comboAnalysisResult.value = null
+  showComboAnalysis.value = true
+
+  const payload = buildComboRangeExportPayload(id)
+  if (!payload) {
+    comboAnalysisError.value = 'No combo range data to analyze - place/select a valid range box first.'
+    return
+  }
+
+  comboAnalysisLoading.value = true
+  setTimeout(() => {
+    try {
+      comboAnalysisResult.value = analyzeComboRange(payload)
+      if (!comboAnalysisResult.value) {
+        comboAnalysisError.value = 'Not enough candle data in this range to analyze.'
+      }
+    } catch (err) {
+      console.error('Combo range analysis failed:', err)
+      comboAnalysisError.value = err instanceof Error ? err.message : 'Combo range analysis failed.'
+    } finally {
+      comboAnalysisLoading.value = false
+    }
+  }, 0)
+}
+
+function clearComboAnalysis() {
+  comboAnalysisResult.value = null
+  comboAnalysisError.value = null
+}
+
+/**
+ * Chart-ready annotations, decluttered: sorted by priority (desc) and capped
+ * so a busy range doesn't bury the chart in overlapping labels. CURRENT_PRICE
+ * and DECISION_ZONE always survive the cap since they're the primary anchors.
+ */
+const comboAnnotationsToRender = computed<ComboChartAnnotation[]>(() => {
+  const result = comboAnalysisResult.value
+  if (!result) return []
+  const always = result.chartAnnotations.filter(a => a.type === 'CURRENT_PRICE' || a.type === 'DECISION_ZONE')
+  const rest = result.chartAnnotations
+    .filter(a => a.type !== 'CURRENT_PRICE' && a.type !== 'DECISION_ZONE')
+    .sort((a, b) => b.priority - a.priority)
+    .slice(0, 16)
+  return [...rest, ...always] // always-visible ones rendered last (on top)
+})
 
 // ─── Range Investigate: fetch + run ─────────────────────────────────────────
 //
@@ -12602,6 +13565,140 @@ const predictionTooltip = computed(() => {
   fill: #ce93d8;
 }
 .combo-dl-download-btn:hover { fill: #e1bee7; }
+
+.combo-dl-analyze-btn { fill: #64b5f6; }
+.combo-dl-analyze-btn:hover { fill: #93c5fd; }
+
+/* ── Combo Range Analysis: chart overlay ─────────────────────────────────
+   Deterministic annotations from analyzeComboRange(), plotted at real price
+   levels on top of everything else in the SVG. */
+.combo-analysis-overlay { pointer-events: none; }
+
+.combo-ann-label {
+  font-size: 10px;
+  font-family: monospace;
+  font-weight: 700;
+  fill: #ddd;
+  paint-order: stroke;
+  stroke: #0d0d0d;
+  stroke-width: 3px;
+}
+.combo-ann-strength { fill: #999; font-weight: 400; }
+.combo-ann-badge {
+  font-size: 9px;
+  font-family: monospace;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: #0d0d0d;
+  stroke-width: 3px;
+}
+.combo-ann-badge-confluence { fill: #fbbf24; }
+
+.combo-ann-line { stroke-width: 1.5; stroke-dasharray: 5 3; }
+.combo-ann-zone-rect { stroke-width: 1; }
+
+/* current price */
+.combo-ann-current_price .combo-ann-current-price-line { stroke: #fff; stroke-width: 1; stroke-dasharray: 2 4; opacity: 0.5; }
+.combo-ann-current_price .combo-ann-current-price-dot { fill: #fff; }
+.combo-ann-current-price-label { fill: #fff !important; font-size: 11px; }
+
+/* decision zone */
+.combo-ann-decision_zone .combo-ann-zone-rect { fill: rgba(100,181,246,0.08); stroke: rgba(100,181,246,0.5); }
+.combo-ann-decision_zone .combo-ann-label { fill: #90caf9; }
+
+/* reclaim / invalidation / target / sweep risk */
+.combo-ann-reclaim .combo-ann-line { stroke: #26a69a; }
+.combo-ann-reclaim .combo-ann-label { fill: #26a69a; }
+.combo-ann-invalidation .combo-ann-line { stroke: #ef5350; }
+.combo-ann-invalidation .combo-ann-label { fill: #ef5350; }
+.combo-ann-target .combo-ann-zone-rect { fill: rgba(38,166,154,0.1); stroke: rgba(38,166,154,0.6); }
+.combo-ann-target .combo-ann-label { fill: #4db6ac; }
+.combo-ann-sweep_risk .combo-ann-zone-rect { fill: rgba(255,167,38,0.1); stroke: rgba(255,167,38,0.55); }
+.combo-ann-sweep_risk .combo-ann-label { fill: #ffb74d; }
+
+/* POC / EMA200 */
+.combo-ann-poc .combo-ann-line { stroke: #ba68c8; }
+.combo-ann-poc .combo-ann-label { fill: #ce93d8; }
+.combo-ann-ema200 .combo-ann-badge-label { fill: #90a4ae; }
+
+/* AVWAP */
+.combo-ann-avwap_mid .combo-ann-line,
+.combo-ann-avwap_upper .combo-ann-line,
+.combo-ann-avwap_lower .combo-ann-line,
+.combo-ann-avwap_cluster .combo-ann-line { stroke: #64b5f6; opacity: 0.7; }
+.combo-ann-avwap_mid .combo-ann-label,
+.combo-ann-avwap_upper .combo-ann-label,
+.combo-ann-avwap_lower .combo-ann-label,
+.combo-ann-avwap_cluster .combo-ann-label { fill: #90caf9; }
+
+/* Liquidity zones — intensity communicated via opacity/stroke, not just a number */
+.combo-ann-liquidity .combo-ann-zone-rect { fill: rgba(255,112,67,0.10); stroke: rgba(255,112,67,0.35); }
+.combo-ann-liquidity .combo-ann-label { fill: #ffab91; }
+.combo-ann-liquidity.combo-ann-untouched .combo-ann-zone-rect { fill: rgba(255,112,67,0.16); stroke: rgba(255,112,67,0.55); }
+.combo-ann-liquidity.combo-ann-confluence .combo-ann-zone-rect { fill: rgba(255,193,7,0.16); stroke: rgba(255,193,7,0.65); stroke-width: 1.5; }
+.combo-ann-liquidity.combo-ann-confluence .combo-ann-label { fill: #ffd54f; }
+.combo-ann-badge-confluence { fill: #ffd54f !important; }
+
+/* ── Combo Range Analysis: dialog ─────────────────────────────────────── */
+.combo-pressure-bars, .combo-score-bars { margin: 8px 0 4px; }
+.combo-bar-bullish { background: #26a69a; }
+.combo-bar-bearish { background: #ef5350; }
+.combo-bar-strong { background: #ffca28; }
+.combo-bar-medium { background: #ffa726; }
+.combo-bar-weak { background: rgba(0,0,0,0.25); }
+.combo-score-track { position: relative; background: rgba(0,0,0,0.08); }
+.combo-score-track .investigate-prediction-bar-fill { position: absolute; top: 0; height: 100%; }
+
+.combo-decision-card { margin-top: 10px; }
+
+.combo-liquidity-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  margin-top: 6px;
+}
+.combo-liquidity-card {
+  border: 1px solid rgba(0,0,0,0.1);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: rgba(0,0,0,0.02);
+}
+.combo-liquidity-card.combo-liq-confluence { border-color: rgba(255,193,7,0.5); background: rgba(255,193,7,0.06); }
+.combo-liquidity-card-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.combo-liquidity-side-tag { font-size: 10px; opacity: 0.6; }
+.combo-liquidity-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.combo-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(0,0,0,0.06);
+  color: rgba(0,0,0,0.6);
+}
+.combo-tag-confluence { background: rgba(255,193,7,0.25); color: #8a6d00; }
+.combo-tag-crowding { margin-left: 6px; }
+.combo-crowding-low { background: rgba(38,166,154,0.15); color: #00796b; }
+.combo-crowding-medium { background: rgba(255,167,38,0.2); color: #b45309; }
+.combo-crowding-high { background: rgba(239,83,80,0.2); color: #c62828; }
+.combo-positioning-classification {
+  font-size: 12px;
+  margin: 6px 0 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
 
 /* ── Range Investigate tool ───────────────────────────────────────────── */
 .candle.range-investigate-target {

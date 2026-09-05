@@ -48,7 +48,7 @@ const props = withDefaults(
     pollMs?: number
   }>(),
   {
-    apiBase: 'http://localhost:5001',
+    apiBase: import.meta.env.VITE_ORDER_MAKER_API,
     pollMs: 5000,
   }
 )
