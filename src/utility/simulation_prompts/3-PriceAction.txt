@@ -1,0 +1,1396 @@
+We have completed:
+
+```text
+candleStructure.ts
+anchorDecisionEngine.ts
+```
+
+Now implement **ONLY**:
+
+```text
+priceAction.ts
+```
+
+Do not implement `volumeState.ts`, `positioning.ts`, `marketStructure.ts`, `heatmap.ts`, `avwap.ts`, `frvp.ts`, `marketContext.ts`, `candleScore.ts`, or any other analysis module.
+
+---
+
+# 1. PURPOSE
+
+The purpose of `priceAction.ts` is to answer:
+
+> **"What is price actually doing right now?"**
+
+This module should interpret the current candle and recent causal price behavior into meaningful price-action events.
+
+It should identify things such as:
+
+* displacement
+* rejection
+* reclaim
+* breakout
+* failed breakout
+* directional candle pressure
+* meaningful price-action sequences
+
+This is **not a prediction engine**.
+
+It should describe and score the quality of what price is currently doing.
+
+---
+
+# 2. IMPORTANT ARCHITECTURE
+
+The dependency should be approximately:
+
+```text
+CandleInfo
+    │
+    ▼
+candleStructure.ts
+    │
+    ▼
+anchorDecisionEngine.ts
+    │
+    ▼
+priceAction.ts
+```
+
+`priceAction.ts` should consume the existing candle structure information.
+
+Do NOT duplicate calculations already performed by `candleStructure.ts`.
+
+For example, do not independently recalculate:
+
+* range
+* body
+* wick
+* body ratio
+* close location
+* ATR-normalized range
+* expansion
+* compression
+* engulfing
+* inside bar
+* outside bar
+
+Use the existing `CandleStructure`.
+
+---
+
+# 3. CAUSAL / REALTIME REQUIREMENT
+
+This is critical.
+
+The engine must be completely causal.
+
+At candle `N`, it may only use:
+
+```text
+candles[0 ... N]
+```
+
+It must NEVER use:
+
+```text
+candles[N + 1 ...]
+```
+
+No future candles.
+
+No look-ahead.
+
+No future-confirmed breakout.
+
+No future-confirmed reversal.
+
+No hindsight classification.
+
+The function must work correctly when processing candles sequentially in realtime.
+
+---
+
+# 4. WHAT PRICE ACTION MEANS HERE
+
+Price action is not simply:
+
+```text
+green candle = bullish
+red candle = bearish
+```
+
+It should identify **meaningful behavior in context**.
+
+For example:
+
+```text
+Price approaches level
+        ↓
+penetrates level
+        ↓
+fails to continue
+        ↓
+closes back away from level
+```
+
+is more meaningful than simply saying:
+
+```text
+bearish candle
+```
+
+Likewise:
+
+```text
+compression
+    ↓
+expansion
+    ↓
+large directional repricing
+    ↓
+strong close
+```
+
+is meaningful displacement.
+
+The module should therefore combine:
+
+* candle structure
+* price movement
+* meaningful levels
+* recent sequence
+* ATR-normalized movement
+
+to determine what price is actually doing.
+
+---
+
+# 5. OUTPUT STRUCTURE
+
+Create a clear exported interface.
+
+A structure similar to this is preferred:
+
+```ts
+export interface PriceAction {
+  displacement: PriceActionEvent
+  rejection: PriceActionEvent
+  reclaim: ReclaimEvent
+  breakout: BreakoutEvent
+  failedBreakout: BreakoutEvent
+
+  candleStructure: {
+    long: number
+    short: number
+  }
+
+  sequence: PriceActionSequence
+
+  long: number
+  short: number
+
+  dominant: SignalDirection
+
+  strength: number
+
+  reasons: string[]
+}
+```
+
+Adapt this to existing project conventions if necessary.
+
+Do not duplicate existing shared types.
+
+---
+
+# 6. PRICE ACTION EVENT
+
+Use a reusable event structure where appropriate:
+
+```ts
+export interface PriceActionEvent {
+  detected: boolean
+  direction: SignalDirection
+  strength: number
+
+  rangeAtrRatio: number
+  bodyRatio: number
+  closeLocation: number
+
+  reason: string[]
+}
+```
+
+The exact structure may be adjusted if the existing codebase has compatible types.
+
+The important requirement is that events contain:
+
+1. whether they occurred
+2. direction
+3. strength
+4. measurable evidence
+5. human-readable reasons
+
+---
+
+# 7. DISPLACEMENT
+
+Displacement means:
+
+> **Meaningful directional repricing.**
+
+A large candle alone is NOT necessarily displacement.
+
+For example:
+
+```text
+large candle
++
+poor close
++
+large opposing wick
++
+no meaningful movement from previous price
+```
+
+should not automatically receive a high displacement score.
+
+A strong displacement should generally have several of:
+
+* expanded range relative to ATR
+* strong body
+* strong close location
+* directional clarity
+* meaningful movement away from the prior price area
+* continuation from compression
+* break through meaningful price structure
+
+Use the existing `CandleStructure` values.
+
+Conceptually, displacement strength can consider:
+
+```text
+Range expansion      25%
+Body strength        25%
+Close location       20%
+Directional clarity  15%
+Price movement       15%
+```
+
+These are starting architectural weights, not absolute requirements.
+
+Make them configurable constants.
+
+---
+
+# 8. DISPLACEMENT EXAMPLE
+
+Bullish displacement:
+
+```text
+Previous candles:
+compression / limited movement
+
+Current candle:
+range = 1.8 ATR
+body ratio = 0.82
+close location = 0.94
+bullish candle
+price moves significantly upward
+```
+
+This should produce something like:
+
+```text
+detected: true
+direction: LONG
+strength: high
+```
+
+with reasons such as:
+
+```text
+[
+  "Range expanded to 1.8 ATR",
+  "Body ratio = 82%",
+  "Close location = 94%",
+  "Strong bullish directional repricing"
+]
+```
+
+The actual values must come from the candle data.
+
+---
+
+# 9. REJECTION
+
+Rejection should be interpreted in relation to a meaningful level.
+
+A wick in open space is NOT automatically rejection.
+
+For example:
+
+```text
+Price approaches resistance
+        ↓
+moves above resistance
+        ↓
+fails to hold above
+        ↓
+closes back below
+```
+
+is meaningful bearish rejection.
+
+Likewise:
+
+```text
+Price approaches support
+        ↓
+moves below support
+        ↓
+fails to hold below
+        ↓
+closes back above
+```
+
+is meaningful bullish rejection.
+
+Rejection should consider:
+
+* proximity to meaningful level
+* penetration of level
+* wick behavior
+* close back away from level
+* failure to continue
+* candle structure
+
+The farther the wick occurs from any meaningful level, the less significance it should have.
+
+---
+
+# 10. REJECTION DIRECTION
+
+Use the actual context.
+
+For example:
+
+### Bearish rejection
+
+```text
+Price tests resistance
++
+upper wick / penetration
++
+close below level
+```
+
+→ bearish rejection.
+
+### Bullish rejection
+
+```text
+Price tests support
++
+lower wick / penetration
++
+close above level
+```
+
+→ bullish rejection.
+
+Do not simply classify:
+
+```text
+upper wick = bearish
+lower wick = bullish
+```
+
+Context matters.
+
+---
+
+# 11. RECLAIM
+
+A reclaim is stronger than simply crossing a level.
+
+A reclaim should require something conceptually like:
+
+```text
+price was on one side of a meaningful level
+        ↓
+price crosses the level
+        ↓
+candle closes/stabilizes on the other side
+```
+
+Examples:
+
+### Bullish reclaim
+
+```text
+Price below support
+        ↓
+moves through support
+        ↓
+closes above support
+```
+
+→ bullish reclaim.
+
+### Bearish reclaim
+
+```text
+Price above resistance
+        ↓
+moves through resistance
+        ↓
+closes below resistance
+```
+
+→ bearish reclaim.
+
+Crossing alone is NOT sufficient.
+
+The engine should distinguish:
+
+```text
+wick through level
+```
+
+from:
+
+```text
+meaningful reclaim
+```
+
+---
+
+# 12. MEANINGFUL LEVELS
+
+Price action should be evaluated against meaningful levels when those levels are available from the existing architecture.
+
+Potential levels include:
+
+* swing high
+* swing low
+* support
+* resistance
+* Heatmap liquidity zones
+* FRVP POC
+* FRVP VAH
+* FRVP VAL
+* AVWAP
+* EMA200
+* session high
+* session low
+* previous significant range boundaries
+
+However:
+
+**Do not implement Heatmap, FRVP, AVWAP, or MarketStructure inside this file.**
+
+If those modules already expose levels, consume them.
+
+If they do not exist yet, design the price-action interfaces so meaningful levels can be passed into the function later.
+
+Do not invent fake indicator data.
+
+---
+
+# 13. BREAKOUT
+
+A breakout should require more than:
+
+```text
+high > resistance
+```
+
+A meaningful breakout should consider:
+
+```text
+level breach
++
+close beyond level
++
+directional strength
++
+preferably displacement / volume confirmation when available
+```
+
+The breakout event should identify:
+
+```ts
+export interface BreakoutEvent {
+  detected: boolean
+  direction: SignalDirection
+  level: number
+  levelType: MarketLevelType
+  strength: number
+
+  volumeConfirmation: number
+  displacementConfirmation: number
+
+  reason: string[]
+}
+```
+
+If volume data is not yet available in the architecture, do not manufacture it.
+
+Use a neutral/default confirmation value or make it optional according to existing conventions.
+
+---
+
+# 14. FAILED BREAKOUT
+
+A failed breakout is:
+
+```text
+price breaches meaningful level
+        ↓
+fails to establish beyond it
+        ↓
+closes back inside the previous range/level
+```
+
+For example:
+
+```text
+Resistance = 100
+
+High = 102
+Close = 99
+```
+
+This may represent a failed bullish breakout and therefore bearish price action.
+
+However:
+
+> Do NOT automatically call every failed breakout a liquidity sweep.
+
+A liquidity sweep requires evidence from the Heatmap/liquidity analysis.
+
+So:
+
+```text
+Failed breakout
+≠
+Liquidity sweep
+```
+
+Unless a later/other module provides actual liquidity evidence.
+
+---
+
+# 15. CANDLE STRUCTURE DIRECTIONAL INTERPRETATION
+
+`candleStructure.long` and `candleStructure.short` should provide the directional interpretation of the candle structure.
+
+This is NOT a duplicate of `candleStructure.strength`.
+
+For example:
+
+A bullish expansion candle closing near its high may contribute strongly to:
+
+```text
+long
+```
+
+while a bearish expansion candle closing near its low may contribute strongly to:
+
+```text
+short
+```
+
+Neutral structures should not be forced into a direction.
+
+Keep this interpretation separate from the raw candle structure.
+
+---
+
+# 16. PRICE ACTION SEQUENCE
+
+This is one of the most important parts of the module.
+
+Price action should recognize coherent sequences.
+
+A useful sequence is:
+
+```text
+LEVEL / LIQUIDITY
+        ↓
+SWEEP
+        ↓
+REJECTION
+        ↓
+RECLAIM
+        ↓
+DISPLACEMENT
+        ↓
+CLOSE CONFIRMATION
+```
+
+The complete sequence should be significantly stronger than any isolated event.
+
+For example:
+
+```text
+Sweep
++
+rejection
++
+reclaim
++
+displacement
++
+strong close
+```
+
+is much more meaningful than:
+
+```text
+large bullish candle
+```
+
+Create something similar to:
+
+```ts
+export interface PriceActionSequence {
+  liquiditySweep: boolean
+  rejection: boolean
+  reclaim: boolean
+  displacement: boolean
+  closeConfirmation: boolean
+
+  completion: number
+
+  direction: SignalDirection
+}
+```
+
+If actual liquidity-sweep data is not available yet, do not pretend it exists.
+
+Use only the information available at this stage.
+
+---
+
+# 17. SEQUENCE MUST BE NONLINEAR
+
+Do not simply do:
+
+```text
+score = sweep + rejection + reclaim + displacement
+```
+
+The sequence should have a coherence/confirmation bonus.
+
+For example:
+
+```text
+rejection only
+```
+
+might be moderate.
+
+```text
+rejection + reclaim
+```
+
+should be stronger.
+
+```text
+rejection + reclaim + displacement
+```
+
+should be significantly stronger.
+
+```text
+sweep + rejection + reclaim + displacement + close confirmation
+```
+
+should represent a high-quality coherent sequence.
+
+The exact mathematical implementation is up to you, but avoid treating every event as an independent vote.
+
+---
+
+# 18. LONG / SHORT SCORE
+
+Produce directional interpretation:
+
+```ts
+long: number
+short: number
+```
+
+Both should be `0-100`.
+
+These represent:
+
+> How strongly the observed price action currently supports bullish vs bearish interpretation.
+
+They are NOT probability.
+
+They are NOT expected return.
+
+They are NOT a trading recommendation.
+
+They should be derived from actual price-action evidence.
+
+Suggested conceptual weighting:
+
+```text
+Displacement       30%
+Rejection          20%
+Reclaim            30%
+Candle structure   20%
+```
+
+Breakout/failed-breakout and sequence coherence should modify the appropriate side rather than being blindly added as independent votes.
+
+This is important to avoid double counting.
+
+---
+
+# 19. AVOID DOUBLE COUNTING
+
+For example:
+
+```text
+bullish breakout
++
+bullish displacement
+```
+
+may describe the same underlying event.
+
+Do not give both full independent weight and artificially produce:
+
+```text
+100 + 100 = 200
+```
+
+Instead, recognize that:
+
+```text
+breakout + displacement
+```
+
+is a coherent event and should strengthen confidence appropriately.
+
+Likewise:
+
+```text
+reclaim + breakout
+```
+
+can overlap.
+
+The scoring model should avoid excessive double counting.
+
+---
+
+# 20. DOMINANT DIRECTION
+
+Return:
+
+```ts
+dominant: SignalDirection
+```
+
+where:
+
+```ts
+type SignalDirection =
+  | 'LONG'
+  | 'SHORT'
+  | 'NEUTRAL'
+```
+
+Do not force a direction when the evidence is balanced.
+
+Use a configurable minimum directional difference.
+
+For example:
+
+```text
+LONG = 72
+SHORT = 31
+```
+
+→ LONG.
+
+But:
+
+```text
+LONG = 54
+SHORT = 51
+```
+
+→ NEUTRAL.
+
+Do not use arbitrary direction simply because one number is technically larger.
+
+---
+
+# 21. STRENGTH
+
+Return:
+
+```ts
+strength: number
+```
+
+from `0-100`.
+
+This represents:
+
+> **How meaningful/coherent is the current price action?**
+
+It should NOT simply equal:
+
+```text
+max(long, short)
+```
+
+A candle can have strong movement but weak contextual significance.
+
+Strength should consider:
+
+* quality of detected events
+* contextual relevance
+* sequence coherence
+* level interaction
+* displacement quality
+* confirmation
+
+---
+
+# 22. REASONS ARE REQUIRED
+
+The UI will visualize the price-action explanation.
+
+Every detected meaningful event should produce human-readable reasons.
+
+For example:
+
+```text
+[
+  "Bullish displacement detected",
+  "Range expanded to 1.82 ATR",
+  "Body ratio = 81%",
+  "Close location = 94%",
+  "Price reclaimed resistance at 0.0204",
+  "Breakout closed above the level",
+  "Reclaim + displacement sequence completed"
+]
+```
+
+Reasons must be based on actual values.
+
+Avoid generic reasons such as:
+
+```text
+"Strong bullish setup"
+"Good price action"
+"Momentum is strong"
+```
+
+The UI needs measurable evidence.
+
+---
+
+# 23. NO FUTURE CONFIRMATION
+
+This is especially important for:
+
+* breakout
+* failed breakout
+* reclaim
+* displacement
+* sequences
+
+At candle `N`, classify only what is known at candle `N`.
+
+For example:
+
+```text
+Current candle high > resistance
+```
+
+does not necessarily mean:
+
+```text
+confirmed breakout
+```
+
+until the current candle's close establishes the appropriate condition.
+
+Similarly, do not wait for future candles to determine whether a candle "really was" a breakout.
+
+The classification must reflect what was knowable at that point in time.
+
+---
+
+# 24. USE ATR NORMALIZATION
+
+The same price-action engine must work across:
+
+```text
+BTC
+ETH
+SOL
+large-cap altcoins
+small-cap altcoins
+```
+
+Avoid hardcoded price movement thresholds.
+
+Prefer:
+
+```text
+range / ATR
+body / ATR
+distance from level / ATR
+penetration / ATR
+movement / ATR
+```
+
+Where percentage values are more appropriate, they may also be used.
+
+---
+
+# 25. HANDLING LEVELS
+
+If the project does not yet have a unified meaningful-level type, create a small reusable type only if necessary.
+
+For example:
+
+```ts
+export type MarketLevelType =
+  | 'SWING_HIGH'
+  | 'SWING_LOW'
+  | 'SUPPORT'
+  | 'RESISTANCE'
+  | 'LIQUIDITY'
+  | 'FRVP_POC'
+  | 'FRVP_VAH'
+  | 'FRVP_VAL'
+  | 'AVWAP'
+  | 'EMA200'
+  | 'SESSION_HIGH'
+  | 'SESSION_LOW'
+  | 'RANGE_HIGH'
+  | 'RANGE_LOW'
+```
+
+And:
+
+```ts
+export interface MarketLevel {
+  price: number
+  type: MarketLevelType
+  strength?: number
+}
+```
+
+But first inspect the existing codebase.
+
+If equivalent types already exist, reuse them.
+
+Do NOT create duplicate types.
+
+---
+
+# 26. FUNCTION API
+
+Create a clean exported function such as:
+
+```ts
+export function calculatePriceAction(
+  candles: CandleInfo[],
+  index: number,
+  levels?: MarketLevel[]
+): PriceAction
+```
+
+If the existing architecture requires a different signature, adapt it.
+
+The important requirement is:
+
+```text
+current candle = candles[index]
+```
+
+and all calculations must be causal.
+
+Do not require future candles.
+
+---
+
+# 27. INSUFFICIENT DATA
+
+Handle early candles safely.
+
+If there is not enough historical data:
+
+* return neutral/low-confidence results
+* do not manufacture a breakout
+* do not manufacture a reclaim
+* do not manufacture a sequence
+
+For example:
+
+```ts
+{
+  long: 0,
+  short: 0,
+  dominant: 'NEUTRAL',
+  strength: 0,
+  ...
+}
+```
+
+Adapt appropriately to the final implementation.
+
+---
+
+# 28. CONFIGURATION
+
+Put important thresholds and weights into named constants/configuration.
+
+For example:
+
+```text
+DISPLACEMENT_RANGE_ATR
+DISPLACEMENT_BODY_RATIO
+DISPLACEMENT_CLOSE_LOCATION
+REJECTION_MIN_PENETRATION
+RECLAIM_MIN_CLOSE_DISTANCE
+BREAKOUT_MIN_CLOSE_DISTANCE
+DIRECTION_THRESHOLD
+SEQUENCE_BONUS
+```
+
+Do not scatter magic numbers throughout the implementation.
+
+Use existing project configuration conventions where possible.
+
+---
+
+# 29. DO NOT DEPEND ON FUTURE MODULES
+
+At this point, the following modules may not exist yet:
+
+```text
+volumeState.ts
+positioning.ts
+marketStructure.ts
+heatmap.ts
+avwap.ts
+frvp.ts
+marketContext.ts
+```
+
+Do not implement them.
+
+Do not create fake implementations of them.
+
+Design `priceAction.ts` so that it can consume meaningful levels or existing analysis data when those modules become available.
+
+If the architecture already exposes those modules, use them.
+
+Otherwise, keep the dependency interface clean.
+
+---
+
+# 30. IMPORTANT DISTINCTION
+
+Do not confuse:
+
+### Candle Structure
+
+with:
+
+### Price Action
+
+`candleStructure.ts` answers:
+
+> "What physically happened inside this candle?"
+
+Examples:
+
+```text
+large range
+large body
+upper wick
+close near high
+expansion
+engulfing
+outside bar
+```
+
+`priceAction.ts` answers:
+
+> "What does that movement mean in the context of recent price behavior?"
+
+Examples:
+
+```text
+displacement
+rejection
+reclaim
+breakout
+failed breakout
+sequence
+directional pressure
+```
+
+Therefore:
+
+```text
+CandleStructure
+    ↓
+raw candle characteristics
+
+PriceAction
+    ↓
+contextual interpretation of those characteristics
+```
+
+Do not merge these responsibilities.
+
+---
+
+# 31. EXAMPLE OF EXPECTED INTERPRETATION
+
+Given:
+
+```text
+Previous candles:
+compressed range
+
+Current candle:
+bullish
+range = 1.8 ATR
+body ratio = 0.82
+close location = 0.94
+
+Resistance:
+price = 100
+
+Current candle:
+high = 102
+close = 101.7
+```
+
+A reasonable result could be:
+
+```text
+displacement:
+    detected = true
+    direction = LONG
+
+breakout:
+    detected = true
+    direction = LONG
+    level = 100
+
+long:
+    high
+
+short:
+    low
+
+dominant:
+    LONG
+
+reasons:
+    "Range expanded to 1.8 ATR"
+    "Bullish body ratio = 82%"
+    "Close location = 94%"
+    "Price closed above resistance at 100"
+    "Bullish displacement confirmed"
+```
+
+The exact numbers are determined by the implementation.
+
+---
+
+# 32. EXAMPLE OF REJECTION
+
+Given:
+
+```text
+Resistance = 100
+
+Current candle:
+high = 102
+open = 99.5
+close = 98.8
+upper wick extends above resistance
+```
+
+A reasonable interpretation:
+
+```text
+rejection:
+    detected = true
+    direction = SHORT
+
+failedBreakout:
+    detected = true
+    direction = SHORT
+
+reasons:
+    "Price penetrated resistance at 100"
+    "Price failed to hold above resistance"
+    "Close returned below resistance"
+    "Upper-wick rejection detected"
+```
+
+Again, do not call this a liquidity sweep unless actual liquidity information confirms it.
+
+---
+
+# 33. EXPLAINABILITY
+
+The output will eventually be plotted directly on the candle chart.
+
+Therefore preserve enough information for the UI to visually show:
+
+```text
+DISPLACEMENT
+████████████ 82
+
+REJECTION
+████████ 71
+
+RECLAIM
+██████████ 78
+
+BREAKOUT
+████████████ 88
+
+SEQUENCE
+██████████████ 94
+```
+
+and explain exactly why.
+
+Do not return only:
+
+```ts
+long: 78
+short: 22
+```
+
+The raw event information and reasons are essential.
+
+---
+
+# 34. DETERMINISTIC
+
+The same candle data must always produce the same result.
+
+Do not use:
+
+* randomness
+* timestamps unrelated to candle data
+* external API calls
+* future data
+* hidden state that changes the result unpredictably
+
+The implementation must be deterministic and suitable for backtesting.
+
+---
+
+# 35. CODE QUALITY
+
+Before implementing:
+
+1. Inspect the existing `CandleInfo` type.
+2. Inspect `candleStructure.ts`.
+3. Inspect `anchorDecisionEngine.ts`.
+4. Inspect existing shared types/utilities.
+5. Reuse existing types.
+6. Do not redefine `CandleInfo`.
+7. Do not duplicate `CandleStructure`.
+8. Follow the existing TypeScript conventions.
+9. Keep the module focused.
+10. Avoid unnecessary dependencies.
+11. Keep the implementation testable.
+12. Keep all calculations causal.
+
+If existing types differ from the examples in this prompt, adapt to the existing architecture rather than creating duplicates.
+
+---
+
+# 36. FINAL ARCHITECTURAL RULE
+
+Think of the module like this:
+
+```text
+                 CANDLE
+                   │
+                   ▼
+          candleStructure.ts
+                   │
+          "What happened?"
+                   │
+                   ▼
+            priceAction.ts
+                   │
+         "What does it mean?"
+                   │
+       ┌───────────┼───────────┐
+       ▼           ▼           ▼
+ Displacement   Rejection   Reclaim
+       │           │           │
+       └───────────┼───────────┘
+                   ▼
+             Breakout /
+          Failed Breakout
+                   │
+                   ▼
+              Sequence
+                   │
+                   ▼
+          LONG / SHORT / NEUTRAL
+```
+
+The module should interpret price behavior, not predict the future.
+
+---
+
+# DELIVERABLE
+
+Generate the complete implementation of:
+
+```text
+priceAction.ts
+```
+
+ONLY.
+
+Do not generate the next analysis module.
+
+Do not modify unrelated files.
+
+Use the existing `CandleInfo`, `CandleStructure`, and `anchorDecisionEngine` architecture.
+
+The final implementation must be:
+
+* causal
+* deterministic
+* ATR-normalized
+* context-aware
+* explainable
+* UI-friendly
+* resistant to double counting
+* suitable for realtime processing
+* suitable for historical backtesting
+
+Most importantly:
+
+> **PriceAction should explain what price is doing, why that behavior matters, and where the directional pressure comes from — without looking into the future.**

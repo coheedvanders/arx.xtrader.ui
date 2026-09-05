@@ -1,0 +1,26 @@
+I have updated the interface.
+noted that its now using the CandleInfo
+
+Lets trim recreate this component into V2. 
+
+retain the following functionlity
+-candle ui display
+-xy drag to scroll
+-on click of the candle modal
+-OI / LS bar now be coming from the CandleInfo
+
+on load retrieve the symbolinfo coming from klinedbv2
+default candle to show is 15M
+
+the checkboxes 1h,4h,1d candles will now also be coming from the symbol information
+move the Liquidation heatmap into liquidationHeatmap.ts so then add the function getLiqudationHeatmap(candles:CandleInfo) where I can reuse it elsewhere
+
+retain also these controls:
+-rectangle
+-line
+-price range
+-frvp
+-avwap
+-hotkeys
+-hotkey modal info
+-numeric field dropdown for dynamic view chaning of bar

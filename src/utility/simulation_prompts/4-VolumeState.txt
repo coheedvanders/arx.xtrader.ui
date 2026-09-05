@@ -1,0 +1,1384 @@
+We have completed:
+
+```text
+candleStructure.ts
+anchorDecisionEngine.ts
+priceAction.ts
+```
+
+Now implement **ONLY**:
+
+```text
+volumeState.ts
+```
+
+Do not implement `positioning.ts`, `marketStructure.ts`, `heatmap.ts`, `avwap.ts`, `frvp.ts`, `marketContext.ts`, `candleScore.ts`, or any other analysis module.
+
+---
+
+# 1. PURPOSE
+
+The purpose of `volumeState.ts` is to answer:
+
+> **"How active is the market, how is volume changing, and does volume confirm or conflict with what price is doing?"**
+
+This module should describe the volume environment around the current candle.
+
+It should identify:
+
+* relative volume
+* volume expansion
+* volume contraction
+* volume regime
+* volume transitions
+* price-volume relationship
+* directional volume interpretation
+* volume strength
+* explainable reasons
+
+This is **not a trading signal**.
+
+It is not supposed to independently predict LONG or SHORT.
+
+Volume should primarily tell us:
+
+> **How much participation is occurring and whether that participation confirms or conflicts with the current price behavior.**
+
+---
+
+# 2. IMPORTANT ARCHITECTURE
+
+The architecture is approximately:
+
+```text
+CandleInfo
+    │
+    ├── candleStructure.ts
+    │
+    ├── anchorDecisionEngine.ts
+    │
+    ├── priceAction.ts
+    │
+    ▼
+volumeState.ts
+```
+
+`volumeState.ts` may consume existing:
+
+* candle structure
+* price action
+
+when useful.
+
+However, do NOT duplicate their calculations.
+
+For example, do not recalculate:
+
+* candle range
+* body
+* wick
+* body ratio
+* close location
+* displacement
+* rejection
+* reclaim
+* breakout
+
+Use the existing modules when those values already exist.
+
+---
+
+# 3. CORE PRINCIPLE
+
+Volume itself is not inherently bullish or bearish.
+
+For example:
+
+```text
+High volume
+```
+
+does NOT automatically mean:
+
+```text
+BULLISH
+```
+
+and:
+
+```text
+Low volume
+```
+
+does NOT automatically mean:
+
+```text
+BEARISH
+```
+
+The interpretation depends on price behavior.
+
+Examples:
+
+```text
+Price ↑ + Volume ↑
+```
+
+may indicate strong participation supporting the move.
+
+```text
+Price ↑ + Volume ↓
+```
+
+may indicate weak participation / lack of confirmation.
+
+```text
+Price ↓ + Volume ↑
+```
+
+may indicate aggressive selling participation.
+
+```text
+Price ↓ + Volume ↓
+```
+
+may indicate weak selling / declining participation.
+
+The module must therefore distinguish:
+
+### Volume state
+
+from:
+
+### Price-volume interpretation
+
+---
+
+# 4. OUTPUT STRUCTURE
+
+Create a clear exported interface similar to:
+
+```ts
+export interface VolumeState {
+  current: number
+  baseline: number
+  relativeVolume: number
+
+  expansion: VolumeExpansionState
+  contraction: VolumeContractionState
+
+  transition: VolumeTransition
+
+  priceVolumeRelationship: PriceVolumeRelationship
+
+  directional: MarketDirection
+
+  strength: number
+
+  long: number
+  short: number
+
+  reasons: string[]
+}
+```
+
+Adapt this to the existing project's architecture if necessary.
+
+Do not duplicate existing shared types.
+
+---
+
+# 5. CURRENT VOLUME
+
+`current` should represent the current candle's volume:
+
+```ts
+current = candles[index].volume
+```
+
+Do not transform the raw value unnecessarily.
+
+---
+
+# 6. VOLUME BASELINE
+
+Calculate a causal baseline using previous candles.
+
+For example:
+
+```text
+baseline = average volume over previous N candles
+```
+
+Important:
+
+The baseline must NOT include future candles.
+
+Prefer a configurable rolling window.
+
+For example:
+
+```ts
+VOLUME_BASELINE_PERIOD
+```
+
+Do not blindly use a fixed 20-candle value if the existing architecture already has a standard period.
+
+The baseline should be robust against individual volume spikes.
+
+Consider whether a median or trimmed/robust baseline is more appropriate than a simple average.
+
+If implementing a robust baseline, keep the reasoning clear and deterministic.
+
+---
+
+# 7. RELATIVE VOLUME
+
+Calculate:
+
+```text
+relativeVolume = currentVolume / baselineVolume
+```
+
+Examples:
+
+```text
+0.50x → unusually low participation
+1.00x → normal participation
+1.50x → elevated participation
+2.50x → strong volume expansion
+```
+
+Do not interpret relative volume as directional by itself.
+
+It measures:
+
+> **How unusual is current volume compared with the recent baseline?**
+
+---
+
+# 8. VOLUME EXPANSION
+
+Detect when volume is meaningfully above its normal baseline.
+
+For example:
+
+```text
+relativeVolume >= expansion threshold
+```
+
+But do not use an arbitrary threshold without putting it into configuration.
+
+For example:
+
+```ts
+VOLUME_EXPANSION_THRESHOLD
+```
+
+Possible state:
+
+```ts
+export interface VolumeExpansionState {
+  detected: boolean
+  ratio: number
+  strength: number
+  reason: string[]
+}
+```
+
+The strength should be `0-100`.
+
+Do not make expansion directional.
+
+Example:
+
+```text
+Large bearish candle + 2.8x volume
+```
+
+should still be:
+
+```text
+expansion = true
+```
+
+while directional interpretation belongs to price-volume relationship.
+
+---
+
+# 9. VOLUME CONTRACTION
+
+Detect when volume is meaningfully below its baseline.
+
+For example:
+
+```text
+relativeVolume <= contraction threshold
+```
+
+Use configuration:
+
+```ts
+VOLUME_CONTRACTION_THRESHOLD
+```
+
+Possible state:
+
+```ts
+export interface VolumeContractionState {
+  detected: boolean
+  ratio: number
+  strength: number
+  reason: string[]
+}
+```
+
+Again:
+
+> Contraction is descriptive, not inherently bullish or bearish.
+
+---
+
+# 10. VOLUME TRANSITIONS
+
+Transitions are more useful than static volume states.
+
+Important transitions include:
+
+```text
+CONTRACTION → EXPANSION
+NORMAL → EXPANSION
+EXPANSION → CONTRACTION
+CONTRACTION → NORMAL
+NORMAL → CONTRACTION
+```
+
+The most important transition for price-action analysis is often:
+
+```text
+CONTRACTION → EXPANSION
+```
+
+because it can indicate that market participation is increasing after a period of inactivity.
+
+Create something like:
+
+```ts
+export type VolumeTransitionType =
+  | 'NONE'
+  | 'CONTRACTION_TO_EXPANSION'
+  | 'NORMAL_TO_EXPANSION'
+  | 'EXPANSION_TO_CONTRACTION'
+  | 'CONTRACTION_TO_NORMAL'
+  | 'NORMAL_TO_CONTRACTION'
+```
+
+And:
+
+```ts
+export interface VolumeTransition {
+  detected: boolean
+  type: VolumeTransitionType
+  strength: number
+  reason: string[]
+}
+```
+
+The transition must be determined causally using the current and previous volume states.
+
+---
+
+# 11. DO NOT CONFUSE VOLUME SPIKE WITH VOLUME REGIME CHANGE
+
+A single large-volume candle is not necessarily a new volume regime.
+
+Example:
+
+```text
+Candle 100 → 1.0x
+Candle 101 → 1.1x
+Candle 102 → 4.0x
+Candle 103 → 1.0x
+```
+
+This may simply be a:
+
+```text
+volume spike
+```
+
+rather than:
+
+```text
+new sustained high-volume regime
+```
+
+Distinguish between:
+
+### Volume event
+
+and:
+
+### Volume regime
+
+where practical.
+
+Do not overreact to one candle.
+
+---
+
+# 12. PRICE-VOLUME RELATIONSHIP
+
+This is one of the most important parts of the module.
+
+Volume becomes much more useful when interpreted alongside price movement.
+
+Create something similar to:
+
+```ts
+export type PriceVolumeRelationshipType =
+  | 'BULLISH_CONFIRMATION'
+  | 'BEARISH_CONFIRMATION'
+  | 'BULLISH_WEAKNESS'
+  | 'BEARISH_WEAKNESS'
+  | 'ABSORPTION'
+  | 'EXHAUSTION'
+  | 'NEUTRAL'
+```
+
+And:
+
+```ts
+export interface PriceVolumeRelationship {
+  type: PriceVolumeRelationshipType
+  direction: SignalDirection
+  strength: number
+  priceChange: number
+  volumeRatio: number
+  reason: string[]
+}
+```
+
+Adapt this to existing types.
+
+---
+
+# 13. BULLISH VOLUME CONFIRMATION
+
+A bullish price-volume confirmation can occur when:
+
+```text
+Price moves meaningfully upward
++
+Volume expands
+```
+
+Especially when:
+
+* candle has strong bullish structure
+* price displacement is bullish
+* close is strong
+* volume is significantly above baseline
+
+Example:
+
+```text
+Price +1.4%
+Range = 1.8 ATR
+Volume = 2.4x baseline
+Close near high
+```
+
+This is stronger evidence of participation behind the move.
+
+Reasons should include actual values:
+
+```text
+"Price increased 1.4%"
+"Volume expanded to 2.4x baseline"
+"Bullish candle closed near its high"
+```
+
+---
+
+# 14. BEARISH VOLUME CONFIRMATION
+
+Mirror the bullish case.
+
+Example:
+
+```text
+Price -1.3%
+Range = 1.7 ATR
+Volume = 2.6x baseline
+Close near low
+```
+
+This can indicate meaningful selling participation.
+
+Example reasons:
+
+```text
+"Price declined 1.3%"
+"Volume expanded to 2.6x baseline"
+"Bearish candle closed near its low"
+```
+
+---
+
+# 15. BULLISH WEAKNESS
+
+Consider a situation like:
+
+```text
+Price continues upward
++
+volume declines
+```
+
+This does not automatically mean reversal.
+
+Instead, describe it as:
+
+> **Bullish price movement with declining participation.**
+
+This may indicate:
+
+* weakening participation
+* lack of confirmation
+* potential exhaustion if extreme/contextually appropriate
+
+Do NOT turn this automatically into a SHORT signal.
+
+---
+
+# 16. BEARISH WEAKNESS
+
+Mirror:
+
+```text
+Price continues downward
++
+volume declines
+```
+
+This may indicate:
+
+> Bearish movement with declining participation.
+
+Again:
+
+Do not automatically classify this as bullish reversal.
+
+It is a lack of confirmation, not proof of reversal.
+
+---
+
+# 17. EXHAUSTION
+
+Volume spikes near an extreme price movement can sometimes indicate exhaustion.
+
+However:
+
+> High volume alone is NOT exhaustion.
+
+Consider exhaustion only when multiple pieces of evidence align, such as:
+
+```text
+extreme relative volume
++
+large directional movement
++
+poor follow-through / poor close
++
+large opposing wick
++
+movement into a meaningful level
+```
+
+If sufficient context exists, classify it as:
+
+```text
+EXHAUSTION
+```
+
+Otherwise do not manufacture it.
+
+Keep exhaustion conservative.
+
+---
+
+# 18. ABSORPTION
+
+Do not automatically classify high volume as absorption.
+
+Absorption requires evidence that:
+
+```text
+high participation
++
+price fails to continue proportionally
++
+price repeatedly interacts with an area
+```
+
+If the current architecture does not yet provide enough information to confidently detect absorption, do NOT invent it.
+
+It is acceptable to return:
+
+```text
+NEUTRAL
+```
+
+instead.
+
+Later modules such as Heatmap/liquidity analysis can provide stronger absorption evidence.
+
+---
+
+# 19. VOLUME + PRICE ACTION
+
+If `priceAction.ts` is available, use its information rather than recreating it.
+
+For example:
+
+```text
+PriceAction:
+bullish displacement = 82
+
+Volume:
+relative volume = 2.4x
+```
+
+This should produce strong confirmation.
+
+Where:
+
+```text
+PriceAction:
+bullish displacement = 82
+
+Volume:
+relative volume = 0.6x
+```
+
+the module should recognize:
+
+> Strong bullish price movement with weak volume participation.
+
+This is more useful than treating volume independently.
+
+---
+
+# 20. DIRECTIONAL OUTPUT
+
+Provide:
+
+```ts
+directional: MarketDirection
+```
+
+and optionally:
+
+```ts
+long: number
+short: number
+```
+
+But remember:
+
+> Volume is NOT inherently directional.
+
+The directional interpretation should come from the relationship between:
+
+```text
+price movement
++
+volume behavior
++
+candle structure
+```
+
+For example:
+
+```text
+Bullish displacement + high volume
+```
+
+can produce:
+
+```text
+long = high
+short = low
+```
+
+while:
+
+```text
+Bullish movement + declining volume
+```
+
+should produce only modest bullish confirmation.
+
+Do not turn every high-volume candle into LONG/SHORT.
+
+---
+
+# 21. VOLUME SCORE
+
+Return:
+
+```ts
+strength: number
+```
+
+from `0-100`.
+
+This should represent:
+
+> **How significant is the current volume behavior?**
+
+It should consider:
+
+* relative volume
+* expansion/contraction
+* transition
+* price-volume relationship
+* magnitude of change
+* persistence/context when available
+
+Do not simply set:
+
+```text
+strength = relativeVolume
+```
+
+Normalize it appropriately.
+
+---
+
+# 22. LONG / SHORT SHOULD NOT BE PROBABILITIES
+
+If you expose:
+
+```ts
+long
+short
+```
+
+they represent:
+
+> Directional volume confirmation.
+
+They do NOT represent:
+
+* probability of price going up
+* probability of price going down
+* expected return
+* trade success probability
+
+Keep them within:
+
+```text
+0-100
+```
+
+and explain their meaning in comments/types if appropriate.
+
+---
+
+# 23. AVOID DOUBLE COUNTING
+
+Do not independently award full points for:
+
+```text
+bullish candle
++
+bullish displacement
++
+bullish price movement
+```
+
+if these all describe the same underlying event.
+
+The purpose of this module is to determine whether **volume confirms the price behavior**.
+
+It should not become another copy of `priceAction.ts`.
+
+Think:
+
+```text
+priceAction:
+"What did price do?"
+
+volumeState:
+"How much participation accompanied it?"
+```
+
+Then:
+
+```text
+price + volume
+```
+
+produces stronger or weaker confirmation.
+
+---
+
+# 24. VOLUME BASELINE MUST BE CAUSAL
+
+At candle `N`:
+
+```text
+baseline
+relativeVolume
+expansion
+contraction
+transition
+```
+
+must only use information available through candle `N`.
+
+Do not use:
+
+```text
+candles[N + 1 ...]
+```
+
+Do not calculate a historical baseline using future candles.
+
+This is required for realtime processing and backtesting.
+
+---
+
+# 25. MULTI-TIMEFRAME SUPPORT
+
+The same module must work for:
+
+```text
+15m
+1h
+4h
+1d
+```
+
+Do not hardcode assumptions that only work for one timeframe.
+
+If timeframe-specific configuration is needed, make it explicit/configurable.
+
+Do not assume:
+
+```text
+20 candles = 5 hours
+```
+
+because the same module may operate on 15m, 1h, 4h, or 1d data.
+
+---
+
+# 26. SYMBOL INDEPENDENCE
+
+The module must work across:
+
+```text
+BTC
+ETH
+SOL
+altcoins
+```
+
+Avoid absolute volume thresholds.
+
+For example, do NOT do:
+
+```text
+volume > 1,000,000
+```
+
+because BTC and a small altcoin have completely different volume scales.
+
+Use relative measurements:
+
+```text
+current / baseline
+```
+
+and percentage/normalized changes.
+
+---
+
+# 27. HANDLING ZERO / INVALID VOLUME
+
+Handle:
+
+```text
+volume = 0
+baseline = 0
+NaN
+Infinity
+missing data
+```
+
+safely.
+
+Never return:
+
+```text
+Infinity
+NaN
+```
+
+for a score.
+
+Use sensible neutral behavior when volume data is unavailable.
+
+---
+
+# 28. REASONS FOR UI
+
+The UI will plot the volume analysis directly on the chart.
+
+Therefore, every meaningful state should expose human-readable reasons.
+
+For example:
+
+```text
+VOLUME EXPANSION
+2.42x baseline
+
+• Current volume = 2.42x recent baseline
+• Volume increased 86% from previous candle
+• Expansion followed a period of contraction
+```
+
+Another example:
+
+```text
+PRICE/VOLUME
+BULLISH CONFIRMATION
+
+• Price increased 1.4%
+• Relative volume = 2.42x
+• Bullish displacement detected
+• Close location = 94%
+```
+
+Another:
+
+```text
+PRICE/VOLUME
+BULLISH WEAKNESS
+
+• Price increased 0.8%
+• Relative volume declined from 1.32x to 0.71x
+• Price movement was not accompanied by increasing participation
+```
+
+Do not use generic explanations like:
+
+```text
+"Volume is strong"
+"Volume supports the trend"
+"Good confirmation"
+```
+
+unless backed by actual values.
+
+---
+
+# 29. EXPLANATIONS SHOULD BE MEASURABLE
+
+Prefer:
+
+```text
+"Volume = 2.37x baseline"
+```
+
+over:
+
+```text
+"High volume"
+```
+
+Prefer:
+
+```text
+"Volume declined 42% from previous candle"
+```
+
+over:
+
+```text
+"Volume is declining"
+```
+
+Prefer:
+
+```text
+"Price increased 1.2% while relative volume fell from 1.4x to 0.72x"
+```
+
+over:
+
+```text
+"Price rising on weak volume"
+```
+
+The goal is to make the analysis visually understandable.
+
+---
+
+# 30. TRANSITION EXAMPLE
+
+Example:
+
+```text
+Candle 100
+Volume = 0.62x baseline
+
+Candle 101
+Volume = 0.71x baseline
+
+Candle 102
+Volume = 0.68x baseline
+
+Candle 103
+Volume = 1.92x baseline
+```
+
+The engine should recognize:
+
+```text
+CONTRACTION → EXPANSION
+```
+
+rather than simply:
+
+```text
+high volume
+```
+
+This transition may become important to later price-action/scoring modules.
+
+---
+
+# 31. PRICE + VOLUME MATRIX
+
+Use a contextual matrix similar to:
+
+```text
+                         VOLUME
+                  LOW              HIGH
+PRICE UP      weak confirmation   bullish confirmation
+PRICE DOWN    weak confirmation   bearish confirmation
+```
+
+But do not make this simplistic.
+
+Consider:
+
+* magnitude of price movement
+* candle structure
+* relative volume
+* transition
+* previous participation
+* displacement
+* level interaction if available
+
+For example:
+
+```text
+Small price increase + huge volume
+```
+
+may mean something very different from:
+
+```text
+Large price increase + huge volume
+```
+
+Likewise:
+
+```text
+Large price increase + extremely low volume
+```
+
+may indicate weak participation.
+
+---
+
+# 32. IMPORTANT: VOLUME DOES NOT PREDICT BY ITSELF
+
+Do not produce statements such as:
+
+```text
+"Volume predicts price will rise."
+```
+
+Instead:
+
+```text
+"Volume confirms the current bullish price movement."
+```
+
+or:
+
+```text
+"Volume does not confirm the current bullish movement."
+```
+
+The distinction is important.
+
+---
+
+# 33. FUNCTION API
+
+Create a clean exported function such as:
+
+```ts
+export function calculateVolumeState(
+  candles: CandleInfo[],
+  index: number
+): VolumeState
+```
+
+If the existing architecture has a better compatible signature, adapt to it.
+
+If `priceAction` is already available in `CandleInfo`, consume it.
+
+Otherwise, do not recreate the entire price-action engine inside this module.
+
+---
+
+# 34. INITIAL / INSUFFICIENT HISTORY
+
+Handle early candles safely.
+
+If there is not enough historical data to establish a reliable volume baseline:
+
+```text
+relativeVolume
+```
+
+may be unavailable or have low confidence.
+
+Do not manufacture a strong expansion/contraction signal.
+
+Return neutral values where necessary.
+
+For example:
+
+```ts
+strength = 0
+directional = 'NEUTRAL'
+```
+
+until enough historical data exists.
+
+Adapt to the existing architecture.
+
+---
+
+# 35. CONFIGURATION
+
+Use named configuration/constants.
+
+For example:
+
+```text
+VOLUME_BASELINE_PERIOD
+VOLUME_EXPANSION_THRESHOLD
+VOLUME_CONTRACTION_THRESHOLD
+VOLUME_TRANSITION_THRESHOLD
+VOLUME_SPIKE_THRESHOLD
+DIRECTIONAL_CONFIRMATION_THRESHOLD
+```
+
+Do not scatter magic numbers throughout the implementation.
+
+Use existing project configuration conventions where possible.
+
+---
+
+# 36. DETERMINISTIC
+
+The same candle data must always produce the same result.
+
+Do not use:
+
+* randomness
+* external APIs
+* future data
+* hidden mutable state that changes results unpredictably
+
+The implementation must be suitable for:
+
+```text
+historical backtesting
+```
+
+and:
+
+```text
+realtime candle processing
+```
+
+---
+
+# 37. CODE QUALITY
+
+Before implementing:
+
+1. Inspect the existing `CandleInfo` type.
+2. Inspect `candleStructure.ts`.
+3. Inspect `priceAction.ts`.
+4. Inspect existing shared types/utilities.
+5. Reuse existing types.
+6. Do not redefine `CandleInfo`.
+7. Do not duplicate CandleStructure calculations.
+8. Do not duplicate PriceAction calculations.
+9. Follow existing TypeScript conventions.
+10. Avoid unnecessary dependencies.
+11. Keep the implementation testable.
+12. Keep all calculations causal.
+
+If the existing architecture differs from the examples in this prompt, adapt to the existing code rather than creating duplicate structures.
+
+---
+
+# 38. FINAL ARCHITECTURAL RULE
+
+Think of the modules as answering different questions:
+
+```text
+candleStructure.ts
+"What physically happened inside the candle?"
+
+priceAction.ts
+"What is price doing in context?"
+
+volumeState.ts
+"How much participation accompanied that movement?"
+```
+
+Therefore:
+
+```text
+PRICE ACTION
+      +
+VOLUME BEHAVIOR
+      ↓
+CONFIRMATION / CONFLICT
+```
+
+Volume should strengthen or weaken our interpretation of price.
+
+It should NOT become a second price-action engine.
+
+---
+
+# 39. EXAMPLE FINAL RESULT
+
+A strong bullish move might produce:
+
+```ts
+{
+  current: 2450000000,
+  baseline: 1100000000,
+  relativeVolume: 2.23,
+
+  expansion: {
+    detected: true,
+    ratio: 2.23,
+    strength: 82,
+    reason: [
+      "Volume = 2.23x recent baseline"
+    ]
+  },
+
+  contraction: {
+    detected: false,
+    ...
+  },
+
+  transition: {
+    detected: true,
+    type: 'CONTRACTION_TO_EXPANSION',
+    strength: 91,
+    reason: [
+      "Volume transitioned from 0.68x to 2.23x baseline"
+    ]
+  },
+
+  priceVolumeRelationship: {
+    type: 'BULLISH_CONFIRMATION',
+    direction: 'LONG',
+    strength: 88,
+    priceChange: 1.42,
+    volumeRatio: 2.23,
+    reason: [
+      "Price increased 1.42%",
+      "Volume expanded to 2.23x baseline",
+      "Bullish price movement was accompanied by increased participation"
+    ]
+  },
+
+  directional: 'BULLISH',
+
+  long: 88,
+  short: 12,
+
+  strength: 91,
+
+  reasons: [
+    "Strong volume expansion",
+    "Contraction-to-expansion transition",
+    "Volume confirms bullish price movement"
+  ]
+}
+```
+
+The exact interface and calculations should follow the existing codebase.
+
+---
+
+# DELIVERABLE
+
+Generate the complete implementation of:
+
+```text
+volumeState.ts
+```
+
+ONLY.
+
+Do not generate the next analysis module.
+
+Do not modify unrelated files.
+
+Use the existing:
+
+```text
+CandleInfo
+CandleStructure
+PriceAction
+```
+
+architecture.
+
+The implementation must be:
+
+* causal
+* deterministic
+* relative/normalized
+* timeframe-independent
+* symbol-independent
+* explainable
+* UI-friendly
+* suitable for realtime processing
+* suitable for historical backtesting
+* resistant to double counting
+
+Most importantly:
+
+> **VolumeState should explain how participation is changing, whether volume is expanding or contracting, and whether that participation confirms or conflicts with the current price movement.**

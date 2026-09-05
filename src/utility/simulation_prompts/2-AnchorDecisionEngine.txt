@@ -1,0 +1,1037 @@
+We have completed `candleStructure.ts`.
+
+Now implement **ONLY**:
+
+`anchorDecisionEngine.ts`
+
+Do not implement `priceAction.ts`, Heatmap, AVWAP, FRVP, MarketStructure, Volume, Positioning, CandleScore, or any other analysis module.
+
+---
+
+# 1. PURPOSE
+
+The sole purpose of `anchorDecisionEngine.ts` is to determine:
+
+> **Which candle should be used as the anchor candle for each analytical system?**
+
+I do NOT want this module to calculate Heatmap, AVWAP, or FRVP.
+
+I do NOT want this module to calculate:
+
+* liquidity zones
+* VWAP
+* anchored VWAP values
+* volume profile
+* POC
+* VAH
+* VAL
+* trading signals
+* LONG/SHORT predictions
+* final scores
+
+The engine is simply an **anchor locator**.
+
+Its fundamental job is:
+
+```text
+Given candles[0...N]
+
+        ↓
+
+Find meaningful anchor candidates
+
+        ↓
+
+Evaluate them independently for:
+    • Heatmap
+    • AVWAP
+    • FRVP
+
+        ↓
+
+Select the appropriate candle for each system
+
+        ↓
+
+Return the candle index
+```
+
+For example:
+
+```text
+Heatmap → candle 493
+AVWAP   → candle 512
+FRVP    → candle 497
+```
+
+The downstream Heatmap/AVWAP/FRVP modules will later receive those candle indices and perform their own calculations.
+
+---
+
+# 2. VERY IMPORTANT: ANCHOR IS A CANDLE INDEX
+
+The most important property of the result is:
+
+```ts
+candleIndex: number
+```
+
+I primarily need to know:
+
+> **"Which candle should I put the anchor on?"**
+
+Do not turn this into a complicated indicator-state engine.
+
+A result should be conceptually simple:
+
+```ts
+export interface AnchorDecisionResult {
+  candleIndex: number
+  type: AnchorType
+  score: number
+  confidence: number
+  reasons: string[]
+}
+```
+
+The `candleIndex` identifies the exact candle where the anchor should be placed.
+
+`type`, `score`, `confidence`, and `reasons` exist to explain why that candle was selected and allow the UI to visualize the decision.
+
+---
+
+# 3. MULTIPLE ANCHORS ON THE SAME CANDLE ARE VALID
+
+This is extremely important.
+
+**Do NOT assume that one candle can only have one anchor.**
+
+A single candle may be the correct anchor for multiple analytical systems.
+
+For example:
+
+```text
+Candle 493
+├── Heatmap → CONSOLIDATION_START
+├── FRVP    → RANGE_START
+└── AVWAP   → IMPULSE_ORIGIN
+```
+
+This is completely valid.
+
+Another example:
+
+```text
+Candle 512
+├── Heatmap → LIQUIDITY_REGIME_CHANGE
+└── AVWAP   → LIQUIDITY_SWEEP
+```
+
+Therefore:
+
+> **Each analytical system must select its anchor independently.**
+
+Do NOT create a global rule such as:
+
+```text
+one candle = one anchor
+```
+
+Instead:
+
+```text
+Heatmap → independently determine best anchor candle
+AVWAP   → independently determine best anchor candle
+FRVP    → independently determine best anchor candle
+```
+
+The same `candleIndex` may appear in multiple results.
+
+The same candle may also have a different `type` for each analytical system.
+
+For example:
+
+```ts
+{
+  heatmap: {
+    candleIndex: 493,
+    type: 'CONSOLIDATION_START',
+    ...
+  },
+
+  avwap: {
+    candleIndex: 493,
+    type: 'IMPULSE_ORIGIN',
+    ...
+  },
+
+  frvp: {
+    candleIndex: 493,
+    type: 'RANGE_START',
+    ...
+  }
+}
+```
+
+This is preferred.
+
+The goal is NOT to find one globally "best" anchor.
+
+The goal is:
+
+> **Find the best anchor candle for each analytical system.**
+
+---
+
+# 4. ANCHOR TYPES
+
+Create an appropriate type such as:
+
+```ts
+export type AnchorType =
+  | 'CONSOLIDATION_START'
+  | 'RANGE_START'
+  | 'IMPULSE_ORIGIN'
+  | 'STRUCTURE_BREAK'
+  | 'LIQUIDITY_REGIME_CHANGE'
+  | 'RECLAIM'
+  | 'LIQUIDITY_SWEEP'
+  | 'SESSION_START'
+```
+
+Use only types that make sense for the particular analytical system.
+
+Do not force every system to support every anchor type.
+
+---
+
+# 5. HEATMAP ANCHOR
+
+The Heatmap anchor should identify the candle where a meaningful **liquidity-building regime began**.
+
+The important question is:
+
+> "From which candle onward would it make sense to observe how liquidity developed?"
+
+Good candidates include:
+
+* consolidation beginning
+* range beginning
+* volatility compression beginning
+* meaningful structure transition
+* impulse origin
+* liquidity regime change
+* session start when appropriate
+
+Example:
+
+```text
+490 → normal movement
+491 → normal movement
+492 → volatility starts compressing
+493 → consolidation begins
+494 → range
+495 → range
+496 → range
+497 → range
+498 → liquidity begins building
+499 → liquidity continues building
+```
+
+The correct Heatmap anchor may be:
+
+```text
+493
+```
+
+NOT:
+
+```text
+498
+```
+
+because candle 498 is where liquidity became obvious, while candle 493 represents the beginning of the regime in which liquidity developed.
+
+The engine should identify the **origin of the regime**.
+
+Do not simply select the candle with the largest liquidity-related activity.
+
+---
+
+# 6. AVWAP ANCHOR
+
+The AVWAP anchor should identify the candle representing the origin of a meaningful market event.
+
+Good candidates include:
+
+* liquidity sweep
+* displacement
+* reclaim
+* major structure break
+* meaningful impulse origin
+* session start
+
+Example:
+
+```text
+508 → price approaches liquidity
+509 → liquidity interaction
+510 → sweep
+511 → rejection
+512 → displacement/reclaim
+```
+
+Depending on the actual candle data, the engine may decide that:
+
+```text
+510
+```
+
+or:
+
+```text
+511
+```
+
+or:
+
+```text
+512
+```
+
+is the correct AVWAP anchor.
+
+The important point is:
+
+> Select the candle that represents the meaningful origin/event from which AVWAP should be measured.
+
+Do NOT calculate AVWAP.
+
+Do NOT calculate VWAP values.
+
+Only identify the candle index.
+
+---
+
+# 7. FRVP ANCHOR
+
+The FRVP anchor should identify the beginning of a meaningful **volume-distribution period**.
+
+The key question is:
+
+> "From which candle should volume distribution be measured to understand the current trading range?"
+
+Good candidates include:
+
+* consolidation beginning
+* range beginning
+* impulse beginning
+* structural transition
+* major breakout/range formation
+* session start when appropriate
+
+Example:
+
+```text
+493 → consolidation begins
+494 → range
+495 → range
+496 → range
+497 → meaningful distribution established
+498 → range
+499 → breakout
+```
+
+FRVP may use:
+
+```text
+493
+```
+
+because that is where the meaningful volume-distribution regime began.
+
+Do NOT calculate:
+
+* POC
+* VAH
+* VAL
+* volume profile
+* volume-at-price
+
+Only return the anchor candle.
+
+---
+
+# 8. CAUSAL / REALTIME REQUIREMENT
+
+This engine MUST be completely causal.
+
+At candle `N`, it may only use:
+
+```ts
+candles[0 ... N]
+```
+
+It must NEVER use:
+
+```ts
+candles[N + 1 ...]
+```
+
+No future candles.
+
+No look-ahead.
+
+No future-confirmed pivots.
+
+No retrospective knowledge.
+
+This code will eventually run in realtime.
+
+If candle 493 appears to be the beginning of a consolidation based on the information available at candle 493/494/etc., the engine may identify it as a candidate.
+
+But it must never look into the future and say:
+
+> "Candle 493 was definitely a consolidation start because candles 494-510 eventually formed a range."
+
+That would introduce look-ahead bias.
+
+If an event cannot yet be fully confirmed without future candles, treat it as a causal candidate using only the evidence currently available.
+
+---
+
+# 9. ANCHOR ORIGIN VS CURRENT CANDLE
+
+The engine should identify the **origin** of the regime/event.
+
+For example:
+
+```text
+493 → consolidation begins
+494 → consolidation continues
+495 → consolidation continues
+496 → consolidation continues
+497 → consolidation continues
+```
+
+The Heatmap anchor should remain:
+
+```text
+493
+```
+
+It should NOT move to:
+
+```text
+494
+495
+496
+497
+```
+
+just because those candles are also part of the consolidation.
+
+Likewise, if a meaningful event begins at candle 510 and continues through candles 511-515, the anchor should remain associated with the event origin.
+
+The purpose is to identify:
+
+> **"Where did this analytical regime/event begin?"**
+
+not:
+
+> **"Which candle currently belongs to the regime?"**
+
+---
+
+# 10. ANCHOR STABILITY / HYSTERESIS
+
+Avoid anchor thrashing.
+
+If an anchor has already been identified and a later candle is only marginally better, do not continuously move the anchor.
+
+For example:
+
+```text
+493 → strong consolidation-start candidate
+494 → another consolidation candle
+495 → another consolidation candle
+496 → another consolidation candle
+```
+
+The engine should preserve:
+
+```text
+Heatmap anchor = 493
+```
+
+rather than continuously changing the anchor.
+
+A new anchor should replace the previous one only when there is meaningful evidence that a **new analytical regime/event has actually started**.
+
+Use sensible stability/hysteresis logic if the architecture requires state.
+
+Do not over-engineer this.
+
+---
+
+# 11. CANDIDATE EVALUATION
+
+Internally, you may create something like:
+
+```ts
+interface AnchorCandidate {
+  candleIndex: number
+  type: AnchorType
+  score: number
+  reasons: string[]
+}
+```
+
+The engine can generate several candidates and then select the strongest candidate for each system.
+
+Candidate evaluation can consider:
+
+### Candle structure
+
+Use the existing `CandleStructure` information:
+
+* range
+* body
+* body ratio
+* wick ratios
+* close location
+* ATR-normalized range
+* ATR-normalized body
+* expansion
+* compression
+* inside/outside bar
+* engulfing
+* consecutive direction
+
+Do NOT duplicate calculations already implemented by `candleStructure.ts`.
+
+### Volatility
+
+Consider:
+
+* ATR-normalized range
+* volatility compression
+* volatility expansion
+* compression → expansion transition
+* meaningful change in volatility regime
+
+### Volume
+
+Consider:
+
+* relative volume
+* volume expansion
+* volume contraction
+* transition from low activity to meaningful activity
+* transition from high activity to compression
+
+Do not calculate a separate volume-analysis module here.
+
+Only use volume information necessary for anchor selection.
+
+### Price behavior
+
+Where existing causal information is available, consider:
+
+* displacement
+* rejection
+* reclaim
+* breakout
+* failed breakout
+* meaningful directional movement
+
+Do not implement the full `priceAction.ts` module here.
+
+Only use simple anchor-specific logic or existing data if already available.
+
+### Context
+
+Consider:
+
+* previous range
+* consolidation
+* structural transition
+* regime change
+* impulse origin
+* meaningful change in market behavior
+
+---
+
+# 12. NO ARBITRARY ABSOLUTE PRICE THRESHOLDS
+
+Do not use hardcoded absolute price thresholds such as:
+
+```text
+price moved > 100 dollars
+range > 500 dollars
+```
+
+These do not generalize across symbols.
+
+Prefer normalized measurements such as:
+
+```text
+range / ATR
+body / ATR
+relative volume
+percentage change
+relative volatility
+```
+
+The same engine must work across BTC, ETH, SOL, and altcoins.
+
+---
+
+# 13. DIFFERENT SYSTEMS HAVE DIFFERENT OBJECTIVES
+
+Do not use one generic anchor-selection algorithm and simply return the same result for all three systems.
+
+The three systems have different purposes.
+
+### Heatmap
+
+Question:
+
+> "When did the liquidity-building regime begin?"
+
+Prioritize:
+
+```text
+consolidation
+range formation
+compression
+regime transition
+liquidity-building context
+```
+
+### AVWAP
+
+Question:
+
+> "What meaningful event should VWAP be anchored to?"
+
+Prioritize:
+
+```text
+sweep
+displacement
+reclaim
+structure break
+impulse origin
+```
+
+### FRVP
+
+Question:
+
+> "When did the meaningful volume-distribution period begin?"
+
+Prioritize:
+
+```text
+range formation
+consolidation
+distribution regime
+impulse/range origin
+structural transition
+```
+
+The same candle may win for all three.
+
+But they must be evaluated independently.
+
+---
+
+# 14. OUTPUT
+
+Use a simple result structure.
+
+For example:
+
+```ts
+export interface AnchorDecisionResult {
+  candleIndex: number
+  type: AnchorType
+  score: number
+  confidence: number
+  reasons: string[]
+}
+
+export interface AnchorDecision {
+  heatmap: AnchorDecisionResult | null
+  avwap: AnchorDecisionResult | null
+  frvp: AnchorDecisionResult | null
+}
+```
+
+If insufficient evidence exists:
+
+```ts
+{
+  heatmap: null,
+  avwap: null,
+  frvp: null
+}
+```
+
+or only the systems that have enough evidence should contain results.
+
+Do not invent an anchor simply to avoid returning `null`.
+
+---
+
+# 15. REASONS ARE IMPORTANT FOR THE UI
+
+The UI will visually plot these decisions.
+
+Therefore, every selected anchor should contain human-readable reasons.
+
+Example:
+
+```ts
+{
+  candleIndex: 493,
+  type: 'CONSOLIDATION_START',
+  score: 86,
+  confidence: 91,
+  reasons: [
+    'Range compression began',
+    'ATR-normalized range declined',
+    'Relative volume transitioned lower',
+    'Price entered a developing range'
+  ]
+}
+```
+
+Where possible, include actual measurements.
+
+For example:
+
+```text
+Range = 0.62 ATR
+Relative Volume = 0.71x
+Body Ratio = 34%
+```
+
+This is important because the UI should be able to show something like:
+
+```text
+HEATMAP ANCHOR
+Candle 493
+
+CONSOLIDATION_START
+
+Confidence: 91%
+
+• Range compression began
+• Range = 0.62 ATR
+• Relative Volume = 0.71x
+• Price entered a developing range
+```
+
+Do not generate generic reasons such as:
+
+```text
+"Strong anchor"
+"Good setup"
+"Market changed"
+```
+
+Reasons must be tied to actual measurable evidence.
+
+---
+
+# 16. SCORE VS CONFIDENCE
+
+Keep these conceptually separate.
+
+`score`:
+
+> How strong is this candle as an anchor candidate?
+
+`confidence`:
+
+> How confident are we that this is the correct anchor based on the information currently available?
+
+Both should be `0-100`.
+
+Do not make them arbitrary random values.
+
+They should be derived from the candidate evidence.
+
+---
+
+# 17. USE candleStructure.ts AS THE SOURCE OF TRUTH
+
+The existing:
+
+```text
+candleStructure.ts
+```
+
+is the single source of truth for candle-level structural calculations.
+
+Reuse its exported types/functions.
+
+Do NOT duplicate:
+
+* range calculations
+* body calculations
+* wick calculations
+* body ratio
+* close location
+* ATR normalization
+* expansion detection
+* compression detection
+* engulfing detection
+* inside/outside bar detection
+* consecutive candle logic
+
+If something is already provided by `candleStructure.ts`, consume it.
+
+If additional calculations are needed specifically for anchor selection, implement only the anchor-specific logic inside `anchorDecisionEngine.ts`.
+
+---
+
+# 18. DO NOT IMPLEMENT OTHER ANALYSIS MODULES
+
+This file must NOT become a giant analysis engine.
+
+Do not implement:
+
+```text
+priceAction.ts
+volumeState.ts
+positioning.ts
+marketStructure.ts
+heatmap.ts
+avwap.ts
+frvp.ts
+marketContext.ts
+candleScore.ts
+```
+
+Those will be separate modules.
+
+The dependency direction should be approximately:
+
+```text
+Candle data
+    ↓
+candleStructure.ts
+    ↓
+anchorDecisionEngine.ts
+    ↓
+Heatmap / AVWAP / FRVP
+    ↓
+other analysis modules
+```
+
+The Anchor Decision Engine only determines **where those downstream analytical calculations should start**.
+
+---
+
+# 19. SUGGESTED API
+
+Create a clean exported function such as:
+
+```ts
+export function determineAnchorDecision(
+  candles: CandleInfo[],
+  index: number
+): AnchorDecision
+```
+
+If the existing architecture has a better compatible signature, use it.
+
+Do not create duplicate versions of `CandleInfo`.
+
+Do not create duplicate `CandleStructure` definitions.
+
+Inspect the existing project first and reuse existing types.
+
+The function must evaluate only information available through `index`.
+
+For example:
+
+```ts
+candles.slice(0, index + 1)
+```
+
+is acceptable.
+
+Anything after `index` is forbidden.
+
+---
+
+# 20. INITIAL / INSUFFICIENT DATA
+
+Handle insufficient history safely.
+
+For example, if there are not enough candles to establish a meaningful regime:
+
+```ts
+{
+  heatmap: null,
+  avwap: null,
+  frvp: null
+}
+```
+
+Do not manufacture an anchor.
+
+Do not automatically use candle `0` unless the logic explicitly determines that the beginning of the available dataset is an appropriate anchor.
+
+---
+
+# 21. CONFIGURATION
+
+Do not scatter magic numbers throughout the code.
+
+Use named constants/configuration for thresholds and weights.
+
+For example:
+
+```ts
+MIN_HISTORY
+MIN_ANCHOR_SCORE
+CONFIDENCE_THRESHOLD
+COMPRESSION_THRESHOLD
+EXPANSION_THRESHOLD
+MIN_REGIME_CHANGE
+ANCHOR_STABILITY_THRESHOLD
+```
+
+Use the project's existing configuration conventions if they exist.
+
+Keep these values easy to tune later.
+
+---
+
+# 22. REALTIME BEHAVIOR
+
+The function should work when called repeatedly:
+
+```text
+candle 100 → determine anchors
+candle 101 → determine anchors
+candle 102 → determine anchors
+...
+```
+
+The results should remain causally valid.
+
+Do not assume that the entire future dataset is available.
+
+The architecture must work for both:
+
+```text
+historical backtesting
+```
+
+and:
+
+```text
+live candle processing
+```
+
+---
+
+# 23. CODE QUALITY
+
+Before implementing:
+
+1. Inspect the existing `CandleInfo` type.
+2. Inspect the existing `CandleStructure` type/function.
+3. Inspect existing utility functions that may already provide ATR, volume, or time information.
+4. Reuse existing types and utilities.
+5. Do not redefine existing types.
+6. Follow the project's existing TypeScript conventions.
+7. Avoid unnecessary dependencies.
+8. Keep this file focused only on anchor selection.
+9. Keep all logic deterministic.
+10. Make the implementation easy to test.
+
+If imports or minimal type changes are required, make only the minimum necessary changes.
+
+---
+
+# 24. FINAL ARCHITECTURAL RULE
+
+Think of `anchorDecisionEngine.ts` as:
+
+> **A smart candle-index locator.**
+
+Not an indicator.
+
+Not a trading signal.
+
+Not a scoring engine.
+
+Not a Heatmap calculator.
+
+Not an AVWAP calculator.
+
+Not an FRVP calculator.
+
+Its job is simply:
+
+```text
+                  Candle History
+                       │
+                       ▼
+              Anchor Candidate Detection
+                       │
+          ┌────────────┼────────────┐
+          ▼            ▼            ▼
+      Heatmap        AVWAP         FRVP
+          │            │            │
+          ▼            ▼            ▼
+       Candle X      Candle Y     Candle Z
+```
+
+And importantly:
+
+```text
+Candle X may equal Candle Y
+Candle Y may equal Candle Z
+Candle X may equal Candle Z
+```
+
+There is **no requirement that the three anchors be different candles**.
+
+For example, this is completely valid:
+
+```text
+Candle 493
+├── Heatmap anchor
+├── AVWAP anchor
+└── FRVP anchor
+```
+
+The engine should select the correct candle independently for each analytical system.
+
+---
+
+# DELIVERABLE
+
+Generate the complete implementation of:
+
+```text
+anchorDecisionEngine.ts
+```
+
+ONLY.
+
+Do not generate `priceAction.ts` or any other analysis module.
+
+Use the existing project's types and `candleStructure.ts`.
+
+Keep the implementation production-quality, causal, deterministic, explainable, and focused on answering one question:
+
+> **"Which candle should I put the anchor on for Heatmap, AVWAP, and FRVP?"**

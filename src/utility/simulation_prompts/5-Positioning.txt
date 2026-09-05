@@ -1,0 +1,1795 @@
+We have completed:
+
+```text
+candleStructure.ts
+anchorDecisionEngine.ts
+priceAction.ts
+volumeState.ts
+```
+
+Now implement **ONLY**:
+
+```text
+positioning.ts
+```
+
+Do not implement `marketStructure.ts`, `heatmap.ts`, `avwap.ts`, `frvp.ts`, `marketContext.ts`, `candleScore.ts`, or any other analysis module.
+
+---
+
+# 1. PURPOSE
+
+The purpose of `positioning.ts` is to answer:
+
+> **"How are market participants positioned, how is that positioning changing, and does positioning support or conflict with the current price movement?"**
+
+The primary inputs are:
+
+* Open Interest (OI)
+* Long/Short ratio (LS Ratio)
+* price movement
+
+The module should identify:
+
+* OI level
+* OI change
+* OI trend
+* Long/Short ratio
+* Long/Short ratio change
+* positioning bias
+* crowding
+* positioning/price relationships
+* divergence
+* potential trapped positioning
+* positioning confirmation/conflict
+* timeframe alignment
+* directional interpretation
+* explainable reasons
+
+This is **not a liquidation engine**.
+
+This is **not a trade signal generator**.
+
+This is **not a prediction model**.
+
+It should describe the positioning environment and its relationship with price.
+
+---
+
+# 2. IMPORTANT ARCHITECTURE
+
+The architecture is approximately:
+
+```text
+CandleInfo
+    │
+    ├── candleStructure.ts
+    ├── anchorDecisionEngine.ts
+    ├── priceAction.ts
+    ├── volumeState.ts
+    │
+    ▼
+positioning.ts
+```
+
+The positioning module should consume existing price/candle information where useful.
+
+Do NOT duplicate calculations already provided by other modules.
+
+For example, do not recreate:
+
+* candle structure
+* price-action events
+* volume analysis
+
+Use existing results if available.
+
+---
+
+# 3. CORE PRINCIPLE
+
+Positioning should NOT be interpreted independently.
+
+For example:
+
+```text
+OI ↑
+```
+
+does NOT automatically mean:
+
+```text
+BULLISH
+```
+
+And:
+
+```text
+OI ↓
+```
+
+does NOT automatically mean:
+
+```text
+BEARISH
+```
+
+OI tells us about changes in open positions.
+
+The meaning depends heavily on:
+
+```text
+price movement
++
+OI change
++
+Long/Short positioning
++
+timeframe context
+```
+
+Likewise:
+
+```text
+LS Ratio > 1
+```
+
+does not automatically mean price will rise.
+
+It means the measured long/short positioning is relatively long-biased.
+
+The module must preserve this distinction.
+
+---
+
+# 4. REQUIRED TIMEFRAMES
+
+Positioning should support:
+
+```text
+15m
+1h
+4h
+```
+
+and optionally:
+
+```text
+1d
+```
+
+The most important architecture is:
+
+```text
+4H → higher-timeframe positioning context
+1H → setup positioning
+15M → immediate positioning
+```
+
+Do NOT simply average these timeframes.
+
+Each timeframe should be analyzed independently first.
+
+Then derive alignment/divergence.
+
+---
+
+# 5. OI DATA
+
+For each supported timeframe, capture:
+
+```ts
+OIState
+```
+
+containing at minimum:
+
+```ts
+interface OIState {
+  current: number
+  previous: number
+
+  change: number
+  changePercent: number
+
+  direction: 'INCREASING' | 'DECREASING' | 'FLAT'
+
+  strength: number
+  reasons: string[]
+}
+```
+
+Adapt this to existing project conventions.
+
+The important values are:
+
+```text
+current OI
+previous OI
+absolute change
+percentage change
+direction
+strength
+```
+
+---
+
+# 6. OI CHANGE MUST BE CAUSAL
+
+At candle/index `N`, only use OI information available through `N`.
+
+Never use:
+
+```text
+future OI
+future price
+future positioning
+```
+
+No look-ahead.
+
+The module must work in realtime and historical backtesting.
+
+---
+
+# 7. OI TREND
+
+Do not only compare:
+
+```text
+current OI
+vs
+previous OI
+```
+
+when enough historical data exists.
+
+Also determine whether OI is:
+
+```text
+rising
+falling
+stable
+```
+
+over a configurable rolling window.
+
+For example:
+
+```text
+Candle 100 → OI 100
+Candle 101 → OI 103
+Candle 102 → OI 106
+Candle 103 → OI 110
+```
+
+This is more meaningful than a single OI increase.
+
+Use configurable windows.
+
+Do not use hardcoded absolute OI values.
+
+---
+
+# 8. LONG / SHORT RATIO
+
+Capture:
+
+```ts
+LSRatioState
+```
+
+with values such as:
+
+```ts
+interface LSRatioState {
+  current: number
+  previous: number
+
+  change: number
+  changePercent: number
+
+  bias: 'LONG_HEAVY' | 'SHORT_HEAVY' | 'BALANCED'
+
+  strength: number
+
+  reasons: string[]
+}
+```
+
+Adapt if necessary.
+
+The important distinction:
+
+```text
+LS ratio
+```
+
+describes positioning bias.
+
+It does NOT predict future price direction.
+
+---
+
+# 9. INTERPRETING LS RATIO
+
+Use a configurable neutral range rather than simplistic:
+
+```text
+> 1 = bullish
+< 1 = bearish
+```
+
+For example, depending on the data convention:
+
+```text
+LS = 1.00
+```
+
+may be considered relatively balanced.
+
+But:
+
+```text
+LS = 1.45
+```
+
+could indicate significant long-side crowding.
+
+Likewise:
+
+```text
+LS = 0.70
+```
+
+could indicate significant short-side crowding.
+
+Use configurable thresholds such as:
+
+```ts
+LS_LONG_CROWDING_THRESHOLD
+LS_SHORT_CROWDING_THRESHOLD
+LS_BALANCED_RANGE
+```
+
+Do not hardcode these throughout the implementation.
+
+---
+
+# 10. MOST IMPORTANT PART: PRICE + OI
+
+The module should classify common price/OI relationships.
+
+Use a framework similar to:
+
+```text
+                    OI INCREASES
+                 │
+                 │
+Price UP         │   New longs / bullish participation
+                 │
+Price DOWN       │   New shorts / bearish participation
+                 │
+─────────────────┼──────────────────
+                 │
+Price UP         │   Short covering
+                 │
+Price DOWN       │   Long liquidation / long closing
+                 │
+                    OI DECREASES
+```
+
+But do NOT blindly label these.
+
+Use:
+
+* magnitude of price change
+* magnitude of OI change
+* direction
+* LS ratio
+* recent positioning context
+
+to determine the most likely positioning interpretation.
+
+---
+
+# 11. PRICE UP + OI UP
+
+This generally indicates:
+
+> New positions are entering while price rises.
+
+This can be consistent with:
+
+```text
+NEW_LONGS
+```
+
+especially when LS positioning is also becoming more long-biased.
+
+Example:
+
+```text
+Price +1.2%
+OI +4.5%
+LS 1.35
+```
+
+Possible interpretation:
+
+```text
+BULLISH_POSITIONING
+```
+
+Reasons:
+
+```text
+"Price increased 1.2%"
+"Open interest increased 4.5%"
+"Long-side positioning is elevated at 1.35"
+"Rising price is accompanied by increasing open interest"
+```
+
+Do NOT call it guaranteed new longs.
+
+Use wording such as:
+
+> "Consistent with long positioning entering."
+
+---
+
+# 12. PRICE DOWN + OI UP
+
+This generally indicates:
+
+> New positions are entering while price declines.
+
+This can be consistent with:
+
+```text
+NEW_SHORTS
+```
+
+especially when LS positioning is becoming more short-biased.
+
+Example:
+
+```text
+Price -1.1%
+OI +5.2%
+LS 0.72
+```
+
+Possible interpretation:
+
+```text
+BEARISH_POSITIONING
+```
+
+Again, phrase the reasoning probabilistically:
+
+> "Consistent with short positioning entering."
+
+Do not claim certainty.
+
+---
+
+# 13. PRICE UP + OI DOWN
+
+This often indicates:
+
+> Positions are being closed while price rises.
+
+This can be consistent with:
+
+```text
+SHORT_COVERING
+```
+
+especially when the existing positioning was short-heavy.
+
+Example:
+
+```text
+Price +2.0%
+OI -6.0%
+LS 0.68 → 0.82
+```
+
+Potential interpretation:
+
+```text
+SHORT_COVERING
+```
+
+This can produce strong price movement without equivalent new participation.
+
+That distinction is important.
+
+---
+
+# 14. PRICE DOWN + OI DOWN
+
+This can be consistent with:
+
+```text
+LONG_CLOSING
+```
+
+or:
+
+```text
+LONG_LIQUIDATION
+```
+
+depending on the surrounding context.
+
+Example:
+
+```text
+Price -1.8%
+OI -7.2%
+LS 1.42 → 1.18
+```
+
+Possible interpretation:
+
+```text
+LONG_UNWINDING
+```
+
+Do NOT automatically call this liquidation.
+
+Actual liquidation requires stronger evidence.
+
+Use wording such as:
+
+> "Consistent with long positioning being reduced."
+
+---
+
+# 15. DO NOT OVERCLAIM POSITIONING CAUSE
+
+This is critical.
+
+OI and LS data generally cannot prove exactly which market participants caused a move.
+
+Therefore avoid statements like:
+
+```text
+"100% new longs entered."
+```
+
+Instead:
+
+```text
+"Price and OI increased together, consistent with new long positioning."
+```
+
+Or:
+
+```text
+"Price increased while OI declined, consistent with short covering."
+```
+
+This keeps the analysis statistically/structurally honest.
+
+---
+
+# 16. POSITIONING REGIMES
+
+Create a useful positioning classification.
+
+For example:
+
+```ts
+export type PositioningRegime =
+  | 'LONG_BUILDUP'
+  | 'SHORT_BUILDUP'
+  | 'SHORT_COVERING'
+  | 'LONG_UNWINDING'
+  | 'NEUTRAL'
+```
+
+Potential mapping:
+
+```text
+Price ↑ + OI ↑ → LONG_BUILDUP
+Price ↓ + OI ↑ → SHORT_BUILDUP
+Price ↑ + OI ↓ → SHORT_COVERING
+Price ↓ + OI ↓ → LONG_UNWINDING
+```
+
+But use LS ratio and magnitude as contextual confirmation.
+
+Do not force a regime when the evidence is weak.
+
+---
+
+# 17. CROWDING
+
+Positioning crowding is important.
+
+Detect when:
+
+```text
+LS ratio becomes significantly skewed
+```
+
+and ideally when that skew is persistent or increasing.
+
+For example:
+
+```text
+4H LS = 1.10
+1H LS = 1.25
+15M LS = 1.48
+```
+
+This may indicate:
+
+> Increasing local long crowding.
+
+Likewise:
+
+```text
+4H LS = 0.92
+1H LS = 0.78
+15M LS = 0.63
+```
+
+may indicate:
+
+> Increasing local short crowding.
+
+Crowding is NOT itself a LONG or SHORT signal.
+
+It is a risk/context condition.
+
+---
+
+# 18. TIMEFRAME POSITIONING STRUCTURE
+
+Analyze the timeframes independently.
+
+For example:
+
+```text
+4H:
+OI ↑
+LS 0.78
+
+1H:
+OI ↑
+LS 0.84
+
+15M:
+OI ↑↑
+LS 1.42
+```
+
+Do not average this into:
+
+```text
+LS = 1.01
+```
+
+That would destroy useful information.
+
+Instead identify:
+
+```text
+HTF positioning → short-biased
+Local positioning → long-crowded
+```
+
+This is potentially important because local longs may be trading against higher-timeframe positioning.
+
+---
+
+# 19. TIMEFRAME ALIGNMENT
+
+Create a structure such as:
+
+```ts
+export interface PositioningTimeframeAlignment {
+  aligned: boolean
+  direction: SignalDirection
+  score: number
+
+  htf: ...
+  setup: ...
+  immediate: ...
+
+  conflicts: string[]
+  reasons: string[]
+}
+```
+
+Do not simply average the timeframe scores.
+
+Instead identify:
+
+### Aligned
+
+```text
+4H bullish
+1H bullish
+15M bullish
+```
+
+### Conflicting
+
+```text
+4H bearish
+1H bearish
+15M bullish
+```
+
+### Transition
+
+```text
+4H bearish
+1H transitioning
+15M bullish
+```
+
+The distinction matters.
+
+---
+
+# 20. HTF VS LOCAL POSITIONING
+
+One of the most useful patterns is:
+
+```text
+HTF positioning
+vs
+local positioning
+```
+
+Example:
+
+```text
+4H:
+OI rising
+LS = 0.75
+
+1H:
+OI rising
+LS = 0.82
+
+15M:
+OI rising strongly
+LS = 1.48
+```
+
+Interpretation:
+
+```text
+Higher timeframe → short-biased
+Immediate timeframe → long crowded
+```
+
+This should NOT automatically become:
+
+```text
+SHORT
+```
+
+Instead:
+
+```text
+"Local longs are crowded against short-biased higher-timeframe positioning."
+```
+
+This becomes a **risk/conflict condition** for later scoring.
+
+---
+
+# 21. OI + PRICE DIVERGENCE
+
+Detect meaningful divergences.
+
+Examples:
+
+```text
+Price ↑
+OI ↓
+```
+
+Possible:
+
+```text
+short covering
+```
+
+or:
+
+```text
+weak new participation
+```
+
+depending on LS/context.
+
+Another:
+
+```text
+Price ↓
+OI ↑
+```
+
+can indicate:
+
+```text
+short buildup
+```
+
+Another important case:
+
+```text
+Price ↑
+OI flat/declining
+LS increasingly long
+```
+
+may indicate price rising without strong new OI participation while traders become increasingly long-biased.
+
+This can create a crowding warning.
+
+The engine should expose these observations.
+
+---
+
+# 22. OI SPIKE
+
+Detect unusually large OI changes relative to recent history.
+
+For example:
+
+```text
+OI change = +8%
+```
+
+should mean something different if normal changes are:
+
+```text
+±0.5%
+```
+
+versus:
+
+```text
+±7%
+```
+
+Use relative/normalized change.
+
+For example:
+
+```text
+OI change / rolling typical OI change
+```
+
+or another robust method.
+
+Avoid arbitrary absolute OI thresholds.
+
+---
+
+# 23. LS SPIKE / SHIFT
+
+Likewise detect significant LS changes.
+
+Example:
+
+```text
+1.02 → 1.45
+```
+
+is more important than:
+
+```text
+1.02 → 1.04
+```
+
+The output should expose:
+
+```text
+LS change
+LS change percentage
+bias shift
+crowding change
+```
+
+where appropriate.
+
+---
+
+# 24. POSITIONING + PRICE ACTION
+
+If `priceAction.ts` is available, use it.
+
+For example:
+
+```text
+PriceAction:
+bullish displacement
+
+Positioning:
+OI ↑
+LS ↑
+```
+
+This provides stronger alignment.
+
+But:
+
+```text
+PriceAction:
+bullish displacement
+
+Positioning:
+OI ↓
+LS heavily short
+```
+
+could indicate:
+
+```text
+short covering
+```
+
+which is still bullish price action but has a different positioning mechanism.
+
+That distinction is important.
+
+Do not blindly add independent scores.
+
+---
+
+# 25. POSITIONING + VOLUME
+
+If `volumeState.ts` is available, it may be useful as contextual confirmation.
+
+For example:
+
+```text
+Price ↑
+OI ↑
+Volume ↑
+```
+
+can represent strong participation.
+
+While:
+
+```text
+Price ↑
+OI ↓
+Volume ↑
+```
+
+may represent a high-participation short-covering move.
+
+Do not duplicate volume analysis.
+
+Use the existing module if available.
+
+---
+
+# 26. LONG / SHORT OUTPUT
+
+Provide directional interpretation:
+
+```ts
+long: number
+short: number
+```
+
+within:
+
+```text
+0-100
+```
+
+These values represent:
+
+> How strongly positioning currently supports bullish vs bearish interpretation.
+
+They are NOT:
+
+* probability
+* expected return
+* win rate
+* trade success probability
+
+Examples:
+
+```text
+Price ↑ + OI ↑ + LS increasingly long
+```
+
+may produce stronger:
+
+```text
+long
+```
+
+while:
+
+```text
+Price ↑ + OI ↓ + LS historically short-heavy
+```
+
+may still produce bullish directional pressure but classify the mechanism as:
+
+```text
+SHORT_COVERING
+```
+
+The score should reflect the actual positioning context.
+
+---
+
+# 27. CROWDING SHOULD NOT BE TREATED AS DIRECTION
+
+This is very important.
+
+Example:
+
+```text
+LS = 1.50
+```
+
+means long-heavy positioning.
+
+It does NOT mean:
+
+```text
+LONG SCORE = 100
+```
+
+In fact, extreme long crowding can represent:
+
+> increased downside vulnerability if price fails.
+
+Likewise extreme short crowding can create upside vulnerability.
+
+Therefore expose crowding separately from directional confirmation.
+
+---
+
+# 28. TRAPPED POSITIONING
+
+Identify potential trapped positioning when appropriate.
+
+Example:
+
+```text
+Price breaks upward
++
+OI rises strongly
++
+LS becomes heavily long
++
+price subsequently fails/rejects
+```
+
+At the moment of the rejection, the system may identify:
+
+> Potentially trapped longs.
+
+Likewise:
+
+```text
+Price breaks downward
++
+OI rises
++
+LS becomes heavily short
++
+price reclaims upward
+```
+
+may indicate:
+
+> Potentially trapped shorts.
+
+Do NOT use future candles to identify this.
+
+Only identify it when the current candle itself provides the evidence.
+
+Use wording such as:
+
+```text
+"Positioning is potentially trapped"
+```
+
+rather than asserting certainty.
+
+---
+
+# 29. LIQUIDATION VS UNWINDING
+
+Do not automatically equate:
+
+```text
+OI ↓
+```
+
+with liquidation.
+
+OI reduction may result from:
+
+* voluntary closing
+* short covering
+* long unwinding
+* liquidation
+* other position reduction
+
+Without liquidation data, do not claim actual liquidation.
+
+Use:
+
+```text
+LONG_UNWINDING
+SHORT_COVERING
+POSITION_REDUCTION
+```
+
+where appropriate.
+
+If actual liquidation information exists in the existing architecture, it may be consumed, but do not implement a liquidation data source here.
+
+---
+
+# 30. REASONS ARE REQUIRED
+
+The UI will visualize positioning.
+
+Every meaningful state should provide measurable reasons.
+
+Example:
+
+```text
+POSITIONING
+
+4H
+OI: +3.2%
+LS: 0.78
+Bias: SHORT_HEAVY
+
+1H
+OI: +4.1%
+LS: 0.84
+Bias: SHORT_HEAVY
+
+15M
+OI: +7.8%
+LS: 1.42
+Bias: LONG_HEAVY
+
+Interpretation:
+• Higher timeframes remain short-biased
+• 15M positioning shifted strongly long
+• Local long crowding is increasing against HTF positioning
+• OI is increasing across all timeframes
+```
+
+These explanations are essential.
+
+---
+
+# 31. USE ACTUAL VALUES IN REASONS
+
+Prefer:
+
+```text
+"OI increased 5.2%"
+```
+
+over:
+
+```text
+"OI increased significantly"
+```
+
+Prefer:
+
+```text
+"LS ratio increased from 0.82 to 1.37"
+```
+
+over:
+
+```text
+"Long positioning increased"
+```
+
+Prefer:
+
+```text
+"Price declined 1.1% while OI increased 4.8%"
+```
+
+over:
+
+```text
+"Short positioning appears stronger"
+```
+
+The UI needs measurable evidence.
+
+---
+
+# 32. CONFIDENCE
+
+Provide confidence where appropriate.
+
+Confidence should reflect:
+
+* quality of OI data
+* quality of LS data
+* magnitude of changes
+* consistency across measurements
+* timeframe agreement
+* strength of price/positioning relationship
+
+Do not generate artificial high confidence from a single weak measurement.
+
+---
+
+# 33. DATA QUALITY
+
+Handle missing data safely.
+
+Possible cases:
+
+```text
+OI missing
+LS missing
+OI = 0
+LS = 0
+NaN
+Infinity
+insufficient history
+```
+
+Never return:
+
+```text
+NaN
+Infinity
+```
+
+for scores.
+
+If a component is unavailable, degrade gracefully.
+
+For example:
+
+```text
+OI available
+LS unavailable
+```
+
+should still allow OI analysis without inventing LS information.
+
+---
+
+# 34. TIMEFRAME DATA MODEL
+
+Inspect the existing project's data model first.
+
+Do not invent a completely separate symbol structure.
+
+The project generally uses:
+
+```ts
+interface SymbolInfo {
+  name: string
+  '15m': CandleInfo[]
+  '1h': CandleInfo[]
+  '4h': CandleInfo[]
+  '1d': CandleInfo[]
+}
+```
+
+Positioning information should fit naturally into the existing architecture.
+
+If OI/LS data is already attached to candles, consume it.
+
+If OI/LS are stored separately, create a clean input interface rather than duplicating the entire symbol model.
+
+---
+
+# 35. IMPORTANT: OI/LS DATA ALIGNMENT
+
+Be careful when OI/LS timestamps do not exactly match candle timestamps.
+
+Do not assume array indices always correspond across different timeframes/data sources.
+
+If the existing data model contains timestamps:
+
+```text
+openTime
+closeTime
+timestamp
+```
+
+use them to align positioning observations with candles where necessary.
+
+Do not silently associate unrelated timestamps.
+
+---
+
+# 36. TIMEFRAME ALIGNMENT MUST BE CAUSAL
+
+When evaluating:
+
+```text
+15m
+1h
+4h
+1d
+```
+
+ensure each timeframe only uses information that was actually available at the current timestamp.
+
+Do not accidentally use a future 4H observation simply because the 4H array contains a later candle.
+
+This is especially important for backtesting.
+
+---
+
+# 37. NO LOOK-AHEAD
+
+This rule applies to EVERYTHING in this module.
+
+At time `T`, the module may only use:
+
+```text
+price <= T
+OI <= T
+LS <= T
+```
+
+It must never use:
+
+```text
+future price
+future OI
+future LS
+```
+
+No future confirmation.
+
+No hindsight classification.
+
+No retrospective trapped-position detection.
+
+---
+
+# 38. CONFIGURATION
+
+Use named configuration/constants.
+
+For example:
+
+```ts
+POSITIONING_OI_CHANGE_THRESHOLD
+OI_TREND_PERIOD
+LS_LONG_CROWDING_THRESHOLD
+LS_SHORT_CROWDING_THRESHOLD
+LS_BALANCED_RANGE
+OI_SPIKE_THRESHOLD
+LS_SHIFT_THRESHOLD
+TIMEFRAME_ALIGNMENT_THRESHOLD
+DIRECTION_THRESHOLD
+```
+
+Do not scatter magic numbers throughout the implementation.
+
+Make thresholds easy to tune later.
+
+---
+
+# 39. AVOID DOUBLE COUNTING
+
+This module should not become:
+
+```text
+OI score
++
+LS score
++
+price score
++
+price action score
++
+volume score
+```
+
+The purpose is to understand the positioning mechanism.
+
+For example:
+
+```text
+Price ↑
+OI ↑
+LS ↑
+```
+
+should be interpreted as a coherent positioning state rather than three unrelated bullish votes.
+
+Likewise:
+
+```text
+Price ↑
+OI ↓
+LS remains short-heavy
+```
+
+should be interpreted as potentially consistent with short covering.
+
+The final `candleScore.ts` will later combine positioning with other modules.
+
+---
+
+# 40. POSITIONING REGIME EXAMPLE
+
+Example:
+
+```text
+Price: +1.4%
+OI: +5.8%
+LS: 1.31
+```
+
+Potential output:
+
+```text
+regime: LONG_BUILDUP
+
+reasons:
+• Price increased 1.4%
+• OI increased 5.8%
+• LS ratio = 1.31
+• Price and OI increased together
+• Positioning is consistent with long participation entering
+```
+
+Another:
+
+```text
+Price: +2.1%
+OI: -6.4%
+LS: 0.72 → 0.89
+```
+
+Potential output:
+
+```text
+regime: SHORT_COVERING
+
+reasons:
+• Price increased 2.1%
+• OI decreased 6.4%
+• Existing positioning was short-biased
+• Price rose while open interest declined
+• Movement is consistent with short covering
+```
+
+Another:
+
+```text
+Price: -1.7%
+OI: -5.9%
+LS: 1.41 → 1.17
+```
+
+Potential:
+
+```text
+regime: LONG_UNWINDING
+
+reasons:
+• Price declined 1.7%
+• OI decreased 5.9%
+• Long-side positioning was elevated
+• Price decline accompanied by declining OI
+• Movement is consistent with long positioning being reduced
+```
+
+---
+
+# 41. IMPORTANT INTERPRETATION RULE
+
+Never state:
+
+```text
+"OI increased, therefore longs entered."
+```
+
+Instead:
+
+```text
+"Price increased while OI increased, which is consistent with new long positioning."
+```
+
+Never state:
+
+```text
+"OI decreased, therefore shorts covered."
+```
+
+Instead:
+
+```text
+"Price increased while OI decreased and positioning was previously short-biased, which is consistent with short covering."
+```
+
+The module must distinguish:
+
+> **observable data**
+
+from:
+
+> **inferred positioning mechanism**
+
+---
+
+# 42. FINAL OUTPUT SHOULD BE EXPLAINABLE
+
+The UI should eventually be able to display something like:
+
+```text
+POSITIONING
+
+┌─────────┬─────────┬──────────┬──────────────────┐
+│ TF      │ OI      │ LS       │ State            │
+├─────────┼─────────┼──────────┼──────────────────┤
+│ 4H      │ +3.2%   │ 0.78     │ Short Heavy      │
+│ 1H      │ +4.1%   │ 0.84     │ Short Heavy      │
+│ 15M     │ +7.8%   │ 1.42     │ Long Crowded     │
+└─────────┴─────────┴──────────┴──────────────────┘
+
+INTERPRETATION
+
+• HTF positioning remains short-biased
+• 15M positioning has shifted long
+• Local longs are increasingly crowded
+• OI is increasing across all timeframes
+• Positioning is currently conflicting across timeframes
+```
+
+The data should make this visualization possible.
+
+---
+
+# 43. SUGGESTED API
+
+Create a clean API appropriate to the existing architecture.
+
+For example:
+
+```ts
+export function calculatePositioning(
+  candles: CandleInfo[],
+  index: number,
+  positioningData?: PositioningInput
+): PositioningState
+```
+
+If the existing architecture already stores OI/LS directly on candles, use that instead.
+
+Do not create unnecessary duplicated data structures.
+
+A possible input structure is:
+
+```ts
+interface PositioningInput {
+  '15m'?: PositioningObservation[]
+  '1h'?: PositioningObservation[]
+  '4h'?: PositioningObservation[]
+  '1d'?: PositioningObservation[]
+}
+
+interface PositioningObservation {
+  timestamp: number
+  openInterest: number
+  longShortRatio: number
+}
+```
+
+Only create these if equivalent types do not already exist.
+
+---
+
+# 44. SUGGESTED OVERALL OUTPUT
+
+A structure similar to:
+
+```ts
+export interface PositioningState {
+  current: {
+    oi: OIState
+    lsRatio: LSRatioState
+  }
+
+  regime: PositioningRegime
+
+  priceRelationship: PositioningPriceRelationship
+
+  crowding: CrowdingState
+
+  timeframes: {
+    '15m': PositioningTimeframeState | null
+    '1h': PositioningTimeframeState | null
+    '4h': PositioningTimeframeState | null
+    '1d': PositioningTimeframeState | null
+  }
+
+  alignment: PositioningTimeframeAlignment
+
+  long: number
+  short: number
+
+  confidence: number
+  strength: number
+
+  reasons: string[]
+  warnings: string[]
+}
+```
+
+Adapt this to the existing codebase.
+
+Do not blindly copy the interface if existing types provide a better architecture.
+
+---
+
+# 45. DO NOT MAKE POSITIONING A TRADING SIGNAL
+
+The final output should be interpreted as:
+
+```text
+Positioning:
+LONG_BUILDUP
+```
+
+or:
+
+```text
+Positioning:
+SHORT_COVERING
+```
+
+not:
+
+```text
+BUY NOW
+```
+
+or:
+
+```text
+SELL NOW
+```
+
+The later `candleScore.ts` module will combine:
+
+```text
+Market Structure
+Price Action
+Volume
+Positioning
+Liquidity
+Location
+Flow
+Market Context
+```
+
+into the final analytical score.
+
+---
+
+# 46. CODE QUALITY
+
+Before implementing:
+
+1. Inspect the existing `CandleInfo`.
+2. Inspect `candleStructure.ts`.
+3. Inspect `priceAction.ts`.
+4. Inspect `volumeState.ts`.
+5. Inspect any existing OI/LS data structures.
+6. Inspect timestamp conventions.
+7. Reuse existing types.
+8. Do not redefine `CandleInfo`.
+9. Do not duplicate existing calculations.
+10. Follow existing TypeScript conventions.
+11. Avoid unnecessary dependencies.
+12. Keep the implementation testable.
+13. Keep all calculations causal.
+14. Keep explanations deterministic.
+
+If the existing architecture differs from the examples in this prompt, adapt to the existing project rather than creating duplicate structures.
+
+---
+
+# 47. FINAL ARCHITECTURAL RULE
+
+Think of the modules as answering different questions:
+
+```text
+candleStructure.ts
+"What physically happened inside the candle?"
+
+priceAction.ts
+"What is price doing?"
+
+volumeState.ts
+"How much participation accompanied the movement?"
+
+positioning.ts
+"How are participants positioned, how is that positioning changing, and does it confirm or conflict with price?"
+```
+
+The most important relationship is:
+
+```text
+PRICE
+  +
+OI
+  +
+LONG/SHORT RATIO
+  +
+TIMEFRAME CONTEXT
+       ↓
+POSITIONING INTERPRETATION
+```
+
+Not:
+
+```text
+OI = bullish
+LS > 1 = bullish
+```
+
+---
+
+# DELIVERABLE
+
+Generate the complete implementation of:
+
+```text
+positioning.ts
+```
+
+ONLY.
+
+Do not generate the next analysis module.
+
+Do not modify unrelated files.
+
+Use the existing project types and architecture.
+
+The implementation must be:
+
+* causal
+* deterministic
+* multi-timeframe
+* timeframe-aligned
+* symbol-independent
+* normalized
+* explainable
+* UI-friendly
+* suitable for realtime processing
+* suitable for historical backtesting
+* conservative about inferred positioning
+* resistant to double counting
+
+Most importantly:
+
+> **Positioning.ts should explain what OI and Long/Short positioning are doing, how they relate to price, whether positioning is building/unwinding/covering, whether traders are becoming crowded, and whether higher-timeframe positioning agrees with local positioning — without pretending that OI/LS can prove exactly who entered or exited a position.**

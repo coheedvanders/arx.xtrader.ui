@@ -1,0 +1,401 @@
+Create a new TypeScript file:
+
+candleStructure.ts
+
+This is the FIRST analysis module in my market-analysis architecture.
+
+The purpose of this module is strictly:
+
+"What physically happened inside each candle?"
+
+Do NOT analyze market direction, trend, support/resistance, liquidity, volume behavior, OI, long/short ratio, AVWAP, FRVP, heatmap, or market context.
+
+Those will be separate modules later.
+
+I will provide a sample CandleInfo[] after this prompt. Use the actual structure of my sample and adapt to the existing codebase rather than inventing incompatible types.
+
+==================================================
+INPUT
+==================================================
+
+The function must accept:
+
+getCandleStructure(candles: CandleInfo[]): CandleStructure[]
+
+It must return exactly one CandleStructure for each input candle.
+
+The output index must correspond to the input candle index.
+
+The calculation must be completely causal:
+
+- Never use future candles.
+- Candle N may only use candle N and candles before N.
+- Previous candle data may be used where required.
+- Do not use candles after the current candle to confirm a pattern.
+
+==================================================
+CANDLE STRUCTURE
+==================================================
+
+Create/export:
+
+export interface CandleStructure {
+    direction: MARKET_DIRECTION
+
+    range: number
+    body: number
+    upperWick: number
+    lowerWick: number
+
+    bodyRatio: number
+    upperWickRatio: number
+    lowerWickRatio: number
+
+    closeLocation: number
+
+    rangeAtrRatio: number
+    bodyAtrRatio: number
+
+    isBullish: boolean
+    isBearish: boolean
+    isDoji: boolean
+
+    isExpansion: boolean
+    isCompression: boolean
+
+    isInsideBar: boolean
+    isOutsideBar: boolean
+
+    isBullishEngulfing: boolean
+    isBearishEngulfing: boolean
+
+    consecutiveBullish: number
+    consecutiveBearish: number
+
+    strength: number
+}
+
+Use the existing MARKET_DIRECTION type if it already exists.
+Otherwise create:
+
+export type MARKET_DIRECTION =
+    | 'BULLISH'
+    | 'BEARISH'
+    | 'NEUTRAL'
+    | 'RANGE'
+
+==================================================
+CALCULATIONS
+==================================================
+
+For every candle:
+
+range:
+    high - low
+
+body:
+    abs(close - open)
+
+upperWick:
+    high - max(open, close)
+
+lowerWick:
+    min(open, close) - low
+
+bodyRatio:
+    body / range
+
+upperWickRatio:
+    upperWick / range
+
+lowerWickRatio:
+    lowerWick / range
+
+closeLocation:
+    (close - low) / range
+
+Handle zero range safely.
+Never return NaN or Infinity.
+
+==================================================
+DIRECTION
+==================================================
+
+isBullish:
+    close > open
+
+isBearish:
+    close < open
+
+If close === open:
+
+    direction = 'NEUTRAL'
+
+Otherwise:
+
+    bullish candle -> 'BULLISH'
+    bearish candle -> 'BEARISH'
+
+Do not infer trend from this field.
+
+==================================================
+DOJI
+==================================================
+
+Use a configurable threshold.
+
+Default:
+
+bodyRatio <= 0.10
+
+Do not hardcode the threshold throughout the code.
+
+Create a configuration object/constants section so thresholds can be changed later.
+
+==================================================
+ATR NORMALIZATION
+==================================================
+
+The CandleInfo already contains ATR.
+
+Calculate:
+
+rangeAtrRatio = range / atr
+bodyAtrRatio = body / atr
+
+Handle:
+
+atr <= 0
+NaN
+Infinity
+
+without producing invalid output.
+
+==================================================
+EXPANSION / COMPRESSION
+==================================================
+
+These describe volatility/size only.
+
+They are NOT directional signals.
+
+Default configurable thresholds:
+
+EXPANSION:
+    rangeAtrRatio >= 1.5
+
+COMPRESSION:
+    rangeAtrRatio <= 0.6
+
+Do not interpret expansion as bullish or bearish.
+
+==================================================
+INSIDE BAR
+==================================================
+
+A candle is an inside bar when:
+
+current.high <= previous.high
+AND
+current.low >= previous.low
+
+The first candle must return false.
+
+==================================================
+OUTSIDE BAR
+==================================================
+
+A candle is an outside bar when:
+
+current.high >= previous.high
+AND
+current.low <= previous.low
+
+The first candle must return false.
+
+==================================================
+ENGULFING
+==================================================
+
+Use BODY engulfing, not full-wick engulfing.
+
+Bullish engulfing:
+
+previous candle is bearish
+AND
+current candle is bullish
+AND
+current body completely engulfs previous body.
+
+Bearish engulfing:
+
+previous candle is bullish
+AND
+current candle is bearish
+AND
+current body completely engulfs previous body.
+
+Do not use future candles.
+
+==================================================
+CONSECUTIVE CANDLES
+==================================================
+
+Calculate:
+
+consecutiveBullish
+consecutiveBearish
+
+For example:
+
+BULLISH
+BULLISH
+BULLISH
+
+should produce:
+
+1
+2
+3
+
+A bearish/neutral candle resets consecutiveBullish.
+
+Likewise for consecutiveBearish.
+
+These values must be causal.
+
+==================================================
+STRUCTURAL STRENGTH
+==================================================
+
+Calculate:
+
+strength: 0-100
+
+This is NOT a prediction.
+
+It represents how structurally significant the candle itself is.
+
+Consider measurable properties such as:
+
+- body size
+- body/range ratio
+- close location
+- range relative to ATR
+- wick behavior
+- expansion/compression
+- engulfing/outside-bar characteristics
+
+Do not make strength simply equal to:
+
+bullish = high
+bearish = low
+
+A strong bearish candle should have strong structural strength just as a strong bullish candle does.
+
+Direction and strength are separate concepts.
+
+==================================================
+IMPORTANT ARCHITECTURE RULES
+==================================================
+
+This module must ONLY describe candle structure.
+
+Do NOT add:
+
+- LONG/SHORT prediction
+- probability
+- trading recommendation
+- support/resistance
+- market structure
+- BOS
+- CHOCH
+- liquidity
+- heatmap
+- AVWAP
+- FRVP
+- OI analysis
+- Long/Short ratio analysis
+- volume analysis
+- BTC analysis
+- timeframe alignment
+- final trading score
+
+Those belong to later modules.
+
+==================================================
+EXPLAINABILITY
+==================================================
+
+The analysis will eventually be visualized directly on my trading chart.
+
+Therefore the implementation must be deterministic and easy to inspect.
+
+Avoid mysterious constants or opaque formulas.
+
+Put thresholds in a clearly named configuration section.
+
+Prefer small private helper functions for calculations rather than one huge function.
+
+==================================================
+DATA QUALITY
+==================================================
+
+Handle safely:
+
+- empty arrays
+- single-candle arrays
+- zero range
+- zero ATR
+- NaN
+- Infinity
+- invalid numeric values
+
+Do not throw unnecessarily for normal insufficient-history cases.
+
+For the first candle:
+
+isInsideBar = false
+isOutsideBar = false
+isBullishEngulfing = false
+isBearishEngulfing = false
+
+and consecutive counters should start appropriately.
+
+==================================================
+OUTPUT
+==================================================
+
+Export:
+
+getCandleStructure(
+    candles: CandleInfo[]
+): CandleStructure[]
+
+The returned array must have exactly the same length as candles.
+
+Do not mutate the input candles inside this function.
+
+==================================================
+CODE QUALITY
+==================================================
+
+Use TypeScript.
+
+Do not introduce external dependencies.
+
+Use the existing CandleInfo type if it is already defined elsewhere.
+
+If CandleInfo is not defined in candleStructure.ts, import it from the appropriate existing location.
+
+Do not duplicate CandleInfo unnecessarily.
+
+Keep this file focused only on candle structure.
+
+After generating the code, briefly explain:
+
+1. The formulas used.
+2. The configurable thresholds.
+3. How causality is preserved.
+4. How the strength score is calculated.
+
