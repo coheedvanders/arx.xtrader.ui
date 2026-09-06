@@ -67,6 +67,7 @@
         <DialogHeaderComponent>
             {{ selectedSymbol }}
         </DialogHeaderComponent>
+        <CandleVisualizerV2Component :symbol="selectedSymbol" />
     </DialogComponent>
 </template>
 
@@ -84,6 +85,7 @@ import { KlineUtility } from '@/utility/klineUtility';
 import { klineDbUtilityV2 } from '@/utility/v2/klineDbUtilityV2';
 import { CandleAnalyzerV2 } from '@/utility/v2/candleAnalyzerV2';
 import { SimulationUtilityV2 } from '@/utility/v2/simulationUtilityV2';
+import CandleVisualizerV2Component from './CandleVisualizerV2Component.vue';
 
 const chocoMintoStore = useChocoMintoStore();
 
@@ -112,31 +114,22 @@ const visitedSymbols = ref<Set<string>>(new Set());
 async function runInitialScan() {
     console.log("runInitialScan", props.futureSymbols.length);
 
+    var mainMarkets = [
+        (await klineDbUtilityV2.getSymbolInfo("BTCUSDT"))!,
+        (await klineDbUtilityV2.getSymbolInfo("ETHUSDT"))!,
+        (await klineDbUtilityV2.getSymbolInfo("SOLUSDT"))!,
+    ]
+
     for (let i = 0; i < props.futureSymbols.length; i++) {
         try {
             
             const futureSymbol = props.futureSymbols[i];
 
+            //TARGET SYMBOL ANALYSIS
             if (futureSymbol.symbol != "LTCUSDT") continue;
 
-            var symbolInfo: SymbolInfo = {
-                name: futureSymbol.symbol,
-                candle_15m: mapToInfo(await KlineUtility.getRecentKlines(futureSymbol.symbol, "15m", props.maxInitCandles)),
-                candle_1h: mapToInfo(await KlineUtility.getRecentKlines(futureSymbol.symbol, "1h", props.maxInitCandles)),
-                candle_4h: mapToInfo(await KlineUtility.getRecentKlines(futureSymbol.symbol, "4h", props.maxInitCandles)),
-                candle_1d: mapToInfo(await KlineUtility.getRecentKlines(futureSymbol.symbol, "1d", props.maxInitCandles)),
-
-                oi_15m: await KlineUtility.getOIByRange(futureSymbol.symbol, "15m", props.maxInitCandles),
-                oi_1h: await KlineUtility.getOIByRange(futureSymbol.symbol, "1h", props.maxInitCandles),
-                oi_4h: await KlineUtility.getOIByRange(futureSymbol.symbol, "4h", props.maxInitCandles),
-                oi_1d: await KlineUtility.getOIByRange(futureSymbol.symbol, "1d", props.maxInitCandles),
-
-                ls_15m: await KlineUtility.getLSRatioByRange(futureSymbol.symbol, "15m", props.maxInitCandles),
-                ls_1h: await KlineUtility.getLSRatioByRange(futureSymbol.symbol, "1h", props.maxInitCandles),
-                ls_4h: await KlineUtility.getLSRatioByRange(futureSymbol.symbol, "4h", props.maxInitCandles),
-                ls_1d: await KlineUtility.getLSRatioByRange(futureSymbol.symbol, "1d", props.maxInitCandles),
-            };
-
+            futureSymbol.status = "constructing info";
+            var symbolInfo = await SimulationUtilityV2.constructSymbolInfo(futureSymbol.symbol,props.maxInitCandles)
 
             progressCounter.value = i + 1;
             
@@ -144,7 +137,7 @@ async function runInitialScan() {
             currentFutureSumbol.value = futureSymbol;
             futureSymbol.status = "processing";
 
-            await SimulationUtilityV2.runMarketAnalysis(symbolInfo,[]);
+            await SimulationUtilityV2.runMarketAnalysis(symbolInfo,mainMarkets!);
 
             klineDbUtilityV2.storeSymbolInfo(symbolInfo);
 
@@ -176,18 +169,7 @@ async function runInitialScan() {
 async function onNewCandleSpawned() {
 }
 
-function mapToInfo(rawCandles: Candle[]){ 
-    return rawCandles.map(candle => {
-        return {
-            openTime: candle.openTime,
-            open: candle.open,
-            high: candle.high,
-            low: candle.low,
-            close: candle.close,
-            volume: candle.volume
-        } as CandleInfo;
-    });
-}
+
 
 async function showEntryHistoryModal(futureSymbol: FuturesSymbol) {
     showEntryHistory.value = true;

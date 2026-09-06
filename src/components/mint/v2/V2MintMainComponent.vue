@@ -169,39 +169,27 @@ import SymbolSocketComponent from '../SymbolSocketComponent.vue';
 import { OrderMakerUtility } from '@/utility/OrderMakerUtility';
 import { useChocoMintoStore } from '@/stores/chocoMintoStore';
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
-import SymbolBasketComponent from '../SymbolBasketComponent.vue';
 import { CommonHelperUtility } from '@/utility/CommonHelperUtility';
-import SimulatedPositionSummaryComponent from '../SimulatedPositionSummaryComponent.vue';
 import ButtonComponent from '../../shared/form/ButtonComponent.vue';
-import CheckboxComponent from '../../shared/form/CheckboxComponent.vue';
 import CardComponent from '../../shared/card/CardComponent.vue';
 import CardHeaderComponent from '../../shared/card/CardHeaderComponent.vue';
 import CardBodyComponent from '../../shared/card/CardBodyComponent.vue';
-import { tradeLogger } from '@/utility/tradeSignalLoggerUtility';
 import DialogComponent from '../../shared/dialog/DialogComponent.vue';
 import DialogHeaderComponent from '../../shared/dialog/DialogHeaderComponent.vue';
-// import ReplayCandleEntryComponent from './ReplayCandleEntryComponent.vue';
-import { klineDbUtility } from '@/utility/klineDbUtility';
 import InputComponent from '../../shared/form/InputComponent.vue';
-import { KlineUtility } from '@/utility/klineUtility';
 import { BinanceMarginUtility } from '@/utility/binanceMarginUtility';
 import CandleEntryHistoryComponent from '../CandleEntryHistoryComponent.vue';
 import ReplayCandleEntryComponent from '../ReplayCandleEntryComponent.vue';
 import { useNotificationStore } from '@/stores/notificationStore';
-import LiveAccountMonitoringComponent from '../LiveAccountMonitoringComponent.vue';
-import { indexDBLogger } from '@/utility/indexDbLoggerUtility';
 import TableBodyComponent from '../../shared/table/TableBodyComponent.vue';
 import TableHeaderComponent from '../../shared/table/TableHeaderComponent.vue';
 import TableComponent from '../../shared/table/TableComponent.vue';
-import type { forEach } from 'jszip'
-import TrendRiderComponent from '../TrendRiderComponent.vue';
 import ConditionMetComponent from '../ConditionMetComponent.vue';
 import { WalletSnifferUtility } from '@/utility/WalletSnifferUtility.ts';
-import FlowMovementScannerComponent from '../FlowMovementScannerComponent.vue';
-import ThesisRecordComponent from '../ThesisRecordComponent.vue';
-import BtcProjectionCrossingComponent from '../BtcProjectionCrossingComponent.vue';
 import RiskMeasureComponent from '../RiskMeasureComponent.vue';
 import MarketScannerComponent from './MarketScannerComponent.vue';
+import { SimulationUtilityV2 } from '@/utility/v2/simulationUtilityV2.ts';
+import { klineDbUtilityV2 } from '@/utility/v2/klineDbUtilityV2.ts';
 
 const chocoMintoStore = useChocoMintoStore();
 const notificationStore = useNotificationStore();
@@ -227,12 +215,8 @@ const UI_STATE_INITIALIZING_FUTURE_SYMBOLS = ref(false);
 const UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE = ref("")
 const UI_STATE_FORCE_CLOSE_MESSAGE = ref('')
 const UI_SHOW_REPLAY = ref(false)
-const UI_SYMBOL_OF_INTEREST_MESAGE = ref('')
-const UI_BAL_CHECK = ref('')
 
 const futureSymbolBatches = ref<FuturesSymbol[][]>([])
-
-const symbolsOfInterest = ref<string[]>([])
 
 const onNewCandleBasketTriggerKey = ref(CommonHelperUtility.generateGuid());
 const basketKey = ref(CommonHelperUtility.generateGuid());
@@ -247,7 +231,6 @@ const simulationRunningBalance = ref(300)
 
 const completionCount = ref(0);
 
-const trendRiderRef = ref()
 const conditionMetRef = ref()
 const marketScannerRef = ref()
 
@@ -407,11 +390,15 @@ function symbolBasket_OnCompleted(){
 }
 
 async function runManualSimulation() {
+    UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE.value = "ANALYZING MAIN MARKETS"
+    await analyzeMainMarkets();
+
     chocoMintoStore.isManualSimulation = true;
     
     // Ensure the template ref array exists and has components loaded
     await nextTick();
     
+    UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE.value = ""
     if (marketScannerRef.value && marketScannerRef.value.length > 0) {
         // Trigger runInitialScan on all batches simultaneously
         const scanPromises = marketScannerRef.value.map((scanner: any) => {
@@ -422,5 +409,21 @@ async function runManualSimulation() {
         
         await Promise.all(scanPromises);
     }
+}
+
+async function analyzeMainMarkets(){
+
+    //CONSTRUCT AND ANALYZE MAIN MARKET
+    var mainMarkets = [
+        await SimulationUtilityV2.constructSymbolInfo("BTCUSDT",MAX_INIT_CANDLES),
+        await SimulationUtilityV2.constructSymbolInfo("SOLUSDT",MAX_INIT_CANDLES),
+        await SimulationUtilityV2.constructSymbolInfo("ETHUSDT",MAX_INIT_CANDLES)
+    ]
+
+    await mainMarkets.forEach(async (mainMarketSymbol) => {
+        await SimulationUtilityV2.runMarketAnalysis(mainMarketSymbol,[]);
+
+        klineDbUtilityV2.storeSymbolInfo(mainMarketSymbol);
+    })
 }
 </script>
