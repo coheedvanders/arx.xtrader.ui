@@ -136,7 +136,9 @@ export function getConfluenceScore(
         contradiction,
         entry.strength,
         regime.strength,
-        mainMarketRegime.strength
+        mainMarketRegime.strength,
+        location.strength,
+        finalDirection
     )
 
     const trade = buildTradeRecommendation(
@@ -1795,20 +1797,113 @@ function calculateConfidence(
     contradiction: number,
     entryStrength: number,
     regimeStrength: number,
-    mainMarketStrength: number
+    mainMarketStrength: number,
+    locationStrength: number,
+    direction: SIGNAL_DIRECTION
 ): number {
 
-    const agreement =
-        (
-            normalizeStrength(entryStrength) +
-            normalizeStrength(regimeStrength) +
-            normalizeStrength(mainMarketStrength)
-        ) / 3
+    if (direction === 'NEUTRAL') {
+        return clamp(
+            Math.min(
+                score,
+                locationStrength * 0.5
+            ),
+            0,
+            45
+        )
+    }
 
-    const confidence =
-        score * 0.50 +
-        agreement * 0.35 -
-        contradiction * 0.35
+    const entry =
+        clamp(entryStrength, 0, 100)
+
+    const regime =
+        clamp(regimeStrength, 0, 100)
+
+    const mainMarket =
+        clamp(mainMarketStrength, 0, 100)
+
+    const location =
+        clamp(locationStrength, 0, 100)
+
+    /*
+     * Independent evidence.
+     *
+     * HTF is intentionally the largest component.
+     */
+
+    let confidence =
+        regime * 0.30 +
+        entry * 0.25 +
+        mainMarket * 0.20 +
+        location * 0.15 +
+        score * 0.10
+
+    /*
+     * Contradiction penalty.
+     */
+
+    confidence -=
+        contradiction * 0.40
+
+    /*
+     * The weakest important component limits
+     * how confident we can realistically be.
+     *
+     * This prevents:
+     *
+     * entry = 95
+     * regime = 20
+     *
+     * from becoming a fake high-confidence setup.
+     */
+
+    const directionalFloor =
+        Math.min(
+            entry,
+            regime,
+            location
+        )
+
+    if (directionalFloor >= 70) {
+        confidence += 8
+    }
+
+    if (directionalFloor >= 80) {
+        confidence += 7
+    }
+
+    if (
+        mainMarket >= 70 &&
+        directionalFloor >= 70
+    ) {
+        confidence += 5
+    }
+
+    /*
+     * Strong contradiction should prevent
+     * high-confidence signals.
+     */
+
+    if (contradiction >= 40) {
+        confidence *= 0.80
+    }
+
+    if (contradiction >= 60) {
+        confidence *= 0.65
+    }
+
+    /*
+     * Prevent weak location from producing
+     * high-confidence trades.
+     */
+
+    if (location < 40) {
+        confidence *= 0.75
+    }
+
+    if (location < 25) {
+        confidence *= 0.60
+    }
 
     return clamp(
         confidence,

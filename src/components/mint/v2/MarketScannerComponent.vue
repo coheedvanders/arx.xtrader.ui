@@ -126,7 +126,7 @@ async function runInitialScan() {
             const futureSymbol = props.futureSymbols[i];
 
             //TARGET SYMBOL ANALYSIS
-            if (futureSymbol.symbol != "LTCUSDT") continue;
+            //if (futureSymbol.symbol != "LTCUSDT") continue;
 
             futureSymbol.status = "constructing info";
             var symbolInfo = await SimulationUtilityV2.constructSymbolInfo(futureSymbol.symbol,props.maxInitCandles)

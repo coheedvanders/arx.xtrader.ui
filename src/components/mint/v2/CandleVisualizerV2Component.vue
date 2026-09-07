@@ -187,7 +187,7 @@
                 /> -->
 
                 <g
-                    v-if="c.candle.confluenceScore?.direction !== 'NEUTRAL'"
+                    v-if="c.candle.confluenceScore?.direction !== 'NEUTRAL' && c.candle.confluenceScore?.confidence! >= 34"
                     class="confluence-marker"
                     :class="{
                         'confluence-long': c.candle.confluenceScore?.direction === 'LONG',
@@ -213,6 +213,19 @@
                             L ${candleX(c.gi) + 6} ${priceToY(c.candle.high) - 12}
                         `"
                     />
+
+                    <text
+                        class="confluence-confidence"
+                        :x="candleX(c.gi)"
+                        :y="
+                            c.candle.confluenceScore?.direction === 'LONG'
+                                ? priceToY(c.candle.low) + 28
+                                : priceToY(c.candle.high) - 28
+                        "
+                        text-anchor="middle"
+                    >
+                        {{ Math.round(c.candle.confluenceScore?.confidence ?? 0) }}%
+                    </text>
                 </g>
                 
               </g>
@@ -2603,5 +2616,19 @@ width: 30rem;
 
 .confluence-short .confluence-chevron {
     stroke: #ef4444;
+}
+
+.confluence-confidence {
+    font-size: 9px;
+    font-weight: 600;
+    pointer-events: none;
+}
+
+.confluence-long .confluence-confidence {
+    fill: #22c55e;
+}
+
+.confluence-short .confluence-confidence {
+    fill: #ef4444;
 }
 </style>

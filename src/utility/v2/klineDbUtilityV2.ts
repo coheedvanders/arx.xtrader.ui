@@ -39,16 +39,19 @@ class KlineDbUtilityV2 {
   async storeSymbolInfo(symbolInfo: SymbolInfo): Promise<void> {
     await this.init();
 
-    // Strip any non-serializable/proxy state (e.g. Vue reactivity) before persisting.
-    const safeData = JSON.parse(JSON.stringify(symbolInfo)) as SymbolInfo;
+    const safeData = structuredClone(symbolInfo);
 
     return new Promise<void>((resolve, reject) => {
-      const tx = this.db!.transaction([this.symbolInfoStoreName], "readwrite");
-      const store = tx.objectStore(this.symbolInfoStoreName);
-      const req = store.put(safeData);
+        const tx = this.db!.transaction(
+            [this.symbolInfoStoreName],
+            "readwrite"
+        );
 
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
+        const store = tx.objectStore(this.symbolInfoStoreName);
+        const req = store.put(safeData);
+
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
     });
   }
 

@@ -1,0 +1,105 @@
+import type { CandleInfo, SymbolInfo } from "@/core/interfacesv2";
+import { CandleAnalyzerV2 } from "./candleAnalyzerV2";
+import { getCandleStructure } from "./analysis/candleStructure";
+import { getAnchorDecision } from "./analysis/anchorDecisionEngine";
+import { getPriceAction } from "./analysis/priceAction";
+import { getLiquidationHeatmap } from "./analysis/liquidationHeatmap";
+
+export class SimulationUtilityV2 {
+    static async runMarketAnalysis(targetSymbol: SymbolInfo, mainMarket: SymbolInfo[]) {
+        this.runAnalysis(targetSymbol.candle_15m);
+        this.runAnalysis(targetSymbol.candle_1h);
+        this.runAnalysis(targetSymbol.candle_4h);
+        this.runAnalysis(targetSymbol.candle_1d);
+    }
+
+    static runAnalysis(candles: CandleInfo[]) {
+        for (let i = 1; i <= candles.length - 1; i++) {
+            var movingCandles = candles.slice(0, i + 1);
+            var candle = candles[i];
+
+            candle.atr = CandleAnalyzerV2.calculateATR(movingCandles, 8);
+            candle.ema200 = CandleAnalyzerV2.calculateEMA(movingCandles, 200);
+
+            candle.candleStructure = getCandleStructure(movingCandles);
+
+            candle.anchors = getAnchorDecision(movingCandles);
+
+            var candlesFromVwapAnchor = movingCandles.filter(c => c.openTime >= candle.anchorswvwap opentime example)
+            var vwap = CandleAnalyzerV2.getAnchorVwap(candlesFromVwapAnchor);
+
+            var candlesFromFrvpAnchor = movingCandles.filter(c => c.openTime >= candle.anchorsfrvp opentime example)
+            var volumeProfile = CandleAnalyzerV2.getVolumeProfile(candlesFromFrvpAnchor)
+
+            var candleFromHeatmapAnchor = movingCandles.filter(c => c.openTime >= candle.liqheatmap opentime example)
+            var liquidationHeatmap = getLiquidationHeatmap(candleFromHeatmapAnchor)
+
+            candle.priceAction = getPriceAction(movingCandles);
+        }
+    }
+}
+
+
+the getAnchorVwap returns below type
+export interface PriceZone {
+  lower: number
+  upper: number
+  mid: number
+}
+
+the getVolumeProfile returns
+export interface VolumeProfileBucket {
+  priceLow: number
+  priceHigh: number
+  buyVolume: number
+  sellVolume: number
+  totalVolume: number
+  /** True for whichever bucket carried the most volume (the POC bucket). */
+  isPoc: boolean
+}
+
+export interface VolumeProfile {
+  rangeLowPrice: number
+  rangeHighPrice: number
+  buckets: VolumeProfileBucket[]
+  /** Point of Control — price at the center of the highest-volume bucket. */
+  pocPrice: number
+  pocBucket: VolumeProfileBucket
+  totalVolume: number
+  totalBuyVolume: number
+  totalSellVolume: number
+  /** Top of the value area (buckets expanded out from the POC until valueAreaPercent of volume is covered). */
+  valueAreaHigh: number
+  valueAreaLow: number
+  /** Actual fraction of totalVolume captured in [valueAreaLow, valueAreaHigh] (>= valueAreaPercent, buckets are indivisible). */
+  valueAreaVolumePercent: number
+}
+
+the getLiquidationHeatmap returns
+export interface LiquidationHeatmapCell {
+  /** Index into the `candles` array this cell's column belongs to. */
+  candleIndex: number;
+  /** Index of this cell's row within the vertical bucket grid. */
+  bucketIndex: number;
+  priceLow: number;
+  priceHigh: number;
+  /** 0..1, normalized against the hottest cell in the whole grid. */
+  intensity: number;
+  /** Ready-to-use rgba() color string, already alpha-scaled by intensity. */
+  color: string;
+}
+
+export interface LiquidationHeatmapResult {
+  cells: LiquidationHeatmapCell[];
+  rangeLow: number;
+  rangeHigh: number;
+  bucketHeight: number;
+  /** The raw (pre-normalization) pool value of the hottest cell — useful for legends/debugging. */
+  globalMaxPoolValue: number;
+}
+
+now you see. as the candle moves. lots of anchors is going to be identified. so how would it know which anchor is best to use?
+or else its gonna be bombed with lots of anchor and it will become noisy for price action
+when will be a previous or old price action be invalidated or no longer active
+
+first lets identify the best way to store these anchors
