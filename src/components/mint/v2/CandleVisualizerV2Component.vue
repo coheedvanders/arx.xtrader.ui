@@ -34,6 +34,13 @@
           @click="showCrossTfEma = !showCrossTfEma"
         >XTF EMA</button>
 
+        <button
+          class="chip"
+          :class="{ active: showPositioning }"
+          title="Show price x OI positioning (long buildup / short covering / short buildup / long unwinding) below each candle"
+          @click="showPositioning = !showPositioning"
+        >Positioning</button>
+
         <div class="prop-select-group">
           <div
             v-for="(row, rowIdx) in propRows"
@@ -304,7 +311,30 @@
                         {{ Math.round(c.candle.confluenceScore?.confidence ?? 0) }}%
                     </text>
                 </g>
-                
+
+                <!--
+                  Positioning marker: price x OI quadrant for this candle
+                  (see PositioningState in interfacesv2.ts / positioningState.ts).
+                  Deliberately a plain flat tick, not a chevron/score badge —
+                  this is a category + a directly-displayed magnitude, not a
+                  new derived signal. Color = behavior, opacity = strength.
+                  Rendered as its own row so several candles' ticks form a
+                  readable strip under the chart, same spirit as propRows.
+                -->
+                <rect
+                  v-if="showPositioning && positioningMarkerFill(c.candle) !== null"
+                  class="positioning-marker"
+                  :class="positioningMarkerClass(c.candle)"
+                  :x="candleX(c.gi) - candleWidth * 0.62 / 2"
+                  :y="priceToY(c.candle.low) + 6"
+                  :width="candleWidth * 0.62"
+                  height="4"
+                  :fill="positioningMarkerFill(c.candle)!"
+                  :opacity="positioningMarkerOpacity(c.candle)"
+                >
+                  <title>{{ positioningTooltip(c.candle) }}</title>
+                </rect>
+
               </g>
             </g>
 
@@ -740,6 +770,21 @@
                 {{ (hoveredCandle.candleStructure?.bodyRatio * 100).toFixed(0) }}% body
               </span>
               <span class="hud-item">ATR<b>{{ formatPrice(hoveredCandle.atr) }}</b></span>
+              <template v-if="showPositioning && hoveredCandle.openInterest?.positioningState">
+                <span
+                  class="hud-item positioning-hud"
+                  :class="positioningMarkerClass(hoveredCandle)"
+                  :title="positioningTooltip(hoveredCandle)"
+                >
+                  {{ hoveredCandle.openInterest.positioningState.behavior }}
+                  <b v-if="hoveredCandle.openInterest.positioningState.behavior !== 'NEUTRAL' && hoveredCandle.openInterest.positioningState.behavior !== 'INSUFFICIENT_DATA'">
+                    ({{ Math.round(hoveredCandle.openInterest.positioningState.strength) }})
+                  </b>
+                </span>
+                <span class="hud-item hud-reasons">
+                  {{ hoveredCandle.openInterest.positioningState.reasons[hoveredCandle.openInterest.positioningState.reasons.length - 1] }}
+                </span>
+              </template>
             </template>
           <div v-if="selectedDrawing" class="drawing-toolbar">
             <span>{{ selectedDrawing.type.toUpperCase() }}</span>
@@ -748,6 +793,21 @@
           </div>
           </div>
         </template>
+
+        <!-- Positioning legend: what each marker color means. Only shown
+             while the Positioning toggle is on, so it doesn't clutter the
+             chart when the feature isn't in use. -->
+        <div v-if="showPositioning" class="positioning-legend">
+          <div class="positioning-legend-title">Positioning</div>
+          <div
+            v-for="item in POSITIONING_LEGEND"
+            :key="item.behavior"
+            class="positioning-legend-row"
+          >
+            <span class="positioning-legend-swatch" :style="{ background: item.color }"></span>
+            <span class="positioning-legend-label">{{ item.label }}</span>
+          </div>
+        </div>
 
         <!-- preview position control panel -->
         <div v-if="previewError" class="preview-error">{{ previewError }}</div>
@@ -1950,6 +2010,72 @@ function onDocumentClickForPropSelect(e: MouseEvent) {
   if (el && !el.contains(e.target as Node)) openPropMenuRowId.value = null;
 }
 
+// ── Positioning marker (price x OI quadrant) ───────────────────────────
+// Pure display mapping from PositioningState -> color/opacity/tooltip.
+// No thresholds or scoring introduced here: color is a 1:1 map of the
+// `behavior` enum, opacity is a linear map of the already-computed
+// `strength` (0-100), and the tooltip just surfaces the causal `reasons`
+// the analysis module already produced.
+const POSITIONING_COLORS: Record<string, string> = {
+  LONG_BUILDUP: "#22c55e",   // green — price + OI rising together
+  SHORT_COVERING: "#60a5fa", // blue — price rising, OI falling
+  SHORT_BUILDUP: "#ef4444",  // red — price falling, OI rising
+  LONG_UNWINDING: "#f59e0b", // amber — price + OI falling together
+  NEUTRAL: "#6b7280",        // gray — price or OI flat, not classified
+};
+
+// Plain-language labels for the legend, in the order the legend is shown.
+// Derived from the same color map above — never a second, independent
+// color list that could drift out of sync with the actual markers.
+const POSITIONING_LABELS: Record<string, string> = {
+  LONG_BUILDUP: "Long buildup — price + OI rising",
+  SHORT_COVERING: "Short covering — price up, OI down",
+  SHORT_BUILDUP: "Short buildup — price down, OI up",
+  LONG_UNWINDING: "Long unwinding — price + OI falling",
+  NEUTRAL: "Neutral — price or OI flat",
+};
+const POSITIONING_LEGEND = (Object.keys(POSITIONING_COLORS) as Array<keyof typeof POSITIONING_COLORS>).map(
+  (behavior) => ({
+    behavior,
+    color: POSITIONING_COLORS[behavior],
+    label: POSITIONING_LABELS[behavior],
+  })
+);
+
+function positioningMarkerFill(candle: CandleInfo): string | null {
+  const behavior = candle.openInterest?.positioningState?.behavior;
+  if (!behavior || behavior === "INSUFFICIENT_DATA") return null;
+  return POSITIONING_COLORS[behavior] ?? null;
+}
+
+function positioningMarkerClass(candle: CandleInfo): string {
+  const behavior = candle.openInterest?.positioningState?.behavior ?? "INSUFFICIENT_DATA";
+  return `positioning-${behavior.toLowerCase().replace(/_/g, "-")}`;
+}
+
+function positioningMarkerOpacity(candle: CandleInfo): number {
+  const p = candle.openInterest?.positioningState;
+  if (!p) return 0;
+  if (p.behavior === "NEUTRAL" || p.behavior === "INSUFFICIENT_DATA") return 0.35;
+  // Strength is already 0-100 (min of priceMagnitude/oiMagnitude) — just
+  // rescale to a visible opacity range, never inventing a new number.
+  return 0.25 + (Math.max(0, Math.min(100, p.strength)) / 100) * 0.75;
+}
+
+function positioningTooltip(candle: CandleInfo): string {
+  const p = candle.openInterest?.positioningState;
+  if (!p) return "No positioning data";
+  const lines = [
+    `${p.behavior} (strength ${Math.round(p.strength)})`,
+    `price: ${p.priceDirection} ${p.priceChangePercent.toFixed(2)}% (${p.priceChangeAtr.toFixed(2)}x ATR)`,
+    `OI: ${p.oiDirection} ${p.oiChangePercent.toFixed(2)}%`,
+    `volume: ${p.volumeDirection} ${p.volumeChangePercent.toFixed(2)}% (${p.volumeConfirmation})`,
+    "",
+    ...p.reasons,
+  ];
+  return lines.join("\n");
+}
+
 function propBarsForRow(prop: string) {
   const matched = displayCandles.value.map((c) => ({
     gi: c.gi,
@@ -2030,6 +2156,12 @@ const crossTfEmaLines = computed<Record<Tf, { gi: number; price: number }[]>>(()
   return result;
 });
 const showCrossTfEma = ref(false);
+
+// Toggles the positioningState visualization (price x OI quadrant marker
+// below each candle + positioning readout in the HUD). Off by default,
+// same pattern as showCrossTfEma. Kept separate from any "OI state" naming
+// since positioningState is a distinct derived concept (see positioningState.ts).
+const showPositioning = ref(false);
 
 // ── Liquidity heatmap tool ─────────────────────────────────────────────
 
@@ -3535,4 +3667,50 @@ width: 30rem;
 .confluence-short .confluence-confidence {
     fill: #ef4444;
 }
+
+/* Positioning marker: plain flat tick below the candle, color = behavior
+   quadrant, opacity = strength. Intentionally not styled like the
+   confluence chevron above — this is a labeled observation, not a score. */
+.positioning-marker {
+    pointer-events: none;
+    rx: 1;
+}
+
+.hud-item.positioning-hud {
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: 0.2px;
+}
+.hud-item.positioning-long-buildup { color: #22c55e; }
+.hud-item.positioning-short-covering { color: #60a5fa; }
+.hud-item.positioning-short-buildup { color: #ef4444; }
+.hud-item.positioning-long-unwinding { color: #f59e0b; }
+.hud-item.positioning-neutral,
+.hud-item.positioning-insufficient-data { color: #6b7280; }
+
+.hud-reasons {
+    color: #9aa4b2;
+    font-weight: 400;
+    font-style: italic;
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.positioning-legend {
+    position: absolute; top: 6px; right: 6px; z-index: 15;
+    background: rgba(10,13,18,.88); border: 1px solid rgba(255,255,255,.12);
+    border-radius: 6px; padding: 6px 8px; font-family: var(--mono); font-size: 10px;
+    pointer-events: none; display: flex; flex-direction: column; gap: 3px;
+}
+.positioning-legend-title {
+    color: #9aa4b2; text-transform: uppercase; letter-spacing: .5px;
+    font-size: 9px; margin-bottom: 2px;
+}
+.positioning-legend-row { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.positioning-legend-swatch {
+    width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto;
+}
+.positioning-legend-label { color: #cdd3db; }
 </style>

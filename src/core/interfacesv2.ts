@@ -119,6 +119,26 @@ export type TRADE_LEVEL_TYPE =
     | 'AVWAP'
     | 'LIQUIDITY'
 
+export type TREND_DIRECTION =
+    | 'RISING'
+    | 'FALLING'
+    | 'FLAT'
+    | 'INSUFFICIENT_DATA'
+
+export type POSITIONING_BEHAVIOR =
+    | 'LONG_BUILDUP'      // price rising + OI rising    -> new longs entering
+    | 'SHORT_COVERING'    // price rising + OI falling   -> shorts closing
+    | 'SHORT_BUILDUP'     // price falling + OI rising   -> new shorts entering
+    | 'LONG_UNWINDING'    // price falling + OI falling  -> longs closing / profit booking
+    | 'NEUTRAL'           // price or OI flat -> not classified
+    | 'INSUFFICIENT_DATA'
+
+export type VOLUME_CONFIRMATION =
+    | 'CONFIRMS'          // volume trend matches OI trend over the same window
+    | 'DIVERGES'          // volume trend contradicts OI trend
+    | 'NEUTRAL'           // volume or OI flat -> confirmation not meaningful
+    | 'INSUFFICIENT_DATA'
+
 export interface SymbolInfo {
     name: string
 
@@ -330,6 +350,34 @@ export interface OpenInterestState {
 
     strength: number
 
+    timestamp: number
+
+    reasons: string[]
+
+    positioningState: PositioningState
+}
+
+export interface PositioningState {
+    behavior: POSITIONING_BEHAVIOR
+
+    // 0-100, min(priceMagnitude, oiMagnitude). 0 when behavior is NEUTRAL/INSUFFICIENT_DATA.
+    strength: number
+
+    priceDirection: TREND_DIRECTION
+    priceChange: number
+    priceChangePercent: number
+    priceChangeAtr: number
+    priceMagnitude: number
+
+    oiDirection: TREND_DIRECTION
+    oiChangePercent: number
+    oiMagnitude: number
+
+    volumeDirection: TREND_DIRECTION
+    volumeChangePercent: number
+    volumeConfirmation: VOLUME_CONFIRMATION
+
+    lookback: number
     timestamp: number
 
     reasons: string[]
