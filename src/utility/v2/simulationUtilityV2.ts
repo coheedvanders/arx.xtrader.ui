@@ -17,17 +17,17 @@ export class SimulationUtilityV2 {
             name: symbol,
             candle_15m: this.mapToInfo(await KlineUtility.getRecentKlines(symbol, "15m", limit)),
             candle_1h:  [],//this.mapToInfo(await KlineUtility.getRecentKlines(symbol, "1h", limit)),
-            candle_4h: this.mapToInfo(await KlineUtility.getRecentKlines(symbol, "4h", limit)),
+            candle_4h: [],//this.mapToInfo(await KlineUtility.getRecentKlines(symbol, "4h", limit)),
             candle_1d: [],//this.mapToInfo(await KlineUtility.getRecentKlines(symbol, "1d", limit)),
 
             oi_15m: await KlineUtility.getOIByRange(symbol, "15m", limit),
             oi_1h: [],//await KlineUtility.getOIByRange(symbol, "1h", limit),
-            oi_4h: await KlineUtility.getOIByRange(symbol, "4h", limit),
+            oi_4h: [], //await KlineUtility.getOIByRange(symbol, "4h", limit),
             oi_1d: [],//await KlineUtility.getOIByRange(symbol, "1d", limit),
 
             ls_15m: await KlineUtility.getLSRatioByRange(symbol, "15m", limit),
             ls_1h: [],//await KlineUtility.getLSRatioByRange(symbol, "1h", limit),
-            ls_4h: await KlineUtility.getLSRatioByRange(symbol, "4h", limit),
+            ls_4h: [], //await KlineUtility.getLSRatioByRange(symbol, "4h", limit),
             ls_1d: []//await KlineUtility.getLSRatioByRange(symbol, "1d", limit),
         };
 

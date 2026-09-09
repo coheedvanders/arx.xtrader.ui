@@ -114,11 +114,11 @@ const visitedSymbols = ref<Set<string>>(new Set());
 async function runInitialScan() {
     console.log("runInitialScan", props.futureSymbols.length);
 
-    var mainMarkets = [
-        (await klineDbUtilityV2.getSymbolInfo("BTCUSDT"))!,
-        (await klineDbUtilityV2.getSymbolInfo("ETHUSDT"))!,
-        (await klineDbUtilityV2.getSymbolInfo("SOLUSDT"))!,
-    ]
+    // var mainMarkets = [
+    //     (await klineDbUtilityV2.getSymbolInfo("BTCUSDT"))!,
+    //     (await klineDbUtilityV2.getSymbolInfo("ETHUSDT"))!,
+    //     (await klineDbUtilityV2.getSymbolInfo("SOLUSDT"))!,
+    // ]
 
     for (let i = 0; i < props.futureSymbols.length; i++) {
         try {
@@ -137,7 +137,7 @@ async function runInitialScan() {
             currentFutureSumbol.value = futureSymbol;
             futureSymbol.status = "processing";
 
-            await SimulationUtilityV2.runMarketAnalysis(symbolInfo,mainMarkets!);
+            await SimulationUtilityV2.runMarketAnalysis(symbolInfo,[]);
 
             klineDbUtilityV2.storeSymbolInfo(symbolInfo);
 

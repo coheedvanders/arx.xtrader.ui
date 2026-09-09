@@ -65,9 +65,14 @@ export async function listNotes(symbol: string): Promise<StickyNote[]> {
 /** Create or overwrite a note (matched by id). */
 export async function saveNote(note: StickyNote): Promise<void> {
   const db = await openDb();
+  // Callers may pass a Vue (or other framework) reactive proxy rather than a
+  // plain object — IndexedDB's structured-clone algorithm can choke on those
+  // ("DataCloneError: ... could not be cloned"). A JSON round-trip strips
+  // any proxy/getter wrapping and leaves a plain object to store.
+  const plain = JSON.parse(JSON.stringify(note)) as StickyNote;
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(note);
+    tx.objectStore(STORE).put(plain);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error ?? new Error("Failed to save note"));
     tx.onabort = () => reject(tx.error ?? new Error("Save note transaction aborted"));

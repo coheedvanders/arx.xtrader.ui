@@ -7,6 +7,11 @@ import type {
     MARKET_INTERVAL,
 } from "@/core/interfacesv2";
 
+import {
+    computePositioningState,
+    emptyPositioningState,
+} from "./positioningState";
+
 const CONFIG = {
     LOOKBACK: 8,
 
@@ -91,6 +96,11 @@ export function getOpenInterestState(
             strength: 0,
             timestamp: 0,
             reasons: ["No candle data available"],
+            positioningState: emptyPositioningState(
+                0,
+                CONFIG.LOOKBACK,
+                ["No candle data available"]
+            ),
         };
     }
 
@@ -109,6 +119,11 @@ export function getOpenInterestState(
             strength: 0,
             timestamp: currentCandle.openTime,
             reasons: ["No open interest history available"],
+            positioningState: emptyPositioningState(
+                currentCandle.openTime,
+                CONFIG.LOOKBACK,
+                ["No open interest history available"]
+            ),
         };
     }
 
@@ -129,6 +144,11 @@ export function getOpenInterestState(
             reasons: [
                 `No open interest data available at ${currentCandle.openTime}`,
             ],
+            positioningState: emptyPositioningState(
+                currentCandle.openTime,
+                CONFIG.LOOKBACK,
+                [`No open interest data available at ${currentCandle.openTime}`]
+            ),
         };
     }
 
@@ -150,6 +170,11 @@ export function getOpenInterestState(
             reasons: [
                 "Insufficient open interest history",
             ],
+            positioningState: emptyPositioningState(
+                current.timestamp,
+                CONFIG.LOOKBACK,
+                ["Insufficient open interest history"]
+            ),
         };
     }
 
@@ -237,6 +262,18 @@ export function getOpenInterestState(
         );
     }
 
+    // Positioning classification reuses the OI change data already
+    // computed above (single source of truth) and adds the price/volume
+    // side of the price x OI matrix. See positioningState.ts.
+    const positioningState = computePositioningState({
+        candles: movingCandles,
+        lookback: CONFIG.LOOKBACK,
+        oiChangePercent: valueChangePercent,
+        oiFlatThresholdPercent: CONFIG.FLAT_THRESHOLD_PERCENT,
+        oiMagnitude: strength,
+        timestamp: current.timestamp,
+    });
+
     return {
         value,
         valueChange,
@@ -246,5 +283,6 @@ export function getOpenInterestState(
         strength,
         timestamp: current.timestamp,
         reasons,
+        positioningState,
     };
 }

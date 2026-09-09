@@ -390,8 +390,8 @@ function symbolBasket_OnCompleted(){
 }
 
 async function runManualSimulation() {
-    UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE.value = "ANALYZING MAIN MARKETS"
-    await analyzeMainMarkets();
+    // UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE.value = "ANALYZING MAIN MARKETS"
+    // await analyzeMainMarkets();
 
     chocoMintoStore.isManualSimulation = true;
     

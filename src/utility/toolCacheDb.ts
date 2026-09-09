@@ -71,9 +71,14 @@ export async function loadToolCache(symbol: string): Promise<ToolCachePayload | 
 /** Overwrite the cached tool-set for a symbol. */
 export async function saveToolCache(payload: ToolCachePayload): Promise<void> {
   const db = await openDb();
+  // Same defensive clone as notesDb.saveNote — the arrays here are commonly
+  // Vue reactive proxies, which IndexedDB's structured-clone step rejects
+  // with "DataCloneError: ... could not be cloned". Plain JSON round-trip
+  // fixes it regardless of which framework/reactivity system calls this.
+  const plain = JSON.parse(JSON.stringify(payload)) as ToolCachePayload;
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(payload);
+    tx.objectStore(STORE).put(plain);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error ?? new Error("Failed to save tool cache"));
     tx.onabort = () => reject(tx.error ?? new Error("Save tool cache transaction aborted"));

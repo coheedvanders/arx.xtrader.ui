@@ -34,31 +34,45 @@
           @click="showCrossTfEma = !showCrossTfEma"
         >XTF EMA</button>
 
-        <div class="prop-select" ref="propSelectRef">
-          <button
-            class="chip prop-select-btn"
-            title="Choose the numeric property plotted in the bar below the chart"
-            @click="propMenuOpen = !propMenuOpen"
-          >{{ selectedProp.toUpperCase() }} ▾</button>
-          <div v-if="propMenuOpen" class="prop-select-menu">
-            <input
-              v-model="propSearch"
-              type="text"
-              class="prop-select-search"
-              placeholder="Search property…"
-              autofocus
-            />
-            <div class="prop-select-list">
-              <button
-                v-for="p in filteredProps"
-                :key="p"
-                class="prop-select-item"
-                :class="{ active: p === selectedProp }"
-                @click="selectProp(p)"
-              >{{ p }}</button>
-              <div v-if="filteredProps.length === 0" class="prop-select-empty">No matches</div>
+        <div class="prop-select-group">
+          <div
+            v-for="(row, rowIdx) in propRows"
+            :key="row.id"
+            class="prop-select"
+            :ref="(el) => setPropSelectRef(row.id, el as Element | null)"
+          >
+            <button
+              class="chip prop-select-btn"
+              title="Choose the numeric property plotted in this bar below the chart"
+              @click="toggleRowPropMenu(row.id)"
+            >{{ row.prop.toUpperCase() }} ▾</button>
+            <button
+              v-if="propRows.length > 1"
+              class="prop-row-remove"
+              title="Remove this bar section"
+              @click.stop="removePropRow(row.id)"
+            >✕</button>
+            <div v-if="openPropMenuRowId === row.id" class="prop-select-menu">
+              <input
+                v-model="propSearch"
+                type="text"
+                class="prop-select-search"
+                placeholder="Search property…"
+                autofocus
+              />
+              <div class="prop-select-list">
+                <button
+                  v-for="p in filteredProps"
+                  :key="p"
+                  class="prop-select-item"
+                  :class="{ active: p === row.prop }"
+                  @click="selectPropForRow(row.id, p)"
+                >{{ p }}</button>
+                <div v-if="filteredProps.length === 0" class="prop-select-empty">No matches</div>
+              </div>
             </div>
           </div>
+          <button class="chip prop-row-add" title="Add another dynamic-property bar section" @click="addPropRow">+</button>
         </div>
 
         <button
@@ -101,7 +115,50 @@
 
         <button class="icon-btn" title="Reset view (E)" @click="scrollToLatest">⇥</button>
         <button class="icon-btn" title="Refresh from IndexedDB" @click="loadSymbolInfo">⟳</button>
+        <button
+          class="icon-btn notes-toolbar"
+          :class="{ active: notesOpen }"
+          title="Notes"
+          @click="notesOpen = !notesOpen"
+        >🗒{{ notes.length ? ` ${notes.length}` : "" }}</button>
         <button class="icon-btn" title="Keyboard shortcuts (?)" @click="showHotkeysModal = true">⌨</button>
+      </div>
+    </div>
+
+    <!-- Notes panel: sticky notes for this symbol, stored in IndexedDB -->
+    <div v-if="notesOpen" class="notes-panel">
+      <div class="notes-panel-header">
+        <span>Notes — {{ symbol }}</span>
+        <button class="close-btn" @click="notesOpen = false">✕</button>
+      </div>
+      <div class="notes-panel-add">
+        <textarea
+          v-model="newNoteDraft"
+          rows="2"
+          placeholder="Add a note…"
+          @keydown.enter.exact.prevent="addNote"
+        ></textarea>
+        <button @click="addNote">Add</button>
+      </div>
+      <div class="notes-panel-list">
+        <div v-for="n in notes" :key="n.id" class="note-item">
+          <template v-if="editingNoteId === n.id">
+            <textarea v-model="editingNoteDraft" rows="2"></textarea>
+            <div class="note-item-actions">
+              <button @click="commitNoteEdit">Save</button>
+              <button @click="cancelNoteEdit">Cancel</button>
+            </div>
+          </template>
+          <template v-else>
+            <p class="note-item-text" @dblclick="startNoteEdit(n)">{{ n.text }}</p>
+            <div class="note-item-actions">
+              <span class="note-item-time">{{ formatAxisTime(n.updatedAt) }}</span>
+              <button @click="startNoteEdit(n)">Edit</button>
+              <button @click="removeNote(n.id)">Delete</button>
+            </div>
+          </template>
+        </div>
+        <div v-if="notes.length === 0" class="notes-panel-empty">No notes yet for this symbol.</div>
       </div>
     </div>
 
@@ -139,6 +196,26 @@
         <div v-else-if="primaryCandles.length === 0" class="chart-status">No {{ primaryTf.toUpperCase() }} candles cached for {{ symbol }}.</div>
 
         <template v-else>
+          <!-- Load older candles: pulls history from before the oldest
+               currently-loaded candle directly from Binance's REST API. -->
+          <div class="load-older-wrap" ref="loadOlderWrapRef">
+            <button
+              class="load-older-btn"
+              title="Load older candles"
+              @click="olderCandlesMenuOpen = !olderCandlesMenuOpen"
+            >&lt;</button>
+            <div v-if="olderCandlesMenuOpen" class="load-older-menu">
+              <button
+                v-for="n in OLDER_CANDLES_OPTIONS"
+                :key="n"
+                :disabled="olderCandlesLoading"
+                @click="loadOlderCandles(n)"
+              >{{ n }}</button>
+              <div v-if="olderCandlesLoading" class="load-older-loading">Loading…</div>
+              <div v-if="olderCandlesError" class="load-older-error">{{ olderCandlesError }}</div>
+            </div>
+          </div>
+
           <svg :width="chartWidth" :height="chartHeight" class="chart-svg">
             <!-- grid -->
             <g class="grid">
@@ -382,27 +459,28 @@
               <rect
                 class="drawn-rect"
                 :class="{ selected: isDrawingSelected('rectangle', r.id) }"
-                :x="Math.min(candleX(r.x1), candleX(r.x2))"
+                :x="Math.min(candleXAtTime(r.x1), candleXAtTime(r.x2))"
                 :y="Math.min(priceToY(r.y1), priceToY(r.y2))"
-                :width="Math.max(2, Math.abs(candleX(r.x2) - candleX(r.x1)))"
+                :width="Math.max(2, Math.abs(candleXAtTime(r.x2) - candleXAtTime(r.x1)))"
                 :height="Math.max(2, Math.abs(priceToY(r.y2) - priceToY(r.y1)))"
               />
-              <line class="drawing-edge-handle" :x1="candleX(Math.min(r.x1, r.x2))" :x2="candleX(Math.min(r.x1, r.x2))" :y1="priceToY(Math.max(r.y1, r.y2))" :y2="priceToY(Math.min(r.y1, r.y2))" @mousedown="startDrawingResize('rectangle', r.id, 'left', $event)" />
-              <line class="drawing-edge-handle" :x1="candleX(Math.max(r.x1, r.x2))" :x2="candleX(Math.max(r.x1, r.x2))" :y1="priceToY(Math.max(r.y1, r.y2))" :y2="priceToY(Math.min(r.y1, r.y2))" @mousedown="startDrawingResize('rectangle', r.id, 'right', $event)" />
-              <line class="drawing-edge-handle" :x1="candleX(Math.min(r.x1, r.x2))" :x2="candleX(Math.max(r.x1, r.x2))" :y1="priceToY(Math.max(r.y1, r.y2))" :y2="priceToY(Math.max(r.y1, r.y2))" @mousedown="startDrawingResize('rectangle', r.id, 'top', $event)" />
-              <line class="drawing-edge-handle" :x1="candleX(Math.min(r.x1, r.x2))" :x2="candleX(Math.max(r.x1, r.x2))" :y1="priceToY(Math.min(r.y1, r.y2))" :y2="priceToY(Math.min(r.y1, r.y2))" @mousedown="startDrawingResize('rectangle', r.id, 'bottom', $event)" />
-              <rect class="drawing-move-hit" :x="Math.min(candleX(r.x1), candleX(r.x2)) + 5" :y="Math.min(priceToY(r.y1), priceToY(r.y2)) + 5" :width="Math.max(2, Math.abs(candleX(r.x2) - candleX(r.x1)) - 10)" :height="Math.max(2, Math.abs(priceToY(r.y2) - priceToY(r.y1)) - 10)" @mousedown="startDrawingMove('rectangle', r.id, $event)" />
-              <text class="drawing-remove" :x="Math.max(candleX(r.x1), candleX(r.x2)) - 4" :y="Math.min(priceToY(r.y1), priceToY(r.y2)) - 6" text-anchor="end" @click.stop="removeDrawing('rectangle', r.id)">✕</text>
+              <line class="drawing-edge-handle" :x1="candleXAtTime(Math.min(r.x1, r.x2))" :x2="candleXAtTime(Math.min(r.x1, r.x2))" :y1="priceToY(Math.max(r.y1, r.y2))" :y2="priceToY(Math.min(r.y1, r.y2))" @mousedown="startDrawingResize('rectangle', r.id, 'left', $event)" />
+              <line class="drawing-edge-handle" :x1="candleXAtTime(Math.max(r.x1, r.x2))" :x2="candleXAtTime(Math.max(r.x1, r.x2))" :y1="priceToY(Math.max(r.y1, r.y2))" :y2="priceToY(Math.min(r.y1, r.y2))" @mousedown="startDrawingResize('rectangle', r.id, 'right', $event)" />
+              <line class="drawing-edge-handle" :x1="candleXAtTime(Math.min(r.x1, r.x2))" :x2="candleXAtTime(Math.max(r.x1, r.x2))" :y1="priceToY(Math.max(r.y1, r.y2))" :y2="priceToY(Math.max(r.y1, r.y2))" @mousedown="startDrawingResize('rectangle', r.id, 'top', $event)" />
+              <line class="drawing-edge-handle" :x1="candleXAtTime(Math.min(r.x1, r.x2))" :x2="candleXAtTime(Math.max(r.x1, r.x2))" :y1="priceToY(Math.min(r.y1, r.y2))" :y2="priceToY(Math.min(r.y1, r.y2))" @mousedown="startDrawingResize('rectangle', r.id, 'bottom', $event)" />
+              <rect class="drawing-move-hit" :x="Math.min(candleXAtTime(r.x1), candleXAtTime(r.x2)) + 5" :y="Math.min(priceToY(r.y1), priceToY(r.y2)) + 5" :width="Math.max(2, Math.abs(candleXAtTime(r.x2) - candleXAtTime(r.x1)) - 10)" :height="Math.max(2, Math.abs(priceToY(r.y2) - priceToY(r.y1)) - 10)" @mousedown="startDrawingMove('rectangle', r.id, $event)" />
+              <text class="drawing-remove" :x="Math.max(candleXAtTime(r.x1), candleXAtTime(r.x2)) - 4" :y="Math.min(priceToY(r.y1), priceToY(r.y2)) - 6" text-anchor="end" @click.stop="removeDrawing('rectangle', r.id)">✕</text>
             </g>
 
             <!-- lines -->
             <g v-for="l in trendLines" :key="l.id" class="drawing-group" @mousedown.stop="selectDrawing('line', l.id)">
-              <line class="drawn-line" :class="{ selected: isDrawingSelected('line', l.id) }" :x1="candleX(l.x1)" :y1="priceToY(l.y1)" :x2="candleX(l.x2)" :y2="priceToY(l.y2)" />
-              <line class="drawing-hit-line" :x1="candleX(l.x1)" :y1="priceToY(l.y1)" :x2="candleX(l.x2)" :y2="priceToY(l.y2)" @mousedown="startDrawingMove('line', l.id, $event)" />
-              <circle class="drawing-handle" :cx="candleX(l.x1)" :cy="priceToY(l.y1)" r="5" @mousedown="startLineEndpointResize(l.id, 'start', $event)" />
-              <circle class="drawing-handle" :cx="candleX(l.x2)" :cy="priceToY(l.y2)" r="5" @mousedown="startLineEndpointResize(l.id, 'end', $event)" />
-              <text class="drawing-remove" :x="candleX(l.x2) + 6" :y="priceToY(l.y2) - 6" @click.stop="removeDrawing('line', l.id)">✕</text>
+              <line class="drawn-line" :class="{ selected: isDrawingSelected('line', l.id) }" :x1="candleXAtTime(l.x1)" :y1="priceToY(l.y1)" :x2="candleXAtTime(l.x2)" :y2="priceToY(l.y2)" />
+              <line class="drawing-hit-line" :x1="candleXAtTime(l.x1)" :y1="priceToY(l.y1)" :x2="candleXAtTime(l.x2)" :y2="priceToY(l.y2)" @mousedown="startDrawingMove('line', l.id, $event)" />
+              <circle class="drawing-handle" :cx="candleXAtTime(l.x1)" :cy="priceToY(l.y1)" r="5" @mousedown="startLineEndpointResize(l.id, 'start', $event)" />
+              <circle class="drawing-handle" :cx="candleXAtTime(l.x2)" :cy="priceToY(l.y2)" r="5" @mousedown="startLineEndpointResize(l.id, 'end', $event)" />
+              <text class="drawing-remove" :x="candleXAtTime(l.x2) + 6" :y="priceToY(l.y2) - 6" @click.stop="removeDrawing('line', l.id)">✕</text>
             </g>
+
 
             <!-- horizontal price lines -->
             <g v-for="hl in horizontalLines" :key="hl.id" class="drawing-group" @mousedown.stop="selectDrawing('horizontal-line', hl.id)">
@@ -427,23 +505,75 @@
               >✕</text>
             </g>
 
+            <!-- vertical time lines -->
+            <g v-for="vl in verticalLines" :key="vl.id" class="drawing-group" @mousedown.stop="selectDrawing('vertical-line', vl.id)">
+              <line
+                class="drawn-vertical-line"
+                :class="{ selected: isDrawingSelected('vertical-line', vl.id) }"
+                :x1="candleXAtTime(vl.time)" :x2="candleXAtTime(vl.time)"
+                y1="0" :y2="mainPlotHeight + subplotsHeight"
+              />
+              <line
+                class="drawing-hit-vertical"
+                :x1="candleXAtTime(vl.time)" :x2="candleXAtTime(vl.time)"
+                y1="0" :y2="mainPlotHeight + subplotsHeight"
+                @mousedown="startVerticalLineMove(vl.id, $event)"
+              />
+              <text
+                class="drawing-remove"
+                :x="candleXAtTime(vl.time) + 6"
+                y="12"
+                @click.stop="removeDrawing('vertical-line', vl.id)"
+              >✕</text>
+            </g>
+
+            <!-- text annotations -->
+            <g
+              v-for="ta in textAnnotations"
+              :key="ta.id"
+              class="drawing-group text-annotation-group"
+              @mousedown.stop="selectDrawing('text', ta.id)"
+              @dblclick.stop="startTextEdit(ta.id)"
+            >
+              <text
+                class="drawn-text-annotation"
+                :class="{ selected: isDrawingSelected('text', ta.id) }"
+                :x="candleXAtTime(ta.time)"
+                :y="priceToY(ta.price)"
+              >{{ ta.text }}</text>
+              <rect
+                class="drawing-move-hit text-annotation-hit"
+                :x="candleXAtTime(ta.time) - 4"
+                :y="priceToY(ta.price) - 12"
+                :width="Math.max(20, ta.text.length * 6.4 + 8)"
+                height="18"
+                @mousedown="startTextMove(ta.id, $event)"
+              />
+              <text
+                class="drawing-remove"
+                :x="candleXAtTime(ta.time) + Math.max(20, ta.text.length * 6.4 + 8) - 4"
+                :y="priceToY(ta.price) - 14"
+                @click.stop="removeDrawing('text', ta.id)"
+              >✕</text>
+            </g>
+
             <!-- price range measure boxes -->
             <g v-for="pr in priceRangeBoxes" :key="pr.id" class="price-range-box-group" @mousedown.stop="selectDrawing('price-range', pr.id)">
               <rect
                 class="price-range-box"
                 :class="{ up: pr.y2 >= pr.y1, selected: isDrawingSelected('price-range', pr.id) }"
-                :x="Math.min(candleX(pr.x1), candleX(pr.x2))"
+                :x="Math.min(candleXAtTime(pr.x1), candleXAtTime(pr.x2))"
                 :y="Math.min(priceToY(pr.y1), priceToY(pr.y2))"
-                :width="Math.max(2, Math.abs(candleX(pr.x2) - candleX(pr.x1)))"
+                :width="Math.max(2, Math.abs(candleXAtTime(pr.x2) - candleXAtTime(pr.x1)))"
                 :height="Math.max(2, Math.abs(priceToY(pr.y2) - priceToY(pr.y1)))"
               />
-              <line class="drawing-edge-handle" :x1="candleX(Math.min(pr.x1, pr.x2))" :x2="candleX(Math.min(pr.x1, pr.x2))" :y1="priceToY(Math.max(pr.y1, pr.y2))" :y2="priceToY(Math.min(pr.y1, pr.y2))" @mousedown="startDrawingResize('price-range', pr.id, 'left', $event)" />
-              <line class="drawing-edge-handle" :x1="candleX(Math.max(pr.x1, pr.x2))" :x2="candleX(Math.max(pr.x1, pr.x2))" :y1="priceToY(Math.max(pr.y1, pr.y2))" :y2="priceToY(Math.min(pr.y1, pr.y2))" @mousedown="startDrawingResize('price-range', pr.id, 'right', $event)" />
-              <line class="drawing-edge-handle" :x1="candleX(Math.min(pr.x1, pr.x2))" :x2="candleX(Math.max(pr.x1, pr.x2))" :y1="priceToY(Math.max(pr.y1, pr.y2))" :y2="priceToY(Math.max(pr.y1, pr.y2))" @mousedown="startDrawingResize('price-range', pr.id, 'top', $event)" />
-              <line class="drawing-edge-handle" :x1="candleX(Math.min(pr.x1, pr.x2))" :x2="candleX(Math.max(pr.x1, pr.x2))" :y1="priceToY(Math.min(pr.y1, pr.y2))" :y2="priceToY(Math.min(pr.y1, pr.y2))" @mousedown="startDrawingResize('price-range', pr.id, 'bottom', $event)" />
-              <rect class="drawing-move-hit" :x="Math.min(candleX(pr.x1), candleX(pr.x2)) + 5" :y="Math.min(priceToY(pr.y1), priceToY(pr.y2)) + 5" :width="Math.max(2, Math.abs(candleX(pr.x2) - candleX(pr.x1)) - 10)" :height="Math.max(2, Math.abs(priceToY(pr.y2) - priceToY(pr.y1)) - 10)" @mousedown="startDrawingMove('price-range', pr.id, $event)" />
-              <text class="price-range-label" :x="(candleX(pr.x1) + candleX(pr.x2)) / 2" :y="Math.min(priceToY(pr.y1), priceToY(pr.y2)) - 6">{{ formatPriceRangeLabel(pr) }}</text>
-              <text class="drawing-remove" :x="Math.max(candleX(pr.x1), candleX(pr.x2)) - 4" :y="Math.min(priceToY(pr.y1), priceToY(pr.y2)) - 18" text-anchor="end" @click.stop="removeDrawing('price-range', pr.id)">✕</text>
+              <line class="drawing-edge-handle" :x1="candleXAtTime(Math.min(pr.x1, pr.x2))" :x2="candleXAtTime(Math.min(pr.x1, pr.x2))" :y1="priceToY(Math.max(pr.y1, pr.y2))" :y2="priceToY(Math.min(pr.y1, pr.y2))" @mousedown="startDrawingResize('price-range', pr.id, 'left', $event)" />
+              <line class="drawing-edge-handle" :x1="candleXAtTime(Math.max(pr.x1, pr.x2))" :x2="candleXAtTime(Math.max(pr.x1, pr.x2))" :y1="priceToY(Math.max(pr.y1, pr.y2))" :y2="priceToY(Math.min(pr.y1, pr.y2))" @mousedown="startDrawingResize('price-range', pr.id, 'right', $event)" />
+              <line class="drawing-edge-handle" :x1="candleXAtTime(Math.min(pr.x1, pr.x2))" :x2="candleXAtTime(Math.max(pr.x1, pr.x2))" :y1="priceToY(Math.max(pr.y1, pr.y2))" :y2="priceToY(Math.max(pr.y1, pr.y2))" @mousedown="startDrawingResize('price-range', pr.id, 'top', $event)" />
+              <line class="drawing-edge-handle" :x1="candleXAtTime(Math.min(pr.x1, pr.x2))" :x2="candleXAtTime(Math.max(pr.x1, pr.x2))" :y1="priceToY(Math.min(pr.y1, pr.y2))" :y2="priceToY(Math.min(pr.y1, pr.y2))" @mousedown="startDrawingResize('price-range', pr.id, 'bottom', $event)" />
+              <rect class="drawing-move-hit" :x="Math.min(candleXAtTime(pr.x1), candleXAtTime(pr.x2)) + 5" :y="Math.min(priceToY(pr.y1), priceToY(pr.y2)) + 5" :width="Math.max(2, Math.abs(candleXAtTime(pr.x2) - candleXAtTime(pr.x1)) - 10)" :height="Math.max(2, Math.abs(priceToY(pr.y2) - priceToY(pr.y1)) - 10)" @mousedown="startDrawingMove('price-range', pr.id, $event)" />
+              <text class="price-range-label" :x="(candleXAtTime(pr.x1) + candleXAtTime(pr.x2)) / 2" :y="Math.min(priceToY(pr.y1), priceToY(pr.y2)) - 6">{{ formatPriceRangeLabel(pr) }}</text>
+              <text class="drawing-remove" :x="Math.max(candleXAtTime(pr.x1), candleXAtTime(pr.x2)) - 4" :y="Math.min(priceToY(pr.y1), priceToY(pr.y2)) - 18" text-anchor="end" @click.stop="removeDrawing('price-range', pr.id)">✕</text>
             </g>
 
             <!-- live tool draft preview -->
@@ -497,7 +627,11 @@
 
             <!-- crosshair -->
             <g v-if="hover" class="crosshair">
-              <line class="crosshair-line" :x1="hover.x" :x2="hover.x" y1="0" :y2="mainPlotHeight" />
+              <!-- vertical crosshair spans the full chart height (main plot +
+                   all stacked dynamic-property subplot rows), not just the
+                   main candle area, so time alignment is visible against the
+                   bars below too. -->
+              <line class="crosshair-line" :x1="hover.x" :x2="hover.x" y1="0" :y2="mainPlotHeight + subplotsHeight" />
               <line class="crosshair-line" x1="0" :x2="plotWidth" :y1="hover.y" :y2="hover.y" />
             </g>
 
@@ -509,11 +643,26 @@
                 x1="0" :x2="chartWidth"
                 :y1="livePriceLineY" :y2="livePriceLineY"
               />
+              <!-- Binance-style solid price tag: filled bull/bear badge instead
+                   of bare colored text, so the live price reads at a glance. -->
+              <rect
+                class="live-price-badge"
+                :class="livePriceBullish ? 'bull' : 'bear'"
+                :x="plotWidth + 2"
+                :y="livePriceLineY - (barCloseCountdown ? 15 : 9)"
+                :width="Math.max(2, chartWidth - plotWidth - 4)"
+                :height="barCloseCountdown ? 30 : 18"
+                rx="3"
+              />
               <text
                 class="live-price-label"
-                :class="livePriceBullish ? 'bull' : 'bear'"
-                :x="plotWidth + 6" :y="livePriceLineY + 4"
+                :x="plotWidth + 6" :y="livePriceLineY + (barCloseCountdown ? -3 : 4)"
               >{{ formatPrice(livePrice) }}</text>
+              <text
+                v-if="barCloseCountdown"
+                class="bar-close-countdown"
+                :x="plotWidth + 6" :y="livePriceLineY + 12"
+              >{{ barCloseCountdown }}</text>
             </g>
 
             <!-- price axis -->
@@ -537,12 +686,17 @@
               >{{ t.label }}</text>
             </g>
 
-            <!-- Dynamic property subplot (defaults to volume; selectable near XTF EMA) -->
-            <g class="subplot prop-subplot" :transform="`translate(0, ${mainPlotHeight + 4})`">
-              <text class="subplot-title" x="4" y="10">{{ selectedProp.toUpperCase() }}</text>
+            <!-- Dynamic property subplots (defaults to volume; one row per entry in propRows) -->
+            <g
+              v-for="(row, rowIdx) in propRows"
+              :key="row.id"
+              class="subplot prop-subplot"
+              :transform="`translate(0, ${mainPlotHeight + 4 + propRowY(rowIdx)})`"
+            >
+              <text class="subplot-title" x="4" y="10">{{ row.prop.toUpperCase() }}</text>
               <rect
-                v-for="b in propBars"
-                :key="'pv' + b.gi"
+                v-for="b in propBarsForRow(row.prop)"
+                :key="'pv' + row.id + b.gi"
                 class="prop-bar"
                 :x="candleX(b.gi) - candleWidth * 0.62 / 2"
                 :y="PROP_HEIGHT - b.h"
@@ -551,6 +705,25 @@
               />
             </g>
           </svg>
+
+          <!-- Text annotation inline editor -->
+          <div
+            v-if="editingTextId"
+            class="text-annotation-editor"
+            :style="textEditorStyle"
+          >
+            <textarea
+              v-model="textEditDraft"
+              rows="2"
+              placeholder="Note text…"
+              @keydown.enter.exact.prevent="commitTextEdit"
+              @keydown.escape.stop.prevent="cancelTextEdit"
+            ></textarea>
+            <div class="text-annotation-editor-actions">
+              <button @click="commitTextEdit">Save</button>
+              <button @click="cancelTextEdit">Cancel</button>
+            </div>
+          </div>
 
           <!-- HUD readout -->
           <div class="hud">
@@ -623,8 +796,24 @@
         </div>
         <div class="modal-body">
           <div class="detail-grid">
+            <div class="detail-section detail-section-primitives" v-if="selectedCandlePrimitiveEntries.length">
+              <h3>Overview</h3>
+              <div
+                v-for="[key, value] in selectedCandlePrimitiveEntries"
+                :key="key"
+                :id="'detail-prop-' + key"
+                class="detail-item"
+              >
+                <label :title="key">{{ formatDetailLabel(key) }}</label>
+                <span v-if="typeof value === 'boolean'" class="boolean-badge" :class="value ? 'is-true' : 'is-false'">{{ value ? "TRUE" : "FALSE" }}</span>
+                <span v-else-if="typeof value === 'number'" class="detail-number">{{ formatDetailNumber(key, value) }}</span>
+                <span v-else-if="value == null" class="detail-null">—</span>
+                <span v-else class="detail-text">{{ value }}</span>
+              </div>
+            </div>
+
             <DynamicDetailSection
-              v-for="([key, value], index) in objectEntries(selectedCandle.candle)"
+              v-for="([key, value], index) in selectedCandleComplexEntries"
               :key="key"
               :label="formatDetailLabel(key)"
               :value="value"
@@ -679,10 +868,56 @@ import { klineDbUtilityV2 } from "@/utility/v2/klineDbUtilityV2";
 import { getLiqudationHeatmap, type LiquidationHeatmapCell } from "@/utility/v2/analysis/liquidationHeatmap";
 import { OrderMakerUtility } from "@/utility/OrderMakerUtility";
 import { useNotificationStore } from "@/stores/notificationStore.ts";
+import { loadToolCache, saveToolCache } from "@/utility/toolCacheDb";
+import { listNotes, saveNote, deleteNote, type StickyNote } from "@/utility/notesDb";
 
 // ── Dynamic candle detail renderer ─────────────────────────────────────
 // Intentionally driven by the runtime object rather than CandleInfo's type
 // definition. New CandleInfo properties therefore appear automatically.
+// Renders one parent property as: a header (the parent prop name) followed
+// by a flat table of every leaf value nested under it — "[props] [value]"
+// rows — rather than recursively indenting each nested level with its own
+// mini-header. Deeply nested objects/arrays collapse into dotted/bracketed
+// paths (e.g. "Targets[0].Price") as the row label, which reads much more
+// like a clean two-column table and much less like a wall of
+// {propName}{value} fragments.
+interface DetailLeaf { path: string; value: unknown }
+
+function flattenDetailValue(value: unknown, path: string, out: DetailLeaf[]): void {
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      out.push({ path, value: [] });
+      return;
+    }
+    value.forEach((item, index) => {
+      const childPath = `${path}[${index}]`;
+      if (isPlainObject(item) || Array.isArray(item)) {
+        flattenDetailValue(item, childPath, out);
+      } else {
+        out.push({ path: childPath, value: item });
+      }
+    });
+    return;
+  }
+  if (isPlainObject(value)) {
+    const entries = objectEntries(value);
+    if (entries.length === 0) {
+      out.push({ path, value: {} });
+      return;
+    }
+    for (const [k, v] of entries) {
+      const childPath = path ? `${path}.${formatDetailLabel(k)}` : formatDetailLabel(k);
+      if (isPlainObject(v) || Array.isArray(v)) {
+        flattenDetailValue(v, childPath, out);
+      } else {
+        out.push({ path: childPath, value: v });
+      }
+    }
+    return;
+  }
+  out.push({ path, value });
+}
+
 const DynamicDetailSection = defineComponent({
   name: "DynamicDetailSection",
   props: {
@@ -692,68 +927,47 @@ const DynamicDetailSection = defineComponent({
     accentIndex: { type: Number, default: 0 },
   },
   setup(props) {
-    const renderValue = (value: unknown, key: string, depth: number): ReturnType<typeof h> => {
+    const renderLeafValue = (leaf: DetailLeaf): ReturnType<typeof h> => {
+      const { value, path } = leaf;
+      const lastSegment = path.split(/[.[]/).pop()?.replace(/\]$/, "") ?? path;
       if (value === null || value === undefined) {
         return h("span", { class: "detail-null" }, "—");
       }
-
-      if (Array.isArray(value)) {
-        if (value.length === 0) return h("span", { class: "detail-null" }, "[]");
-
-        return h("div", { class: "detail-array" }, value.map((item, index) => {
-          if (isPlainObject(item)) {
-            return h("div", { class: "detail-array-object", key: index }, [
-              h("div", { class: "detail-array-index" }, `[${index}]`),
-              ...objectEntries(item).map(([childKey, childValue]) =>
-                renderEntry(childKey, childValue, depth + 1)
-              ),
-            ]);
-          }
-          return h("div", { class: "detail-array-value", key: index }, [
-            h("span", { class: "detail-array-index" }, `[${index}]`),
-            renderPrimitive(item, key),
-          ]);
-        }));
+      if (Array.isArray(value) && value.length === 0) {
+        return h("span", { class: "detail-null" }, "[]");
       }
-
-      if (isPlainObject(value)) {
-        return h("div", { class: "detail-nested" }, objectEntries(value).map(([childKey, childValue]) =>
-          renderEntry(childKey, childValue, depth + 1)
-        ));
+      if (isPlainObject(value) && Object.keys(value).length === 0) {
+        return h("span", { class: "detail-null" }, "{}");
       }
-
-      return renderPrimitive(value, key);
-    };
-
-    const renderEntry = (key: string, value: unknown, depth: number): ReturnType<typeof h> => {
-      const complex = Array.isArray(value) || isPlainObject(value);
-      return h("div", { class: complex ? "detail-complex-entry" : "detail-item" }, [
-        h("label", { title: key }, formatDetailLabel(key)),
-        renderValue(value, key, depth),
-      ]);
-    };
-
-    const renderPrimitive = (value: unknown, key: string): ReturnType<typeof h> => {
       if (typeof value === "boolean") {
         return h("span", { class: ["boolean-badge", value ? "is-true" : "is-false"] }, value ? "TRUE" : "FALSE");
       }
       if (typeof value === "number") {
-        return h("span", { class: "detail-number" }, formatDetailNumber(key, value));
+        return h("span", { class: "detail-number" }, formatDetailNumber(lastSegment, value));
       }
       if (typeof value === "string") {
-        const isSignal = ["direction", "dominant"].includes(key.toLowerCase());
+        const isSignal = ["direction", "dominant"].includes(lastSegment.toLowerCase());
         return h("span", { class: isSignal ? "side-badge side-" + value.toLowerCase() : "detail-text" }, value);
       }
       return h("span", { class: "detail-text" }, String(value));
     };
 
-    return () => h("div", {
-      class: "detail-section dynamic-detail-section",
-      style: { "--detail-depth": String(props.depth) },
-    }, [
-      h("h3", props.label),
-      renderValue(props.value, props.label, props.depth),
-    ]);
+    return () => {
+      const leaves: DetailLeaf[] = [];
+      flattenDetailValue(props.value, "", leaves);
+      return h("div", {
+        class: "detail-section dynamic-detail-section",
+        style: { "--detail-depth": String(props.depth) },
+      }, [
+        h("h3", props.label),
+        h("div", { class: "detail-table" }, leaves.map((leaf) =>
+          h("div", { class: "detail-table-row", key: leaf.path || props.label }, [
+            h("span", { class: "detail-table-key", title: leaf.path || props.label }, leaf.path || props.label),
+            h("span", { class: "detail-table-value" }, [renderLeafValue(leaf)]),
+          ])
+        )),
+      ]);
+    };
   },
 });
 
@@ -1002,11 +1216,87 @@ async function loadSymbolInfo() {
   }
 }
 
+// ── Load older candles ───────────────────────────────────────────────────
+// Pulls history from before the oldest candle currently loaded for the
+// active primary timeframe. klineDbUtilityV2 only exposes whatever is
+// already cached in IndexedDB (loadSymbolInfo above) — there's no "give me
+// more history" call on it — so this goes straight to Binance's public
+// USDT-M futures REST API instead (the same exchange the live websocket
+// above already streams from). Fetched candles only carry raw OHLCV; any
+// derived fields your pipeline normally attaches (EMA200, OI, long/short
+// ratio, etc.) will be blank for this backfilled range until your own
+// backend recomputes and re-caches them — this is a stopgap for seeing
+// price history further back, not a substitute for a proper backfill job.
+const OLDER_CANDLES_OPTIONS = [20, 50, 100, 200, 500];
+const olderCandlesMenuOpen = ref(false);
+const olderCandlesLoading = ref(false);
+const olderCandlesError = ref<string | null>(null);
+const loadOlderWrapRef = ref<HTMLElement | null>(null);
+
+function onDocumentClickForLoadOlderMenu(e: MouseEvent) {
+  if (!olderCandlesMenuOpen.value) return;
+  const el = loadOlderWrapRef.value;
+  if (el && !el.contains(e.target as Node)) olderCandlesMenuOpen.value = false;
+}
+
+async function loadOlderCandles(count: number) {
+  olderCandlesMenuOpen.value = false;
+  olderCandlesError.value = null;
+  if (!symbolInfo.value || olderCandlesLoading.value) return;
+  const arr = candlesArrayFor(symbolInfo.value, primaryTf.value);
+  const oldest = arr[0];
+  if (!oldest) return;
+
+  olderCandlesLoading.value = true;
+  try {
+    const endTime = oldest.openTime - 1;
+    const sym = encodeURIComponent(props.symbol.trim().toUpperCase());
+    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${primaryTf.value}&endTime=${endTime}&limit=${count}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Binance klines request failed (${res.status})`);
+    const rows = (await res.json()) as unknown[][];
+    if (!Array.isArray(rows) || rows.length === 0) {
+      olderCandlesError.value = "No older candles available.";
+      return;
+    }
+    // Binance returns oldest→newest; only keep rows strictly before what we
+    // already have, in case of any overlap at the boundary.
+    const fetched = rows
+      .map((r) => ({
+        openTime: Number(r[0]),
+        open: Number(r[1]),
+        high: Number(r[2]),
+        low: Number(r[3]),
+        close: Number(r[4]),
+        volume: Number(r[5]),
+        closeTime: Number(r[6]),
+      }))
+      .filter((c) => c.openTime < oldest.openTime) as unknown as CandleInfo[];
+    if (fetched.length === 0) {
+      olderCandlesError.value = "No older candles available.";
+      return;
+    }
+    arr.unshift(...fetched);
+    triggerRef(symbolInfo);
+    // The view window is an index into this array, which just grew at the
+    // front by fetched.length — shift it by the same amount so the candles
+    // currently on screen don't visually jump.
+    viewStartIndex.value += fetched.length;
+  } catch (err) {
+    olderCandlesError.value = (err as Error)?.message ?? "Failed to load older candles.";
+    console.error("Failed to load older candles:", err);
+  } finally {
+    olderCandlesLoading.value = false;
+  }
+}
+
 watch(() => props.symbol, () => {
   livePrice.value = null;
   resetView();
   loadSymbolInfo();
   connectBinanceWs();
+  loadToolCacheForSymbol();
+  loadNotesForSymbol();
 });
 
 // ── Timeframe selection ───────────────────────────────────────────────
@@ -1096,7 +1386,8 @@ const TIME_AXIS_HEIGHT = 20;
 const FRVP_MAX_WIDTH = 90;
 
 const plotWidth = computed(() => Math.max(50, chartWidth.value - PAD_RIGHT));
-const subplotsHeight = computed(() => PROP_HEIGHT + SUBPLOT_GAP);
+// Grows with the number of stacked dynamic-property bar rows (see propRows).
+const subplotsHeight = computed(() => propRows.value.length * (PROP_HEIGHT + SUBPLOT_GAP));
 const mainPlotHeight = computed(() =>
   Math.max(80, chartHeight.value - PAD_TOP - subplotsHeight.value - TIME_AXIS_HEIGHT)
 );
@@ -1112,6 +1403,39 @@ function candleX(gi: number): number {
 function indexAtX(x: number): number {
   const gi = displayStart.value + Math.round((x - PAD_LEFT - candleWidth.value / 2) / candleWidth.value);
   return Math.max(0, Math.min(maxStartIndex.value, gi));
+}
+
+// ── Time-anchored drawings ──────────────────────────────────────────────
+// Rectangles / trend lines / price-range boxes / vertical lines are anchored
+// by TIME (a candle's openTime), not by bar index. Bar index only means "the
+// Nth candle in whichever timeframe happens to be active right now" — switch
+// primary timeframe and the same index points at a completely different
+// moment, which is why drawings used to visibly jump when changing TF. Time
+// is timeframe-independent: these two helpers convert between "gi in the
+// currently active candle array" (what candleX/indexAtX/mouse events work
+// in) and "openTime" (what gets persisted on the shape) on demand.
+function timeFromGi(gi: number): number {
+  const arr = primaryCandles.value;
+  if (arr.length === 0) return Date.now();
+  const clamped = Math.max(0, Math.min(arr.length - 1, Math.round(gi)));
+  return arr[clamped].openTime;
+}
+function giFromTime(t: number): number {
+  const arr = primaryCandles.value;
+  if (arr.length === 0) return 0;
+  let lo = 0;
+  let hi = arr.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (arr[mid].openTime < t) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo > 0 && Math.abs(arr[lo - 1].openTime - t) <= Math.abs(arr[lo].openTime - t)) return lo - 1;
+  return lo;
+}
+// Convenience: candleX for a shape field that stores time rather than gi.
+function candleXAtTime(t: number): number {
+  return candleX(giFromTime(t));
 }
 
 const priceRange = computed(() => {
@@ -1153,6 +1477,28 @@ const livePriceLineY = computed<number | null>(() => {
   return y;
 });
 
+// ── Countdown to bar close ──────────────────────────────────────────────
+// Ticks once a second so the "time to next candle" readout next to the
+// current-price label stays live without depending on websocket messages.
+const nowTick = ref(Date.now());
+let nowTickInterval: number | null = null;
+
+const barCloseCountdown = computed<string | null>(() => {
+  const last = primaryCandles.value[primaryCandles.value.length - 1];
+  if (!last) return null;
+  const dur = TF_DURATION_MS[primaryTf.value];
+  const closeTime = last.openTime + dur;
+  const remainingMs = closeTime - nowTick.value;
+  if (!Number.isFinite(remainingMs)) return null;
+  const clamped = Math.max(0, remainingMs);
+  const totalSec = Math.floor(clamped / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+});
+
 const priceStep = computed(() => {
   const { lo, hi } = priceRange.value;
   const span = hi - lo;
@@ -1191,13 +1537,15 @@ function measureContainer() {
 }
 
 // ── Pan / zoom interaction ─────────────────────────────────────────────
-type Tool = "none" | "rectangle" | "line" | "horizontal-line" | "price-range" | "frvp" | "avwap" | "liquidity";
+type Tool = "none" | "rectangle" | "line" | "horizontal-line" | "vertical-line" | "text" | "price-range" | "frvp" | "avwap" | "liquidity";
 const activeTool = ref<Tool>("none");
 
 const TOOL_DEFS: { id: Tool; icon: string; label: string; key: string }[] = [
   { id: "rectangle", icon: "▭", label: "Rectangle", key: "r" },
   { id: "line", icon: "╱", label: "Trend line", key: "l" },
   { id: "horizontal-line", icon: "—", label: "Horizontal price line", key: "p" },
+  { id: "vertical-line", icon: "❘", label: "Vertical time line", key: "i" },
+  { id: "text", icon: "T", label: "Text label (click to place)", key: "w" },
   { id: "price-range", icon: "↕", label: "Price range", key: "t" },
   { id: "frvp", icon: "▤", label: "Fixed-range volume profile", key: "v" },
   { id: "avwap", icon: "◇", label: "Anchored VWAP (click a candle)", key: "a" },
@@ -1227,8 +1575,27 @@ function eventLocalPos(e: MouseEvent): { x: number; y: number } {
   return { x: e.clientX - rect.left, y: e.clientY - rect.top };
 }
 
+// Any mousedown that lands on an interactive overlay control living inside
+// .chart-container (Place Order / Preview buttons, the drawing toolbar's
+// Remove/Done buttons, panel inputs, the notes toolbar, etc.) must NOT be
+// treated as a chart interaction. Previously nothing guarded against this,
+// so those clicks fell through to the pan/click logic below: mousedown set
+// isPanning, then mouseup — seeing no real drag — called handleChartClick,
+// which (with no tool active) opened the candle detail modal on top of
+// whatever button the user actually meant to press. That's the root cause
+// both of "Place Order also opens the candle modal" and of candle clicks
+// appearing to swallow clicks meant for drawing tools.
+function isInteractiveOverlayTarget(e: MouseEvent): boolean {
+  const el = e.target as HTMLElement | null;
+  if (!el) return false;
+  return !!el.closest(
+    "button, input, select, textarea, a, .preview-panel, .drawing-toolbar, .notes-toolbar, .notes-panel, .text-annotation-editor, .load-older-wrap"
+  );
+}
+
 function onChartMouseDown(e: MouseEvent) {
   if (loading.value || loadError.value) return;
+  if (isInteractiveOverlayTarget(e)) return;
   const { x, y } = eventLocalPos(e);
   mouseDownAt = { x, y, t: performance.now() };
   const gi = indexAtX(x);
@@ -1270,6 +1637,7 @@ function onChartMouseLeave() {
 }
 
 function onChartMouseUp(e: MouseEvent) {
+  if (isInteractiveOverlayTarget(e)) { isPanning = false; return; }
   const { x, y } = eventLocalPos(e);
   const movedFar = Math.hypot(x - mouseDownAt.x, y - mouseDownAt.y) > 4;
 
@@ -1279,9 +1647,9 @@ function onChartMouseUp(e: MouseEvent) {
     return;
   }
 
-  // Click-only tools (AVWAP and preview buy/sell) never enter the pan state.
-  // Handle their click here so a candle click actually creates the tool.
-  if (!toolDraft.value && !movedFar && ["horizontal-line", "avwap"].includes(activeTool.value)) {
+  // Click-only tools (AVWAP, horizontal/vertical lines, and preview buy/sell)
+  // never enter the pan state.
+  if (!toolDraft.value && !movedFar && ["horizontal-line", "vertical-line", "text", "avwap"].includes(activeTool.value)) {
     handleChartClick(x, y);
     return;
   }
@@ -1303,13 +1671,37 @@ function handleChartClick(x: number, y: number) {
   const price = yToPrice(y);
 
   if (activeTool.value === "horizontal-line") {
+    pushUndoSnapshot();
     horizontalLines.value.push({ id: nextId(), price });
     activeTool.value = "none";
+  } else if (activeTool.value === "vertical-line") {
+    pushUndoSnapshot();
+    verticalLines.value.push({ id: nextId(), time: timeFromGi(gi) });
+    activeTool.value = "none";
+  } else if (activeTool.value === "text") {
+    pushUndoSnapshot();
+    const id = nextId();
+    textAnnotations.value.push({ id, time: timeFromGi(gi), price, text: "" });
+    activeTool.value = "none";
+    editingTextId.value = id;
+    textEditDraft.value = "";
   } else if (activeTool.value === "avwap") {
     addAvwapAnchor(gi);
     activeTool.value = "none";
   } else if (activeTool.value === "none") {
-    onCandleClick(gi);
+    // Only open the candle detail modal when the click actually lands on
+    // that candle's wick/body extent — previously any click anywhere in the
+    // main plot (empty space above/below a small-bodied candle included)
+    // opened the modal just from being in the right x-column.
+    const candle = primaryCandles.value[gi];
+    if (candle) {
+      const hitPad = 4; // a few px of forgiveness around a thin wick
+      const yTop = priceToY(candle.high) - hitPad;
+      const yBottom = priceToY(candle.low) + hitPad;
+      if (y >= yTop && y <= yBottom) {
+        onCandleClick(gi);
+      }
+    }
   }
 }
 
@@ -1347,6 +1739,23 @@ function onCandleClick(gi: number) {
   if (!candle) return;
   selectedCandle.value = { gi, candle };
 }
+
+// Modal layout: immediate (primitive) properties render first, as a single
+// compact grid, so the "at a glance" values aren't buried underneath a wall
+// of nested sections. Complex (object/array) properties still get their own
+// DynamicDetailSection below, in original key order.
+const selectedCandlePrimitiveEntries = computed<[string, unknown][]>(() => {
+  if (!selectedCandle.value) return [];
+  return objectEntries(selectedCandle.value.candle).filter(
+    ([, v]) => !isPlainObject(v) && !Array.isArray(v)
+  );
+});
+const selectedCandleComplexEntries = computed<[string, unknown][]>(() => {
+  if (!selectedCandle.value) return [];
+  return objectEntries(selectedCandle.value.candle).filter(
+    ([, v]) => isPlainObject(v) || Array.isArray(v)
+  );
+});
 
 const selectedCandleOi = computed<OpenInterestHistEntry | null>(() => {
   if (!selectedCandle.value) return null;
@@ -1438,18 +1847,44 @@ const availableNumericProps = computed<string[]>(() => {
   return Array.from(keys).sort();
 });
 
-function loadStoredProp(): string {
-  try {
-    return window.localStorage.getItem(PROP_STORAGE_KEY) || "volume";
-  } catch {
-    return "volume";
-  }
+// Multiple stacked dynamic-property bar sections. Each row independently
+// picks a numeric property; the whole set persists to localStorage so it's
+// still there next time this symbol/chart is opened.
+interface PropRow { id: string; prop: string }
+let propRowIdCounter = 0;
+function nextPropRowId(): string {
+  propRowIdCounter += 1;
+  return `prop-row-${propRowIdCounter}`;
 }
 
-const selectedProp = ref<string>(loadStoredProp());
-const propMenuOpen = ref(false);
+function loadStoredPropRows(): PropRow[] {
+  try {
+    const raw = window.localStorage.getItem(PROP_STORAGE_KEY);
+    if (!raw) return [{ id: nextPropRowId(), prop: "volume" }];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === "object" && parsed[0] !== null && "prop" in parsed[0]) {
+      return parsed.map((r: { prop: string }) => ({ id: nextPropRowId(), prop: r.prop || "volume" }));
+    }
+    if (typeof parsed === "string") return [{ id: nextPropRowId(), prop: parsed }];
+  } catch {
+    // Older builds stored the raw (non-JSON) prop name directly.
+    try {
+      const legacy = window.localStorage.getItem(PROP_STORAGE_KEY);
+      if (legacy) return [{ id: nextPropRowId(), prop: legacy }];
+    } catch {
+      // ignore — fall through to default
+    }
+  }
+  return [{ id: nextPropRowId(), prop: "volume" }];
+}
+
+const propRows = ref<PropRow[]>(loadStoredPropRows());
+const openPropMenuRowId = ref<string | null>(null);
 const propSearch = ref("");
-const propSelectRef = ref<HTMLElement | null>(null);
+const propSelectRefs: Record<string, HTMLElement | null> = {};
+function setPropSelectRef(id: string, el: Element | null) {
+  propSelectRefs[id] = el as HTMLElement | null;
+}
 
 const filteredProps = computed(() => {
   const q = propSearch.value.trim().toLowerCase();
@@ -1458,35 +1893,77 @@ const filteredProps = computed(() => {
   return all.filter((p) => p.toLowerCase().includes(q));
 });
 
-function selectProp(p: string) {
-  selectedProp.value = p;
-  propMenuOpen.value = false;
+function toggleRowPropMenu(rowId: string) {
+  openPropMenuRowId.value = openPropMenuRowId.value === rowId ? null : rowId;
   propSearch.value = "";
+}
+
+function selectPropForRow(rowId: string, p: string) {
+  const row = propRows.value.find((r) => r.id === rowId);
+  if (row) row.prop = p;
+  openPropMenuRowId.value = null;
+  propSearch.value = "";
+}
+
+function addPropRow() {
+  propRows.value.push({ id: nextPropRowId(), prop: "volume" });
+}
+function removePropRow(id: string) {
+  if (propRows.value.length <= 1) return; // always keep at least one row
+  propRows.value = propRows.value.filter((r) => r.id !== id);
+  if (openPropMenuRowId.value === id) openPropMenuRowId.value = null;
+}
+
+function persistPropRows() {
   try {
-    window.localStorage.setItem(PROP_STORAGE_KEY, p);
+    window.localStorage.setItem(
+      PROP_STORAGE_KEY,
+      JSON.stringify(propRows.value.map((r) => ({ prop: r.prop })))
+    );
   } catch {
     // localStorage may be unavailable (private mode, etc.) — selection still
     // works for the current session, it just won't persist.
   }
 }
+watch(propRows, persistPropRows, { deep: true });
+
+// When a row's property dropdown opens, scroll the currently-selected item
+// into view — with a long, filterable list the active prop can easily be
+// scrolled out of sight, so opening the menu should immediately show (and
+// focus) where the current selection sits rather than leaving the user to
+// hunt for it.
+watch(openPropMenuRowId, (rowId) => {
+  if (!rowId) return;
+  nextTick(() => {
+    const container = propSelectRefs[rowId];
+    const activeEl = container?.querySelector<HTMLElement>(".prop-select-item.active");
+    if (activeEl) {
+      activeEl.scrollIntoView({ block: "nearest" });
+      activeEl.focus({ preventScroll: true });
+    }
+  });
+});
 
 function onDocumentClickForPropSelect(e: MouseEvent) {
-  if (!propMenuOpen.value) return;
-  const el = propSelectRef.value;
-  if (el && !el.contains(e.target as Node)) propMenuOpen.value = false;
+  if (!openPropMenuRowId.value) return;
+  const el = propSelectRefs[openPropMenuRowId.value];
+  if (el && !el.contains(e.target as Node)) openPropMenuRowId.value = null;
 }
 
-const propBars = computed(() => {
-  const key = selectedProp.value;
+function propBarsForRow(prop: string) {
   const matched = displayCandles.value.map((c) => ({
     gi: c.gi,
-    v: Number(getByPath(c.candle, key)),
+    v: Number(getByPath(c.candle, prop)),
   }));
   const max = Math.max(1, ...matched.map((m) => (Number.isFinite(m.v) ? Math.abs(m.v) : 0)));
   return matched
     .filter((m) => Number.isFinite(m.v))
     .map((m) => ({ gi: m.gi, h: (Math.abs(m.v) / max) * (PROP_HEIGHT - 12) }));
-});
+}
+
+function propRowY(index: number): number {
+  return index * (PROP_HEIGHT + SUBPLOT_GAP);
+}
 
 // ── Multi-timeframe ghost candle overlays ──────────────────────────────
 interface OverlayBox { id: string; x1: number; x2: number; open: number; high: number; low: number; close: number; bullish: boolean }
@@ -1533,7 +2010,10 @@ const crossTfEmaLines = computed<Record<Tf, { gi: number; price: number }[]>>(()
   const result: Record<Tf, { gi: number; price: number }[]> = { "15m": [], "1h": [], "4h": [], "1d": [] };
   if (!showCrossTfEma.value) return result;
   for (const tf of XTF_EMA_TF_LIST) {
-    if (tf === primaryTf.value) continue;
+    // NOTE: the primary timeframe's own EMA200 is intentionally included here
+    // (see comment on XTF_EMA_TF_LIST) — previously this loop skipped
+    // `tf === primaryTf.value`, which is why the 15m line never appeared
+    // while viewing the 15m chart.
     const tfCandles = candlesByTf.value[tf];
     if (tfCandles.length === 0) continue;
     let j = 0;
@@ -1592,9 +2072,15 @@ function finalizeLiquidity(d: ToolDraft) {
 }
 
 // ── Rectangle / line / price-range / FRVP drawings ─────────────────────
+// x1/x2 on RectShape, LineShape and PriceRangeBox store an openTime
+// (milliseconds), not a bar index — see the time-anchored-drawings comment
+// above candleXAtTime/giFromTime. Use candleXAtTime(shape.x1) rather than
+// candleX(shape.x1) when rendering these.
 interface RectShape { id: string; x1: number; x2: number; y1: number; y2: number }
 interface LineShape { id: string; x1: number; x2: number; y1: number; y2: number }
 interface HorizontalLineShape { id: string; price: number }
+interface VerticalLineShape { id: string; time: number }
+interface TextAnnotation { id: string; time: number; price: number; text: string }
 interface PriceRangeBox { id: string; x1: number; x2: number; y1: number; y2: number }
 interface FrvpRow { priceLow: number; priceHigh: number; buyVolume: number; sellVolume: number; buyFrac: number; sellFrac: number }
 interface FrvpZone {
@@ -1611,12 +2097,16 @@ interface PreviewPosition { side: "buy" | "sell"; entryGi: number; entryPrice: n
 const rectangles = ref<RectShape[]>([]);
 const trendLines = ref<LineShape[]>([]);
 const horizontalLines = ref<HorizontalLineShape[]>([]);
+const verticalLines = ref<VerticalLineShape[]>([]);
+const textAnnotations = ref<TextAnnotation[]>([]);
+const editingTextId = ref<string | null>(null);
+const textEditDraft = ref("");
 const priceRangeBoxes = ref<PriceRangeBox[]>([]);
 const frvpZones = ref<FrvpZone[]>([]);
 const avwapLines = ref<AvwapLine[]>([]);
 const liquidityRanges = ref<LiquidityRange[]>([]);
 const previewPosition = ref<PreviewPosition | null>(null);
-const selectedDrawing = ref<{ type: "rectangle" | "line" | "horizontal-line" | "price-range" | "frvp" | "avwap" | "liquidity"; id: string } | null>(null);
+const selectedDrawing = ref<{ type: "rectangle" | "line" | "horizontal-line" | "vertical-line" | "text" | "price-range" | "frvp" | "avwap" | "liquidity"; id: string } | null>(null);
 
 const previewMargin = ref(5);
 const targetTpRoi = ref(2);
@@ -1679,13 +2169,16 @@ function nextId(): string {
 function finalizeToolDraft(d: ToolDraft) {
   switch (activeTool.value) {
     case "rectangle":
-      rectangles.value.push({ id: nextId(), x1: d.startGi, x2: d.curGi, y1: d.startPrice, y2: d.curPrice });
+      pushUndoSnapshot();
+      rectangles.value.push({ id: nextId(), x1: timeFromGi(d.startGi), x2: timeFromGi(d.curGi), y1: d.startPrice, y2: d.curPrice });
       break;
     case "line":
-      trendLines.value.push({ id: nextId(), x1: d.startGi, x2: d.curGi, y1: d.startPrice, y2: d.curPrice });
+      pushUndoSnapshot();
+      trendLines.value.push({ id: nextId(), x1: timeFromGi(d.startGi), x2: timeFromGi(d.curGi), y1: d.startPrice, y2: d.curPrice });
       break;
     case "price-range":
-      priceRangeBoxes.value.push({ id: nextId(), x1: d.startGi, x2: d.curGi, y1: d.startPrice, y2: d.curPrice });
+      pushUndoSnapshot();
+      priceRangeBoxes.value.push({ id: nextId(), x1: timeFromGi(d.startGi), x2: timeFromGi(d.curGi), y1: d.startPrice, y2: d.curPrice });
       break;
     case "frvp":
       addFrvpZone(Math.min(d.startGi, d.curGi), Math.max(d.startGi, d.curGi));
@@ -1790,9 +2283,12 @@ function addAvwapAnchor(anchorGi: number, existingId?: string) {
 }
 
 function clearAllDrawings() {
+  pushUndoSnapshot();
   rectangles.value = [];
   trendLines.value = [];
   horizontalLines.value = [];
+  verticalLines.value = [];
+  textAnnotations.value = [];
   priceRangeBoxes.value = [];
   frvpZones.value = [];
   avwapLines.value = [];
@@ -1801,9 +2297,171 @@ function clearAllDrawings() {
   selectedDrawing.value = null;
 }
 
+// ── Undo (Ctrl+Z) ────────────────────────────────────────────────────────
+// Covers the time-anchored drawing types (rectangles/lines/horizontal &
+// vertical lines/price-range boxes/text annotations) — FRVP zones, AVWAP
+// anchors and liquidity ranges aren't included since they're still
+// index-anchored and computed rather than simple shape state (see the
+// time-anchored-drawings note above candleXAtTime). pushUndoSnapshot() is
+// called once per "commit" — before a new shape is added/removed, and once
+// at the start of a drag rather than on every mousemove — so one Ctrl+Z
+// undoes one whole gesture, not one pixel of it.
+interface DrawingsSnapshot {
+  rectangles: RectShape[];
+  trendLines: LineShape[];
+  horizontalLines: HorizontalLineShape[];
+  verticalLines: VerticalLineShape[];
+  priceRangeBoxes: PriceRangeBox[];
+  textAnnotations: TextAnnotation[];
+}
+const MAX_UNDO = 50;
+const undoStack: DrawingsSnapshot[] = [];
+
+function pushUndoSnapshot() {
+  undoStack.push({
+    rectangles: JSON.parse(JSON.stringify(rectangles.value)),
+    trendLines: JSON.parse(JSON.stringify(trendLines.value)),
+    horizontalLines: JSON.parse(JSON.stringify(horizontalLines.value)),
+    verticalLines: JSON.parse(JSON.stringify(verticalLines.value)),
+    priceRangeBoxes: JSON.parse(JSON.stringify(priceRangeBoxes.value)),
+    textAnnotations: JSON.parse(JSON.stringify(textAnnotations.value)),
+  });
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+}
+
+function undoLastDrawingChange() {
+  const snap = undoStack.pop();
+  if (!snap) return;
+  rectangles.value = snap.rectangles;
+  trendLines.value = snap.trendLines;
+  horizontalLines.value = snap.horizontalLines;
+  verticalLines.value = snap.verticalLines;
+  priceRangeBoxes.value = snap.priceRangeBoxes;
+  textAnnotations.value = snap.textAnnotations;
+  selectedDrawing.value = null;
+}
+
+// ── Tool cache persistence (IndexedDB, per symbol) ──────────────────────
+// Rectangles/lines/price-ranges/vertical-lines/text annotations used to
+// vanish on every reload (nothing persisted them). This restores whatever
+// was drawn for the current symbol on mount/symbol-switch, and re-saves on
+// every change so the next open picks up where this one left off.
+let toolCacheLoading = false;
+let toolCacheSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function loadToolCacheForSymbol() {
+  toolCacheLoading = true;
+  try {
+    const cached = await loadToolCache(props.symbol);
+    rectangles.value = (cached?.rectangles as RectShape[]) ?? [];
+    trendLines.value = (cached?.trendLines as LineShape[]) ?? [];
+    horizontalLines.value = (cached?.horizontalLines as HorizontalLineShape[]) ?? [];
+    verticalLines.value = (cached?.verticalLines as VerticalLineShape[]) ?? [];
+    priceRangeBoxes.value = (cached?.priceRangeBoxes as PriceRangeBox[]) ?? [];
+    textAnnotations.value = (cached?.textAnnotations as TextAnnotation[]) ?? [];
+  } catch (err) {
+    console.error("Failed to load tool cache:", err);
+  } finally {
+    // Deferred so the watch() below (registered after this runs once at
+    // startup) doesn't immediately re-save the data it just loaded.
+    setTimeout(() => { toolCacheLoading = false; }, 0);
+  }
+}
+
+function scheduleToolCacheSave() {
+  if (toolCacheLoading) return;
+  if (toolCacheSaveTimer != null) clearTimeout(toolCacheSaveTimer);
+  toolCacheSaveTimer = setTimeout(() => {
+    // saveToolCache() does its own JSON-clone before the IndexedDB put, so
+    // it's safe to pass the reactive refs' values directly here.
+    saveToolCache({
+      symbol: props.symbol,
+      rectangles: rectangles.value,
+      trendLines: trendLines.value,
+      horizontalLines: horizontalLines.value,
+      verticalLines: verticalLines.value,
+      priceRangeBoxes: priceRangeBoxes.value,
+      textAnnotations: textAnnotations.value,
+      updatedAt: Date.now(),
+    }).catch((err) => console.error("Failed to save tool cache:", err));
+  }, 400);
+}
+
+watch(
+  [rectangles, trendLines, horizontalLines, verticalLines, priceRangeBoxes, textAnnotations],
+  scheduleToolCacheSave,
+  { deep: true }
+);
+
+// ── Notes toolbar (sticky notes, IndexedDB, per symbol) ─────────────────
+const notesOpen = ref(false);
+const notes = ref<StickyNote[]>([]);
+const newNoteDraft = ref("");
+const editingNoteId = ref<string | null>(null);
+const editingNoteDraft = ref("");
+
+async function loadNotesForSymbol() {
+  try {
+    notes.value = await listNotes(props.symbol);
+  } catch (err) {
+    console.error("Failed to load notes:", err);
+  }
+}
+
+async function addNote() {
+  const text = newNoteDraft.value.trim();
+  if (!text) return;
+  const now = Date.now();
+  const note: StickyNote = { id: nextId(), symbol: props.symbol, text, createdAt: now, updatedAt: now };
+  notes.value = [note, ...notes.value];
+  newNoteDraft.value = "";
+  try {
+    await saveNote(note);
+  } catch (err) {
+    console.error("Failed to save note:", err);
+  }
+}
+
+function startNoteEdit(note: StickyNote) {
+  editingNoteId.value = note.id;
+  editingNoteDraft.value = note.text;
+}
+
+async function commitNoteEdit() {
+  const id = editingNoteId.value;
+  if (!id) return;
+  const note = notes.value.find((n) => n.id === id);
+  const trimmed = editingNoteDraft.value.trim();
+  if (note && trimmed) {
+    note.text = trimmed;
+    note.updatedAt = Date.now();
+    try {
+      await saveNote(note);
+    } catch (err) {
+      console.error("Failed to save note:", err);
+    }
+  }
+  editingNoteId.value = null;
+  editingNoteDraft.value = "";
+}
+
+function cancelNoteEdit() {
+  editingNoteId.value = null;
+  editingNoteDraft.value = "";
+}
+
+async function removeNote(id: string) {
+  notes.value = notes.value.filter((n) => n.id !== id);
+  try {
+    await deleteNote(id);
+  } catch (err) {
+    console.error("Failed to delete note:", err);
+  }
+}
+
 
 // ── Post-placement drawing selection / editing ─────────────────────────
-type DrawingType = "rectangle" | "line" | "horizontal-line" | "price-range" | "frvp" | "avwap" | "liquidity";
+type DrawingType = "rectangle" | "line" | "horizontal-line" | "vertical-line" | "text" | "price-range" | "frvp" | "avwap" | "liquidity";
 
 function selectDrawing(type: DrawingType, id: string) {
   selectedDrawing.value = { type, id };
@@ -1814,9 +2472,14 @@ function isDrawingSelected(type: DrawingType, id: string) {
 }
 
 function removeDrawing(type: DrawingType, id: string) {
+  if (["rectangle", "line", "horizontal-line", "vertical-line", "text", "price-range"].includes(type)) {
+    pushUndoSnapshot();
+  }
   if (type === "rectangle") rectangles.value = rectangles.value.filter(x => x.id !== id);
   if (type === "line") trendLines.value = trendLines.value.filter(x => x.id !== id);
   if (type === "horizontal-line") horizontalLines.value = horizontalLines.value.filter(x => x.id !== id);
+  if (type === "vertical-line") verticalLines.value = verticalLines.value.filter(x => x.id !== id);
+  if (type === "text") textAnnotations.value = textAnnotations.value.filter(x => x.id !== id);
   if (type === "price-range") priceRangeBoxes.value = priceRangeBoxes.value.filter(x => x.id !== id);
   if (type === "frvp") frvpZones.value = frvpZones.value.filter(x => x.id !== id);
   if (type === "avwap") avwapLines.value = avwapLines.value.filter(x => x.id !== id);
@@ -1837,6 +2500,7 @@ function startDrawingMove(type: DrawingType, id: string, event: MouseEvent) {
   event.stopPropagation();
   const start = chartPointFromClient(event.clientX, event.clientY);
   if (!start) return;
+  pushUndoSnapshot();
 
   const getShape = () => {
     if (type === "rectangle") return rectangles.value.find(x => x.id === id);
@@ -1848,18 +2512,21 @@ function startDrawingMove(type: DrawingType, id: string, event: MouseEvent) {
   const shape = getShape() as RectShape | LineShape | PriceRangeBox | undefined;
   if (!shape) return;
 
-  const startGi = start.gi;
+  // x1/x2 are stored as time; convert the drag's gi delta into a time delta
+  // via timeFromGi so the shape keeps tracking the same time span (and thus
+  // stays anchored) instead of drifting after a timeframe switch.
+  const startT = timeFromGi(start.gi);
   const startPrice = start.price;
   const original = { ...shape };
 
   const move = (e: MouseEvent) => {
     const cur = chartPointFromClient(e.clientX, e.clientY);
     if (!cur) return;
-    const dGi = cur.gi - startGi;
+    const dT = timeFromGi(cur.gi) - startT;
     const dPrice = cur.price - startPrice;
     if ("x1" in shape) {
-      shape.x1 = original.x1 + dGi;
-      shape.x2 = original.x2 + dGi;
+      shape.x1 = original.x1 + dT;
+      shape.x2 = original.x2 + dT;
       shape.y1 = original.y1 + dPrice;
       shape.y2 = original.y2 + dPrice;
     }
@@ -1885,6 +2552,7 @@ function startDrawingResize(
     ? rectangles.value.find(x => x.id === id)
     : priceRangeBoxes.value.find(x => x.id === id);
   if (!shape) return;
+  pushUndoSnapshot();
 
   const original = { ...shape };
   // The handles are always rendered at the shape's true visual extremes
@@ -1895,20 +2563,24 @@ function startDrawingResize(
   // (e.g. bottom-to-top) would have its "top" handle secretly wired to update
   // the y2 field while being drawn at the y1 position — dragging it would then
   // pull the *other* edge in and collapse the shape to zero height/width.
+  // x1/x2 are time values; "left"/"right" still resolve by comparing them
+  // since larger openTime is always further right regardless of timeframe.
   const x1IsLeft = original.x1 <= original.x2;
   const y1IsTop = original.y1 >= original.y2;
   const priceEps = Math.max(Math.abs(original.y1 - original.y2) * 1e-6, 1e-6);
+  const timeEps = TF_DURATION_MS[primaryTf.value];
 
   const move = (e: MouseEvent) => {
     const cur = chartPointFromClient(e.clientX, e.clientY);
     if (!cur) return;
+    const curT = timeFromGi(cur.gi);
     if (edge === "left") {
-      const otherGi = x1IsLeft ? original.x2 : original.x1;
-      const newLeft = Math.min(cur.gi, otherGi - 1);
+      const otherT = x1IsLeft ? original.x2 : original.x1;
+      const newLeft = Math.min(curT, otherT - timeEps);
       if (x1IsLeft) shape.x1 = newLeft; else shape.x2 = newLeft;
     } else if (edge === "right") {
-      const otherGi = x1IsLeft ? original.x1 : original.x2;
-      const newRight = Math.max(cur.gi, otherGi + 1);
+      const otherT = x1IsLeft ? original.x1 : original.x2;
+      const newRight = Math.max(curT, otherT + timeEps);
       if (x1IsLeft) shape.x2 = newRight; else shape.x1 = newRight;
     } else if (edge === "top") {
       const otherPrice = y1IsTop ? original.y2 : original.y1;
@@ -1934,14 +2606,15 @@ function startLineEndpointResize(id: string, endpoint: "start" | "end", event: M
   event.stopPropagation();
   const line = trendLines.value.find(x => x.id === id);
   if (!line) return;
+  pushUndoSnapshot();
   const move = (e: MouseEvent) => {
     const cur = chartPointFromClient(e.clientX, e.clientY);
     if (!cur) return;
     if (endpoint === "start") {
-      line.x1 = cur.gi;
+      line.x1 = timeFromGi(cur.gi);
       line.y1 = cur.price;
     } else {
-      line.x2 = cur.gi;
+      line.x2 = timeFromGi(cur.gi);
       line.y2 = cur.price;
     }
   };
@@ -2012,6 +2685,7 @@ function startHorizontalLineMove(id: string, event: MouseEvent) {
   event.stopPropagation();
   const line = horizontalLines.value.find(x => x.id === id);
   if (!line) return;
+  pushUndoSnapshot();
   const move = (e: MouseEvent) => {
     const cur = chartPointFromClient(e.clientX, e.clientY);
     if (!cur) return;
@@ -2025,6 +2699,107 @@ function startHorizontalLineMove(id: string, event: MouseEvent) {
   document.addEventListener("mouseup", up);
   selectDrawing("horizontal-line", id);
 }
+
+function startVerticalLineMove(id: string, event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  const line = verticalLines.value.find(x => x.id === id);
+  if (!line) return;
+  pushUndoSnapshot();
+  const move = (e: MouseEvent) => {
+    const cur = chartPointFromClient(e.clientX, e.clientY);
+    if (!cur) return;
+    line.time = timeFromGi(cur.gi);
+  };
+  const up = () => {
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+  };
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+  selectDrawing("vertical-line", id);
+}
+
+// ── Text annotations ────────────────────────────────────────────────────
+function startTextMove(id: string, event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  const anno = textAnnotations.value.find(x => x.id === id);
+  if (!anno) return;
+  pushUndoSnapshot();
+  const move = (e: MouseEvent) => {
+    const cur = chartPointFromClient(e.clientX, e.clientY);
+    if (!cur) return;
+    anno.time = timeFromGi(cur.gi);
+    anno.price = cur.price;
+  };
+  const up = () => {
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+  };
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+  selectDrawing("text", id);
+}
+
+function startTextEdit(id: string) {
+  const anno = textAnnotations.value.find(x => x.id === id);
+  if (!anno) return;
+  editingTextId.value = id;
+  textEditDraft.value = anno.text;
+  nextTick(() => {
+    const el = document.querySelector<HTMLTextAreaElement>(".text-annotation-editor textarea");
+    el?.focus();
+    el?.select();
+  });
+}
+
+function commitTextEdit() {
+  const id = editingTextId.value;
+  if (!id) return;
+  const anno = textAnnotations.value.find(x => x.id === id);
+  const trimmed = textEditDraft.value.trim();
+  if (anno) {
+    // Only snapshot here when editing text that already existed — a brand
+    // new annotation's creation was already snapshotted in handleChartClick,
+    // so re-snapshotting on its first save would create a redundant undo
+    // step that "undoes" nothing visible.
+    if (anno.text && anno.text !== trimmed) pushUndoSnapshot();
+    if (trimmed) {
+      anno.text = trimmed;
+    } else {
+      // Empty text on save — treat as "cancel" and drop the annotation
+      // rather than leaving a blank, invisible label on the chart.
+      textAnnotations.value = textAnnotations.value.filter(x => x.id !== id);
+    }
+  }
+  editingTextId.value = null;
+  textEditDraft.value = "";
+}
+
+function cancelTextEdit() {
+  const id = editingTextId.value;
+  if (id) {
+    const anno = textAnnotations.value.find(x => x.id === id);
+    // A freshly-placed annotation that's cancelled before ever getting text
+    // shouldn't leave an empty marker behind.
+    if (anno && !anno.text) {
+      textAnnotations.value = textAnnotations.value.filter(x => x.id !== id);
+    }
+  }
+  editingTextId.value = null;
+  textEditDraft.value = "";
+}
+
+const textEditorStyle = computed(() => {
+  if (!editingTextId.value) return { display: "none" };
+  const anno = textAnnotations.value.find(x => x.id === editingTextId.value);
+  if (!anno) return { display: "none" };
+  return {
+    left: `${candleXAtTime(anno.time)}px`,
+    top: `${priceToY(anno.price)}px`,
+  };
+});
 
 function startAvwapResize(id: string, event: MouseEvent) {
   event.preventDefault();
@@ -2172,7 +2947,10 @@ function formatAxisTime(ts: number): string {
 function formatPriceRangeLabel(pr: PriceRangeBox): string {
   const delta = pr.y2 - pr.y1;
   const pctDelta = pr.y1 !== 0 ? (delta / pr.y1) * 100 : 0;
-  const bars = Math.abs(pr.x2 - pr.x1);
+  // x1/x2 are times now (see time-anchored-drawings note), so "bars" is
+  // derived by converting both back to indices in the currently active
+  // timeframe rather than a raw subtraction of stored values.
+  const bars = Math.abs(giFromTime(pr.x2) - giFromTime(pr.x1));
   const sign = delta >= 0 ? "+" : "";
   return `${sign}${formatPrice(delta)} (${sign}${pctDelta.toFixed(2)}%) · ${bars} bars`;
 }
@@ -2183,6 +2961,9 @@ const HOTKEY_HELP = [
   { key: "R", desc: "Rectangle tool" },
   { key: "L", desc: "Trend line tool (click-drag)" },
   { key: "P", desc: "Horizontal price line (click to place)" },
+  { key: "I", desc: "Vertical time line (click to place)" },
+  { key: "W", desc: "Text label (click to place)" },
+  { key: "Ctrl+Z", desc: "Undo last drawing change" },
   { key: "T", desc: "Price range (measure) tool" },
   { key: "V", desc: "Fixed-range volume profile" },
   { key: "A", desc: "Anchored VWAP (click a candle)" },
@@ -2202,12 +2983,22 @@ function onKeydown(e: KeyboardEvent) {
     const tag = target.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) return;
   }
+  // Ctrl+Z / Cmd+Z undo — checked before the general ctrl/meta/alt bail-out
+  // below (which intentionally ignores modifier combos so plain letter keys
+  // don't accidentally fire tool hotkeys while e.g. copy/paste is happening).
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
+    e.preventDefault();
+    undoLastDrawingChange();
+    return;
+  }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
 
   switch (e.key.toLowerCase()) {
     case "r": setActiveTool("rectangle"); break;
     case "l": setActiveTool("line"); break;
     case "p": setActiveTool("horizontal-line"); break;
+    case "i": setActiveTool("vertical-line"); break;
+    case "w": setActiveTool("text"); break;
     case "t": setActiveTool("price-range"); break;
     case "v": setActiveTool("frvp"); break;
     case "a": setActiveTool("avwap"); break;
@@ -2224,7 +3015,9 @@ function onKeydown(e: KeyboardEvent) {
       toolDraft.value = null;
       selectedCandle.value = null;
       showHotkeysModal.value = false;
-      propMenuOpen.value = false;
+      openPropMenuRowId.value = null;
+      olderCandlesMenuOpen.value = false;
+      if (editingTextId.value) cancelTextEdit();
       break;
   }
 }
@@ -2241,14 +3034,20 @@ onMounted(async () => {
   }
   document.addEventListener("keydown", onKeydown);
   document.addEventListener("mousedown", onDocumentClickForPropSelect);
+  document.addEventListener("mousedown", onDocumentClickForLoadOlderMenu);
   connectBinanceWs();
+  nowTickInterval = window.setInterval(() => { nowTick.value = Date.now(); }, 1000);
+  loadToolCacheForSymbol();
+  loadNotesForSymbol();
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener("keydown", onKeydown);
   document.removeEventListener("mousedown", onDocumentClickForPropSelect);
+  document.removeEventListener("mousedown", onDocumentClickForLoadOlderMenu);
   resizeObserver?.disconnect();
   closeBinanceWs();
+  if (nowTickInterval != null) window.clearInterval(nowTickInterval);
 });
 
 watch(primaryCandles, () => {
@@ -2264,6 +3063,7 @@ watch(primaryCandles, () => {
   flex-direction: column;
   height: 90vh;
   width: 100%;
+  position: relative; /* anchors .notes-panel (position: absolute) to the widget */
   background: #0a0d12;
   color: #d7dde3;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -2325,6 +3125,36 @@ watch(primaryCandles, () => {
   border-radius: 4px; padding: 3px 6px; cursor: pointer; font-family: var(--mono); font-size: 10px;
 }
 .drawing-toolbar button:hover { color: #fff; border-color: rgba(255,255,255,.3); }
+
+.icon-btn.notes-toolbar.active { color: var(--accent); border-color: var(--accent); }
+.notes-panel {
+  position: absolute; top: 44px; right: 6px; z-index: 25;
+  width: 260px; max-height: 420px; display: flex; flex-direction: column;
+  background: rgba(10,13,18,.97); border: 1px solid rgba(255,255,255,.14);
+  border-radius: 8px; font-family: var(--mono); font-size: 11px; overflow: hidden;
+}
+.notes-panel-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.1);
+  color: var(--accent); font-weight: 700;
+}
+.notes-panel-add { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.08); }
+.notes-panel-add textarea, .note-item textarea {
+  width: 100%; resize: vertical; background: #0f1115; color: #e8eaed;
+  border: 1px solid #3a4048; border-radius: 3px; font-family: var(--mono); font-size: 11px; padding: 5px;
+}
+.notes-panel-add button { align-self: flex-end; }
+.notes-panel-list { overflow-y: auto; padding: 6px 10px; display: flex; flex-direction: column; gap: 8px; }
+.notes-panel-empty { color: #667; padding: 10px 0; text-align: center; }
+.note-item { border-bottom: 1px solid rgba(255,255,255,.06); padding-bottom: 8px; }
+.note-item-text { color: #d7dde3; white-space: pre-wrap; margin: 0 0 4px; cursor: text; }
+.note-item-actions { display: flex; align-items: center; gap: 6px; }
+.note-item-time { color: #667; margin-right: auto; font-size: 10px; }
+.note-item-actions button, .notes-panel-add button {
+  border: 1px solid rgba(255,255,255,.12); background: transparent; color: #9aa4b2;
+  border-radius: 4px; padding: 3px 8px; cursor: pointer; font-family: var(--mono); font-size: 10px;
+}
+.note-item-actions button:hover, .notes-panel-add button:hover { color: #fff; border-color: rgba(255,255,255,.3); }
 .preview-order-btn {
   width: 100%; margin-top: 7px; padding: 5px 7px; border-radius: 5px;
   border: 1px solid rgba(79,195,247,.45); background: rgba(79,195,247,.1);
@@ -2378,7 +3208,11 @@ watch(primaryCandles, () => {
 .chip.active { background: rgba(38, 166, 154, 0.18); border-color: var(--bull); color: var(--bull); }
 .chip.disabled { opacity: 0.35; cursor: not-allowed; }
 
-.prop-select { position: relative; }
+.prop-select-group { display: flex; align-items: center; gap: 4px; }
+.prop-select { position: relative; display: flex; align-items: center; }
+.prop-row-remove { background: none; border: none; color: #667; font-size: 10px; cursor: pointer; margin-left: 2px; padding: 0 2px; }
+.prop-row-remove:hover { color: var(--bear); }
+.prop-row-add { min-width: 24px; padding: 0 8px; font-weight: 700; }
 .prop-select-btn { min-width: 78px; }
 .prop-select-menu {
   position: absolute; top: calc(100% + 4px); left: 0; z-index: 20; width: 200px;
@@ -2429,6 +3263,26 @@ width: 30rem;
 .rail-sep { width: 18px; height: 1px; background: rgba(255, 255, 255, 0.1); margin: 4px 0; }
 
 .chart-container { position: relative; flex: 1; min-width: 0; cursor: grab; user-select: none; }
+.load-older-wrap { position: absolute; left: 4px; top: 50%; transform: translateY(-50%); z-index: 18; }
+.load-older-btn {
+  width: 20px; height: 34px; border-radius: 4px;
+  background: rgba(10,13,18,.85); border: 1px solid rgba(255,255,255,.15);
+  color: #9aa4b2; cursor: pointer; font-size: 14px; line-height: 1;
+}
+.load-older-btn:hover { color: #fff; border-color: rgba(255,255,255,.3); }
+.load-older-menu {
+  position: absolute; left: 26px; top: 50%; transform: translateY(-50%);
+  display: flex; flex-direction: column; gap: 3px; padding: 5px; min-width: 56px;
+  background: rgba(10,13,18,.96); border: 1px solid rgba(255,255,255,.15); border-radius: 6px;
+}
+.load-older-menu button {
+  border: 1px solid rgba(255,255,255,.12); background: transparent; color: #9aa4b2;
+  border-radius: 4px; padding: 4px 10px; cursor: pointer; font-family: var(--mono); font-size: 11px;
+}
+.load-older-menu button:hover { color: #fff; border-color: rgba(255,255,255,.3); }
+.load-older-menu button:disabled { opacity: .5; cursor: default; }
+.load-older-loading { color: #8b95a1; font-size: 10px; text-align: center; padding: 2px 0; }
+.load-older-error { color: var(--bear); font-size: 10px; text-align: center; padding: 2px 0; max-width: 140px; white-space: normal; }
 .chart-container:active { cursor: grabbing; }
 .chart-container.tool-rectangle, .chart-container.tool-line, .chart-container.tool-horizontal-line,
 .chart-container.tool-price-range, .chart-container.tool-frvp, .chart-container.tool-liquidity { cursor: crosshair; }
@@ -2476,9 +3330,11 @@ width: 30rem;
 .live-price-line { stroke-width: 1; stroke-dasharray: 6 4; pointer-events: none; }
 .live-price-line.bull { stroke: var(--bull); }
 .live-price-line.bear { stroke: var(--bear); }
-.live-price-label { font-family: var(--mono); font-size: 10px; font-weight: 700; pointer-events: none; }
-.live-price-label.bull { fill: var(--bull); }
-.live-price-label.bear { fill: var(--bear); }
+.live-price-label { font-family: var(--mono); font-size: 10px; font-weight: 700; pointer-events: none; fill: #fff; }
+.live-price-badge { pointer-events: none; }
+.live-price-badge.bull { fill: var(--bull); }
+.live-price-badge.bear { fill: var(--bear); }
+.bar-close-countdown { font-family: var(--mono); font-size: 9px; fill: rgba(255,255,255,0.8); pointer-events: none; }
 
 /* cross-tf ema */
 .xtf-ema-line { fill: none; stroke-width: 1.4; opacity: 0.85; }
@@ -2494,7 +3350,46 @@ width: 30rem;
 .drawing-hit-line { pointer-events: stroke; }
 .drawn-horizontal-line { stroke: #ffd54f; stroke-width: 1.4; stroke-dasharray: 6 4; pointer-events: none; }
 .drawing-hit-horizontal { stroke: transparent; stroke-width: 12; pointer-events: stroke; cursor: ns-resize; }
-.drawn-line.selected, .drawn-horizontal-line.selected { stroke-width: 2.4; }
+.drawn-vertical-line { stroke: #80cbc4; stroke-width: 1.4; stroke-dasharray: 6 4; pointer-events: none; }
+.drawing-hit-vertical { stroke: transparent; stroke-width: 12; pointer-events: stroke; cursor: ew-resize; }
+.drawn-text-annotation { fill: #e8eaed; font-family: var(--mono); font-size: 12px; pointer-events: none; }
+.drawn-text-annotation.selected { fill: #ffd54f; }
+.text-annotation-hit { fill: transparent; cursor: move; }
+.text-annotation-editor {
+  position: absolute;
+  z-index: 20;
+  background: #1b1f24;
+  border: 1px solid #3a4048;
+  border-radius: 4px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.text-annotation-editor textarea {
+  width: 180px;
+  resize: vertical;
+  background: #0f1115;
+  color: #e8eaed;
+  border: 1px solid #3a4048;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 4px;
+}
+.text-annotation-editor-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.text-annotation-editor-actions button {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: #2a2f36;
+  border: 1px solid #3a4048;
+  color: #e8eaed;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.text-annotation-editor-actions button:hover { background: #363c45; }
+.drawn-line.selected, .drawn-horizontal-line.selected, .drawn-vertical-line.selected { stroke-width: 2.4; }
 .draft-rect { fill: rgba(255, 255, 255, 0.06); stroke: #fff; stroke-dasharray: 4 3; stroke-width: 1; }
 .draft-line { stroke: #fff; stroke-dasharray: 4 3; stroke-width: 1.2; }
 
@@ -2558,8 +3453,17 @@ width: 30rem;
 .modal-body { padding: 16px 18px; }
 
 .detail-grid { display: flex; flex-direction: column; gap: 16px; }
-.detail-section { border-left: 2px solid var(--bull); padding-left: 12px; }
+.detail-section { border-left: 2px solid var(--bull); padding-left: 12px; padding-bottom: 14px; }
+.detail-section:not(:last-child) { border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
 .detail-section h3 { margin: 0 0 8px; font-size: 11px; color: var(--bull); text-transform: uppercase; letter-spacing: 0.5px; }
+.detail-table { display: flex; flex-direction: column; }
+.detail-table-row {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  padding: 4px 0; font-size: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.detail-table-row:last-child { border-bottom: none; }
+.detail-table-key { color: #8b95a1; overflow-wrap: anywhere; }
+.detail-table-value { font-family: var(--mono); color: #d7dde3; text-align: right; overflow-wrap: anywhere; }
 .detail-item { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 12px; }
 .detail-item label { color: #667; }
 .detail-item span { font-family: var(--mono); color: #d7dde3; }
