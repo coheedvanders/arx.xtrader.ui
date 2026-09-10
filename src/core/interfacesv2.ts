@@ -761,3 +761,199 @@ export interface TradeLevel {
 
     timestamp: number
 }
+
+// ── Movement analysis report (simulationMovementAnalyzer.ts) ───────────
+// Every "how long do we watch forward" window here is DISCOVERED per
+// instance from a real, already-computed boundary (a run of the same
+// category ending, a lifecycle reaching ENDED, a sequence reaching a new
+// sweep or a full retrace) — never a fixed candle count or a hand-picked
+// ATR multiple. `horizonCandles` on ForwardOutcome is reported, not
+// configured. The few genuinely-arbitrary constants that remain (e.g. the
+// touch tolerance in magnet analysis) are called out where they're used.
+//
+// MOVE_OUTCOME's STRONG/WEAK/CHOP cutoffs are also dynamic: computed once
+// from the percentile distribution of |forwardReturnAtr| actually observed
+// across this dataset, not a fixed ATR threshold — so the same label means
+// something different (and something real) on a quiet symbol vs a violent
+// one.
+
+export type MOVE_OUTCOME =
+    | 'STRONG_CONTINUATION'
+    | 'WEAK_CONTINUATION'
+    | 'CHOP'
+    | 'WEAK_REVERSAL'
+    | 'STRONG_REVERSAL'
+    | 'CENSORED'
+
+export interface ForwardOutcome {
+    /** Discovered, not configured — see module comment above. */
+    horizonCandles: number
+    /** Reference direction for continuation/reversal framing; NEUTRAL when there wasn't one. */
+    direction: SIGNAL_DIRECTION
+
+    forwardReturnPercent: number
+    forwardReturnAtr: number
+
+    upExcursionAtr: number
+    downExcursionAtr: number
+
+    favorableExcursionAtr: number | null
+    adverseExcursionAtr: number | null
+
+    moveOutcome: MOVE_OUTCOME
+    censored: boolean
+}
+
+export interface MoveOutcomeDistribution {
+    sampleCount: number
+    outcomeCounts: Record<MOVE_OUTCOME, number>
+    outcomePercents: Record<MOVE_OUTCOME, number>
+    meanForwardReturnPercent: number
+    medianForwardReturnPercent: number
+    meanForwardReturnAtr: number
+}
+
+export interface BucketStat {
+    category: string
+    sampleCount: number
+    /** How many consecutive candles this category typically ran for before changing — reveals if a field is too flip-floppy to bucket usefully. */
+    runLengthPercentiles: { p10: number; p50: number; p90: number } | null
+    strengthPercentiles: { p10: number; p50: number; p90: number } | null
+    outcome: MoveOutcomeDistribution
+}
+
+export interface ModuleBucketReport {
+    module: 'positioningState' | 'longShortState' | 'volumeState' | 'alignmentSignal'
+    field: string
+    buckets: BucketStat[]
+}
+
+export interface AnchorLifecycleOutcome {
+    side: 'LONG' | 'SHORT'
+    clusterId: string
+    startOpenTime: number
+    confirmedOpenTime: number | null
+    endOpenTime: number | null
+    terminalStatus: 'BROKEN_BEFORE_CONFIRM' | 'CONFIRMED_THEN_ENDED' | 'STILL_ACTIVE_AT_DATASET_END' | 'STILL_BUILDING_AT_DATASET_END'
+    runLengthAtBreak: number | null
+    lifetimeCandles: number | null
+    censored: boolean
+    outcome: ForwardOutcome
+}
+
+export interface SweepEventOutcome {
+    timestamp: number
+    behavior: LIQUIDITY_SWEEP_BEHAVIOR
+    sweptRatio: number
+    measuredSides: Array<'LONG' | 'SHORT'>
+    /** true = "an anchor was ACTIVE but this run of candles did NOT sweep" baseline case */
+    isControlSample: boolean
+    outcome: ForwardOutcome
+}
+
+export interface PriceActionSequenceOutcome {
+    clusterKey: string
+    direction: SIGNAL_DIRECTION
+    level: number
+    startOpenTime: number
+    terminalStage: 'PENDING' | 'REJECTED' | 'RECLAIMED' | 'DISPLACED' | 'CONFIRMED' | 'INVALIDATED'
+    candlesToReject: number | null
+    candlesToReclaim: number | null
+    candlesToDisplace: number | null
+    candlesToConfirm: number | null
+    censored: boolean
+    outcomeFromSweep: ForwardOutcome
+    outcomeFromConfirmation: ForwardOutcome | null
+}
+
+export interface AlignmentCountBucket {
+    alignedSignalCount: 0 | 1 | 2 | 3
+    totalSignalsConsidered: number
+    sampleCount: number
+    outcome: MoveOutcomeDistribution
+}
+
+export interface PairwiseCombinationBucket {
+    combinationId: string
+    fieldA: string; valueA: string
+    fieldB: string; valueB: string
+    sampleCount: number
+    belowMinSampleSize: boolean
+    outcome: MoveOutcomeDistribution
+}
+
+export interface SweepMagnitudeVsTerminalStage {
+    /** Tercile computed from this dataset's own sweptRatio distribution — not a fixed cutoff. */
+    sweptRatioTercile: 'LOW' | 'MED' | 'HIGH'
+    sampleCount: number
+    terminalStageCounts: Record<PriceActionSequenceOutcome['terminalStage'], number>
+}
+
+export interface CombinationSection {
+    alignmentCounts: AlignmentCountBucket[]
+    pairwise: PairwiseCombinationBucket[]
+    sweepMagnitudeVsTerminalStage: SweepMagnitudeVsTerminalStage[]
+    minSampleSize: number
+}
+
+export interface MagnetAnalysisResult {
+    triggerType: 'SWEEP' | 'PRICE_ACTION_CONFIRMED'
+    triggerTimestamp: number
+    originLevel: number
+    targetPrice: number
+    targetPoolValue: number
+    controlPrice: number
+    targetHit: boolean
+    controlHit: boolean
+    targetDrainedByOtherSweep: boolean
+    candlesToHitTarget: number | null
+    candlesToHitControl: number | null
+    horizonCandles: number
+    fractionOfDistanceClosed: number
+    censored: boolean
+}
+
+export interface CandleSnapshot {
+    openTime: number
+    open: number; high: number; low: number; close: number; volume: number
+    atr: number
+    positioningBehavior: string
+    liquiditySweepBehavior: string
+    priceActionStage: string | null
+}
+
+export interface EventTimelineWindow {
+    eventType: 'SWEEP' | 'CLUSTER_CONFIRMED' | 'CLUSTER_ENDED' | 'PRICE_ACTION_CONFIRMED' | 'PRICE_ACTION_INVALIDATED'
+    eventTimestamp: number
+    beforeCandles: CandleSnapshot[]
+    afterCandles: CandleSnapshot[]
+}
+
+export interface CrossCheckResult {
+    description: string
+    agreementRate: number
+    disagreementCount: number
+    sampleCount: number
+}
+
+export interface AnalysisMetadata {
+    symbol: string
+    interval: MARKET_INTERVAL
+    candleCount: number
+    startTime: number
+    endTime: number
+    generatedAt: number
+    parameters: Record<string, number>
+}
+
+export interface SimulationAnalysisReport {
+    metadata: AnalysisMetadata
+    stateBucketReports: ModuleBucketReport[]
+    anchorLifecycleOutcomes: AnchorLifecycleOutcome[]
+    sweepEventOutcomes: SweepEventOutcome[]
+    priceActionSequenceOutcomes: PriceActionSequenceOutcome[]
+    combinations: CombinationSection
+    magnetAnalysis: MagnetAnalysisResult[]
+    eventTimelines: EventTimelineWindow[]
+    crossModuleConsistencyChecks: CrossCheckResult[]
+}

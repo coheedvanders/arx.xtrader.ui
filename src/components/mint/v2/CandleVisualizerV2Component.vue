@@ -55,6 +55,12 @@
           @click="showPriceAction = !showPriceAction"
         >Price Action</button>
 
+        <button
+          class="chip"
+          title="Open the movement analyzer — dynamic-horizon outcome analysis, downloadable as JSON"
+          @click="showMovementAnalyzer = true"
+        >Movement Analyzer</button>
+
         <div class="prop-select-group">
           <div
             v-for="(row, rowIdx) in propRows"
@@ -283,12 +289,6 @@
                   class="anchor-dot anchor-liq"
                   :cx="candleX(c.gi) + 5" :cy="priceToY(c.candle.high) - 8" r="2.5"
                 /> -->
-
-                <circle
-                  v-if="c.candle.priceAction.sequence.liquiditySweep && c.candle.priceAction.sequence.rejection && c.candle.priceAction.sequence.reclaim && c.candle.priceAction.sequence.displacement && c.candle.priceAction.sequence.closeConfirmation"
-                  class="anchor-dot anchor-liq"
-                  :cx="candleX(c.gi) + 5" :cy="priceToY(c.candle.high) - 8" r="2.5"
-                />
 
                 <g
                     v-if="c.candle.confluenceScore?.direction !== 'NEUTRAL' && c.candle.confluenceScore?.confidence! >= 34"
@@ -1087,6 +1087,14 @@
       </div>
     </div>
 
+    <!-- ── Movement Analyzer modal ──────────────────────────────────────── -->
+    <DialogComponent v-model="showMovementAnalyzer" :width="'95vw'">
+      <DialogHeaderComponent>
+        {{ symbol }}
+      </DialogHeaderComponent>
+      <MovementAnalyzerComponent :symbol="symbol" :candles="primaryCandles" />
+    </DialogComponent>
+
     <!-- ── Hotkeys modal ────────────────────────────────────────────────── -->
     <div v-if="showHotkeysModal" class="modal-overlay" @click.self="showHotkeysModal = false">
       <div class="modal-content hotkeys-modal">
@@ -1119,6 +1127,9 @@ import { getLiqudationHeatmap, type LiquidationHeatmapCell } from "@/utility/v2/
 import { OrderMakerUtility } from "@/utility/OrderMakerUtility";
 import { useNotificationStore } from "@/stores/notificationStore.ts";
 import { loadToolCache, saveToolCache } from "@/utility/toolCacheDb";
+import DialogComponent from '../../shared/dialog/DialogComponent.vue';
+import DialogHeaderComponent from '../../shared/dialog/DialogHeaderComponent.vue';
+import MovementAnalyzerComponent from './MovementAnalyzerComponent.vue';
 import { listNotes, saveNote, deleteNote, type StickyNote } from "@/utility/notesDb";
 
 // ── Dynamic candle detail renderer ─────────────────────────────────────
@@ -2549,6 +2560,8 @@ const showLiquidityInfo = ref(false);
 // horizontal ray (dashed until confirmed, solid once closeConfirmation is
 // reached) plus rejection/displacement stage dots. Off by default.
 const showPriceAction = ref(false);
+
+const showMovementAnalyzer = ref(false);
 
 // ── Liquidity heatmap tool ─────────────────────────────────────────────
 
