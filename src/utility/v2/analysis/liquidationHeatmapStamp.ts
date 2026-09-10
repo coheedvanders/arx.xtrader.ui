@@ -125,8 +125,10 @@ function nextSideStamp(
 
         // Stays ACTIVE through neutral candles or opposite-side activity —
         // only a same-side unwind (the same positions that built this
-        // cluster, closing) ends it.
-        return effectivePrev;
+        // cluster, closing) ends it. Keep incrementing runLength so it
+        // reflects the cluster's total lifetime by the time it ends,
+        // rather than freezing at MIN_BUILDUP_RUN_LENGTH forever.
+        return { ...effectivePrev, runLength: effectivePrev.runLength + 1 };
     }
 
     return effectivePrev;

@@ -85,6 +85,23 @@ export async function loadMovementAnalysis(symbol: string): Promise<CachedMoveme
 }
 
 /**
+ * Every cached record in full (not the summary projection). Used for
+ * "download all" — a single combined JSON file rather than a summary
+ * table. Same caveat as listMovementAnalysisSummaries: this reads every
+ * full record from IndexedDB, so it's proportional to however many
+ * symbols are cached and however large each report is.
+ */
+export async function getAllMovementAnalyses(): Promise<CachedMovementAnalysis[]> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readonly");
+    const req = tx.objectStore(STORE).getAll();
+    req.onsuccess = () => resolve((req.result as CachedMovementAnalysis[]) ?? []);
+    req.onerror = () => reject(req.error ?? new Error("Failed to load all movement analyses"));
+  });
+}
+
+/**
  * Summaries for every cached symbol, for the paginated list UI. Reads full
  * records (IndexedDB has no way around that for a getAll) but immediately
  * strips them down to the summary shape rather than returning/holding the

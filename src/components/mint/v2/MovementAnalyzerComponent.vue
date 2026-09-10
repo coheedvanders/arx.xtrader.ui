@@ -33,16 +33,22 @@
         <div><span class="ma-label">Confirmed sequences</span><span class="ma-value">{{ confirmedCount }}</span></div>
         <div><span class="ma-label">Magnet triggers</span><span class="ma-value">{{ currentReport.magnetAnalysis.length }}</span></div>
       </div>
+      <button class="ma-btn ma-btn-small" style="margin-top: 8px;" @click="openViewer(props.symbol, currentReport)">View</button>
     </div>
 
     <div class="ma-cached-list">
       <div class="ma-list-header">
         <div class="ma-list-title">Cached results ({{ totalCached }})</div>
-        <div class="ma-page-size">
-          Per page:
-          <select v-model.number="pageSize">
-            <option v-for="n in [10, 20, 50, 100]" :key="n" :value="n">{{ n }}</option>
-          </select>
+        <div class="ma-list-actions">
+          <button class="ma-btn ma-btn-small" :disabled="downloadingAll || !totalCached" @click="downloadAllCached">
+            {{ downloadingAll ? "Preparing..." : "Download All" }}
+          </button>
+          <div class="ma-page-size">
+            Per page:
+            <select v-model.number="pageSize">
+              <option v-for="n in [10, 20, 50, 100]" :key="n" :value="n">{{ n }}</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -59,12 +65,13 @@
         </thead>
         <tbody>
           <tr v-for="row in pagedRows" :key="row.symbol">
-            <td>{{ row.symbol }}</td>
+            <td><button class="ma-symbol-link" @click="viewCached(row.symbol)">{{ row.symbol }}</button></td>
             <td>{{ row.interval }}</td>
             <td>{{ row.candleCount }}</td>
             <td>{{ formatRange(row.startTime, row.endTime) }}</td>
             <td>{{ formatDate(row.updatedAt) }}</td>
             <td>
+              <button class="ma-btn ma-btn-small" @click="viewCached(row.symbol)">View</button>
               <button class="ma-btn ma-btn-small" @click="downloadCached(row.symbol)">Download</button>
               <button class="ma-btn ma-btn-small ma-btn-ghost" @click="removeCached(row.symbol)">Delete</button>
             </td>
@@ -82,6 +89,11 @@
       </div>
     </div>
 
+    <DialogComponent v-model="viewerOpen" :width="'95vw'">
+      <DialogHeaderComponent>{{ viewerSymbol }}</DialogHeaderComponent>
+      <MovementAnalysisViewerComponent v-if="viewerReport" :report="viewerReport" />
+    </DialogComponent>
+
   </div>
 </template>
 
@@ -91,10 +103,14 @@ import type { CandleInfo, SimulationAnalysisReport } from "@/core/interfacesv2";
 import { analyzeMovements } from "@/utility/v2/analysis/simulationMovementAnalyzer";
 import { klineDbUtilityV2 } from "@/utility/v2/klineDbUtilityV2";
 import { useChocoMintoStore } from "@/stores/chocoMintoStore";
+import DialogComponent from '../../shared/dialog/DialogComponent.vue';
+import DialogHeaderComponent from '../../shared/dialog/DialogHeaderComponent.vue';
+import MovementAnalysisViewerComponent from './MovementAnalysisViewerComponent.vue';
 import {
   saveMovementAnalysis,
   loadMovementAnalysis,
   listMovementAnalysisSummaries,
+  getAllMovementAnalyses,
   deleteMovementAnalysis,
   type CachedMovementAnalysisSummary,
 } from "@/utility/cachedMovementAnalysisDb";
@@ -189,6 +205,59 @@ async function removeCached(symbol: string) {
   await refreshCachedList();
 }
 
+const downloadingAll = ref(false);
+
+/**
+ * Single combined JSON file rather than 300 separate browser downloads —
+ * triggering many downloads in a loop is unreliable (browsers throttle or
+ * prompt per-file), and a combined file is also the more useful shape if
+ * this ever gets fed into a batch analysis pass. For 300+ symbols at
+ * roughly 1MB/report this can approach a few hundred MB — JSON.stringify
+ * over that runs on the main thread and will visibly block the tab for a
+ * moment; there's no simple way around that without a Web Worker, which
+ * felt like more machinery than this button needs right now.
+ */
+async function downloadAllCached() {
+  downloadingAll.value = true;
+  try {
+    const all = await getAllMovementAnalyses();
+    const combined = {
+      generatedAt: Date.now(),
+      symbolCount: all.length,
+      results: all,
+    };
+    const blob = new Blob([JSON.stringify(combined)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `combined-movement-analysis-${all.length}symbols-${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } finally {
+    downloadingAll.value = false;
+  }
+}
+
+// ── Viewer modal ─────────────────────────────────────────────────────────
+
+const viewerOpen = ref(false);
+const viewerSymbol = ref("");
+const viewerReport = ref<SimulationAnalysisReport | null>(null);
+
+function openViewer(symbol: string, report: SimulationAnalysisReport) {
+  viewerSymbol.value = symbol || "current";
+  viewerReport.value = report;
+  viewerOpen.value = true;
+}
+
+async function viewCached(symbol: string) {
+  const cached = await loadMovementAnalysis(symbol);
+  if (!cached) return;
+  openViewer(symbol, cached.report);
+}
+
 // ── Downloads ──────────────────────────────────────────────────────────
 
 function downloadReport(symbol: string, report: SimulationAnalysisReport) {
@@ -226,8 +295,10 @@ onMounted(refreshCachedList);
 <style scoped>
 .movement-analyzer {
   font-family: var(--mono, monospace);
-  color: #cdd3db;
-  padding: 8px 4px;
+  background: #12161c;
+  color: #e5e7eb;
+  padding: 12px;
+  border-radius: 8px;
 }
 
 .ma-actions { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
@@ -246,6 +317,12 @@ onMounted(refreshCachedList);
 .ma-btn-primary { background: rgba(45,212,191,.15); border-color: #2dd4bf; color: #2dd4bf; }
 .ma-btn-ghost { background: transparent; }
 .ma-btn-small { padding: 3px 8px; font-size: 11px; margin-right: 4px; }
+.ma-symbol-link {
+  background: none; border: none; padding: 0; margin: 0;
+  color: #2dd4bf; font-family: inherit; font-size: inherit; font-weight: 600;
+  cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+}
+.ma-symbol-link:hover { color: #5eead4; }
 
 .ma-progress { margin-bottom: 14px; }
 .ma-progress-label { font-size: 12px; margin-bottom: 4px; }
@@ -272,6 +349,7 @@ onMounted(refreshCachedList);
 .ma-value { color: #fff; font-weight: 600; }
 
 .ma-list-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.ma-list-actions { display: flex; align-items: center; gap: 12px; }
 .ma-list-title { font-size: 12px; color: #9aa4b2; text-transform: uppercase; letter-spacing: .5px; }
 .ma-page-size { font-size: 12px; }
 .ma-page-size select {

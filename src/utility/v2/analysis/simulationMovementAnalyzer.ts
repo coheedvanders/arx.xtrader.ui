@@ -90,14 +90,22 @@ function computeForwardOutcome(
     direction: SIGNAL_DIRECTION,
     censored: boolean
 ): ForwardOutcome {
-    const startCandle = candles[startIdx];
+    // Baseline is the candle BEFORE the window starts, not the window's own
+    // first candle. Using the window's own first candle as the "before"
+    // price excludes that candle's own move from the measurement — and for
+    // a single-candle window (startIdx === endIdx, common for short-lived
+    // categories), it makes startCandle and endCandle THE SAME candle,
+    // so the return is always exactly 0 regardless of what really
+    // happened. baseIdx fixes both problems at once.
+    const baseIdx = Math.max(0, startIdx - 1);
+    const baseCandle = candles[baseIdx];
     const endCandle = candles[endIdx];
-    const atr = startCandle.atr > 0 ? startCandle.atr : (endCandle.atr > 0 ? endCandle.atr : 0);
+    const atr = baseCandle.atr > 0 ? baseCandle.atr : (endCandle.atr > 0 ? endCandle.atr : 0);
 
-    const forwardReturnPercent = startCandle.close !== 0
-        ? ((endCandle.close - startCandle.close) / startCandle.close) * 100
+    const forwardReturnPercent = baseCandle.close !== 0
+        ? ((endCandle.close - baseCandle.close) / baseCandle.close) * 100
         : 0;
-    const forwardReturnAtr = atr > 0 ? (endCandle.close - startCandle.close) / atr : 0;
+    const forwardReturnAtr = atr > 0 ? (endCandle.close - baseCandle.close) / atr : 0;
 
     let highestHigh = -Infinity;
     let lowestLow = Infinity;
@@ -106,8 +114,8 @@ function computeForwardOutcome(
         if (candles[i].low < lowestLow) lowestLow = candles[i].low;
     }
 
-    const upExcursionAtr = atr > 0 ? (highestHigh - startCandle.close) / atr : 0;
-    const downExcursionAtr = atr > 0 ? (startCandle.close - lowestLow) / atr : 0;
+    const upExcursionAtr = atr > 0 ? (highestHigh - baseCandle.close) / atr : 0;
+    const downExcursionAtr = atr > 0 ? (baseCandle.close - lowestLow) / atr : 0;
 
     let favorableExcursionAtr: number | null = null;
     let adverseExcursionAtr: number | null = null;
@@ -120,7 +128,7 @@ function computeForwardOutcome(
     }
 
     return {
-        horizonCandles: endIdx - startIdx,
+        horizonCandles: endIdx - startIdx + 1,
         direction,
         forwardReturnPercent,
         forwardReturnAtr,
@@ -133,8 +141,8 @@ function computeForwardOutcome(
     };
 }
 
-/** Sets moveOutcome on every outcome, using cutoffs computed from THIS dataset's own magnitude distribution. Mutates in place. */
-function classifyAllOutcomes(outcomes: ForwardOutcome[]): void {
+/** Sets moveOutcome on every outcome, using cutoffs computed from THIS dataset's own magnitude distribution. Mutates in place. Returns the cutoffs used, for auditability. */
+function classifyAllOutcomes(outcomes: ForwardOutcome[]): { p33: number; p66: number } {
     const magnitudes = outcomes.filter(o => !o.censored).map(o => Math.abs(o.forwardReturnAtr));
     const p33 = percentile(magnitudes, 33);
     const p66 = percentile(magnitudes, 66);
@@ -161,6 +169,8 @@ function classifyAllOutcomes(outcomes: ForwardOutcome[]): void {
             ? (strong ? "STRONG_CONTINUATION" : "WEAK_CONTINUATION")
             : (strong ? "STRONG_REVERSAL" : "WEAK_REVERSAL");
     }
+
+    return { p33, p66 };
 }
 
 function aggregateDistribution(outcomes: ForwardOutcome[]): MoveOutcomeDistribution {
@@ -329,9 +339,13 @@ function buildAnchorLifecycleOutcomes(
             }
 
             if (!stamp.clusterId && openClusterId) {
+                // stamp is ALREADY reset (clusterId null, runLength 0) —
+                // the real run length as it stood right before breaking
+                // lives on the previous candle's stamp.
+                const priorRunLength = candles[i - 1]?.liquidationHeatmapStamp?.[side]?.runLength ?? null;
                 results.push(finishLifecycle(
                     candles, side, openClusterId, startIdx, i - 1, confirmedOpenTime,
-                    null, "BROKEN_BEFORE_CONFIRM", stamp.runLength, false, allOutcomes
+                    null, "BROKEN_BEFORE_CONFIRM", priorRunLength, false, allOutcomes
                 ));
                 openClusterId = null;
             }
@@ -520,11 +534,17 @@ function tercileLabel(value: number, p33: number, p66: number): "LOW" | "MED" | 
     return "HIGH";
 }
 
-function buildCombinations(
+interface RawCombinations {
+    alignmentGroups: Map<string, PendingBucketGroup>;
+    pairwiseGroups: Array<{ id: string; fieldA: string; fieldB: string; groups: Map<string, PendingBucketGroup> }>;
+    sweepMagnitudeVsTerminalStage: SweepMagnitudeVsTerminalStage[];
+}
+
+function buildCombinationGroups(
     candles: CandleInfo[],
     priceActionOutcomes: PriceActionSequenceOutcome[],
-    allOutcomes: ForwardOutcome[]
-): CombinationSection {
+    categoricalOutcomes: ForwardOutcome[]
+): RawCombinations {
     // Alignment count: positioning direction (buildups only — see
     // positioningDirection), sweep side, price-action sequence direction.
     // Covering/unwinding behaviors are deliberately excluded from this
@@ -548,18 +568,7 @@ function buildCombinations(
         return `${aligned}/${total}`;
     };
     const alignmentDirFn = (_key: string): SIGNAL_DIRECTION => "NEUTRAL"; // the count itself is the signal, not a side
-    const alignmentGroups = buildCategoryGroups(candles, alignmentKeyFn, alignmentDirFn, null, allOutcomes);
-
-    const alignmentCounts: AlignmentCountBucket[] = [];
-    for (const [key, g] of alignmentGroups) {
-        const [aligned, total] = key.split("/").map(Number);
-        alignmentCounts.push({
-            alignedSignalCount: aligned as 0 | 1 | 2 | 3,
-            totalSignalsConsidered: total,
-            sampleCount: g.outcomes.length,
-            outcome: aggregateDistribution(g.outcomes),
-        });
-    }
+    const alignmentGroups = buildCategoryGroups(candles, alignmentKeyFn, alignmentDirFn, null, categoricalOutcomes);
 
     // Curated pairwise combos: positioning behavior x volume confirmation,
     // and positioning behavior x account agreement — do the two
@@ -586,24 +595,15 @@ function buildCombinations(
         },
     ];
 
-    const pairwise: PairwiseCombinationBucket[] = [];
-    for (const def of pairwiseDefs) {
-        const groups = buildCategoryGroups(candles, def.keyFn, () => "NEUTRAL", null, allOutcomes);
-        for (const [key, g] of groups) {
-            const [valueA, valueB] = key.split("|");
-            pairwise.push({
-                combinationId: `${def.id}:${key}`,
-                fieldA: def.fieldA, valueA,
-                fieldB: def.fieldB, valueB,
-                sampleCount: g.outcomes.length,
-                belowMinSampleSize: g.outcomes.length < CONFIG.MIN_COMBINATION_SAMPLE_SIZE,
-                outcome: aggregateDistribution(g.outcomes),
-            });
-        }
-    }
+    const pairwiseGroups = pairwiseDefs.map(def => ({
+        id: def.id, fieldA: def.fieldA, fieldB: def.fieldB,
+        groups: buildCategoryGroups(candles, def.keyFn, () => "NEUTRAL", null, categoricalOutcomes),
+    }));
 
     // Sweep magnitude vs how far the resulting price-action sequence went —
     // terciles computed from THIS dataset's own sweptRatio-at-start values.
+    // Doesn't touch MOVE_OUTCOME classification at all, so it's safe to
+    // finalize immediately (no ordering dependency).
     const ratiosForTercile: number[] = [];
     for (const seq of priceActionOutcomes) {
         const startIdx = candles.findIndex(c => c.openTime === seq.startOpenTime);
@@ -630,10 +630,41 @@ function buildCombinations(
         });
     }
 
+    return { alignmentGroups, pairwiseGroups, sweepMagnitudeVsTerminalStage };
+}
+
+/** Must run AFTER classifyAllOutcomes — this is where outcome.moveOutcome actually gets read into the aggregated distributions. */
+function finalizeCombinations(raw: RawCombinations): CombinationSection {
+    const alignmentCounts: AlignmentCountBucket[] = [];
+    for (const [key, g] of raw.alignmentGroups) {
+        const [aligned, total] = key.split("/").map(Number);
+        alignmentCounts.push({
+            alignedSignalCount: aligned as 0 | 1 | 2 | 3,
+            totalSignalsConsidered: total,
+            sampleCount: g.outcomes.length,
+            outcome: aggregateDistribution(g.outcomes),
+        });
+    }
+
+    const pairwise: PairwiseCombinationBucket[] = [];
+    for (const def of raw.pairwiseGroups) {
+        for (const [key, g] of def.groups) {
+            const [valueA, valueB] = key.split("|");
+            pairwise.push({
+                combinationId: `${def.id}:${key}`,
+                fieldA: def.fieldA, valueA,
+                fieldB: def.fieldB, valueB,
+                sampleCount: g.outcomes.length,
+                belowMinSampleSize: g.outcomes.length < CONFIG.MIN_COMBINATION_SAMPLE_SIZE,
+                outcome: aggregateDistribution(g.outcomes),
+            });
+        }
+    }
+
     return {
         alignmentCounts,
         pairwise,
-        sweepMagnitudeVsTerminalStage,
+        sweepMagnitudeVsTerminalStage: raw.sweepMagnitudeVsTerminalStage,
         minSampleSize: CONFIG.MIN_COMBINATION_SAMPLE_SIZE,
     };
 }
@@ -698,6 +729,21 @@ function buildMagnetAnalysis(candles: CandleInfo[]): MagnetAnalysisResult[] {
         const atr = candles[trigger.idx].atr;
         const tolerance = atr > 0 ? atr * CONFIG.MAGNET_TOUCH_TOLERANCE_ATR : 0;
 
+        // The target's own bucket bounds — NOT the same thing as "target
+        // price ± tolerance". The heatmap clears a whole bucket the
+        // instant any candle's [low, high] overlaps ANY part of it (see
+        // clearSweptRange in liquidationHeatmap.ts), so a candle can wipe
+        // out the target's resting liquidity by clipping just the edge of
+        // its bucket — nowhere near the target's exact price — without
+        // that ever counting as "hitting" the target in the tolerance
+        // sense. Checking bucket overlap (wide, matches the real clearing
+        // mechanics) instead of point-plus-tolerance overlap (narrow, and
+        // a strict subset of the hit condition below) is what makes
+        // "drained" a genuinely different, reachable event rather than
+        // dead code.
+        const targetBucketLow = target.price - heatmap.bucketHeight / 2;
+        const targetBucketHigh = target.price + heatmap.bucketHeight / 2;
+
         let targetHit = false, controlHit = false, targetDrained = false;
         let candlesToHitTarget: number | null = null, candlesToHitControl: number | null = null;
         let endIdx = candles.length - 1;
@@ -710,12 +756,8 @@ function buildMagnetAnalysis(candles: CandleInfo[]): MagnetAnalysisResult[] {
             if (!controlHit && c.high >= controlPrice - tolerance && c.low <= controlPrice + tolerance) {
                 controlHit = true; candlesToHitControl = j - trigger.idx;
             }
-            if (!targetHit) {
-                const sweepHere = c.liquiditySweepInfo;
-                if (sweepHere?.behavior === "SWEPT" && sweepHere.sweptPriceLow !== null && sweepHere.sweptPriceHigh !== null
-                    && target.price >= sweepHere.sweptPriceLow && target.price <= sweepHere.sweptPriceHigh) {
-                    targetDrained = true;
-                }
+            if (!targetHit && !targetDrained && c.high >= targetBucketLow && c.low <= targetBucketHigh) {
+                targetDrained = true;
             }
             if (targetHit && controlHit) { endIdx = j; break; }
             endIdx = j;
@@ -824,19 +866,34 @@ function buildEventTimelines(
 function buildCrossChecks(candles: CandleInfo[]): CrossCheckResult[] {
     const results: CrossCheckResult[] = [];
 
+    // Compares the RAW, unthresholded sign of change, not each module's own
+    // thresholded category label. accountShareChangePercent (percentage
+    // points of longAccount/(longAccount+shortAccount)) and
+    // longShort.ratioChange (raw longAccount/shortAccount delta) are
+    // computed on different scales with different flat thresholds, but
+    // share is a strictly monotonic function of ratio — so if both are
+    // reading the same underlying (current, previous) LongShortRatioEntry
+    // pair correctly, their signs must agree essentially always,
+    // regardless of how different their magnitudes/thresholds are. A
+    // comparison of the two modules' own thresholded labels found 0%
+    // agreement here purely from the units mismatch (see positioningState
+    // module docs) — this version tests the thing that's actually
+    // supposed to agree.
     let agree = 0, disagree = 0, total = 0;
     for (const c of candles) {
-        const accountDir = c.openInterest?.positioningState?.accountShareDirection;
-        const lsState = c.longShort?.state;
-        if (!accountDir || !lsState || accountDir === "INSUFFICIENT_DATA") continue;
-        const lsDir = lsState === "LONG_INCREASING" ? "RISING" : lsState === "SHORT_INCREASING" ? "FALLING" : null;
-        if (!lsDir) continue;
+        const shareChange = c.openInterest?.positioningState?.accountShareChangePercent;
+        const shareDir = c.openInterest?.positioningState?.accountShareDirection;
+        const ratioChange = c.longShort?.ratioChange;
+        if (shareDir === undefined || shareDir === "INSUFFICIENT_DATA" || shareChange === undefined || ratioChange === undefined) continue;
+        const shareSign = Math.sign(shareChange);
+        const ratioSign = Math.sign(ratioChange);
+        if (shareSign === 0 || ratioSign === 0) continue; // an exact-zero change isn't informative for a sign comparison
         total++;
-        if (accountDir === lsDir) agree++; else disagree++;
+        if (shareSign === ratioSign) agree++; else disagree++;
     }
     if (total > 0) {
         results.push({
-            description: "positioningState.accountShareDirection vs longShort.state (both derived from long/short ratio data)",
+            description: "sign(positioningState.accountShareChangePercent) vs sign(longShort.ratioChange) — raw, unthresholded (both derived from the same long/short ratio data; should agree almost always since share is a monotonic function of ratio)",
             agreementRate: agree / total,
             disagreementCount: disagree,
             sampleCount: total,
@@ -882,54 +939,70 @@ export function analyzeMovements(
     const firstProcessedIdx = rawCandles.findIndex(c => c.openInterest !== undefined);
     const candles = firstProcessedIdx === -1 ? [] : rawCandles.slice(firstProcessedIdx);
 
-    const allOutcomes: ForwardOutcome[] = [];
+    // Two SEPARATE calibration pools, not one shared global pool. Joint
+    // categorical keys (alignment counts, pairwise combos) require multiple
+    // fields to match simultaneously to keep a run alive, which produces
+    // much shorter runs — and therefore much smaller price moves — than
+    // event-driven windows like a 90-candle anchor lifecycle. Calibrating
+    // both against one shared percentile pool squeezed every short-window
+    // categorical outcome under the cutoff regardless of its own relative
+    // size, making the CHOP/CONTINUATION/REVERSAL labels meaningless for
+    // that whole family. Each pool is now calibrated only against outcomes
+    // of a comparable natural scale.
+    const categoricalOutcomes: ForwardOutcome[] = [];
+    const eventOutcomes: ForwardOutcome[] = [];
 
     const positioningGroups = buildCategoryGroups(
         candles,
         (i) => candles[i].openInterest?.positioningState?.behavior ?? null,
         positioningDirection,
         (i) => candles[i].openInterest?.positioningState?.strength ?? 0,
-        allOutcomes
+        categoricalOutcomes
     );
     const volumeConfirmationGroups = buildCategoryGroups(
         candles,
         (i) => candles[i].openInterest?.positioningState?.volumeConfirmation ?? null,
         () => "NEUTRAL",
         null,
-        allOutcomes
+        categoricalOutcomes
     );
     const accountAgreementGroups = buildCategoryGroups(
         candles,
         (i) => candles[i].openInterest?.positioningState?.accountAgreement ?? null,
         () => "NEUTRAL",
         null,
-        allOutcomes
+        categoricalOutcomes
     );
     const longShortGroups = buildCategoryGroups(
         candles,
         (i) => candles[i].longShort?.state ?? null,
         lsStateDirection,
         (i) => candles[i].longShort?.strength ?? 0,
-        allOutcomes
+        categoricalOutcomes
     );
     const volumeStateGroups = buildCategoryGroups(
         candles,
         (i) => candles[i].volumeState?.state ?? null,
         volumeStateDirection,
         (i) => candles[i].volumeState?.strength ?? 0,
-        allOutcomes
+        categoricalOutcomes
     );
 
-    const anchorLifecycleOutcomes = buildAnchorLifecycleOutcomes(candles, allOutcomes);
-    const sweepEventOutcomes = buildSweepEventOutcomes(candles, allOutcomes);
-    const priceActionSequenceOutcomes = buildPriceActionSequenceOutcomes(candles, allOutcomes);
-    const combinations = buildCombinations(candles, priceActionSequenceOutcomes, allOutcomes);
+    const anchorLifecycleOutcomes = buildAnchorLifecycleOutcomes(candles, eventOutcomes);
+    const sweepEventOutcomes = buildSweepEventOutcomes(candles, eventOutcomes);
+    const priceActionSequenceOutcomes = buildPriceActionSequenceOutcomes(candles, eventOutcomes);
+    const rawCombinations = buildCombinationGroups(candles, priceActionSequenceOutcomes, categoricalOutcomes);
     const magnetAnalysis = buildMagnetAnalysis(candles);
     const eventTimelines = buildEventTimelines(candles, anchorLifecycleOutcomes, sweepEventOutcomes, priceActionSequenceOutcomes);
     const crossModuleConsistencyChecks = buildCrossChecks(candles);
 
-    // Global calibration — must happen after every outcome above has been collected.
-    classifyAllOutcomes(allOutcomes);
+    // Calibrate each pool separately — must happen after every outcome in
+    // that pool has been collected.
+    const categoricalCutoffs = classifyAllOutcomes(categoricalOutcomes);
+    const eventCutoffs = classifyAllOutcomes(eventOutcomes);
+
+    // Only NOW is it safe to aggregate anything that reads outcome.moveOutcome.
+    const combinations = finalizeCombinations(rawCombinations);
 
     const stateBucketReports: ModuleBucketReport[] = [
         finalizeBucketReport("positioningState", "behavior", positioningGroups),
@@ -949,6 +1022,12 @@ export function analyzeMovements(
         parameters: {
             MIN_COMBINATION_SAMPLE_SIZE: CONFIG.MIN_COMBINATION_SAMPLE_SIZE,
             MAGNET_TOUCH_TOLERANCE_ATR: CONFIG.MAGNET_TOUCH_TOLERANCE_ATR,
+            categoricalOutcomePoolSize: categoricalOutcomes.length,
+            categoricalP33Atr: categoricalCutoffs.p33,
+            categoricalP66Atr: categoricalCutoffs.p66,
+            eventOutcomePoolSize: eventOutcomes.length,
+            eventP33Atr: eventCutoffs.p33,
+            eventP66Atr: eventCutoffs.p66,
         },
     };
 
