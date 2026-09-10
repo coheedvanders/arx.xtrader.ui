@@ -62,6 +62,27 @@ export async function listNotes(symbol: string): Promise<StickyNote[]> {
   });
 }
 
+/**
+ * Every note across every symbol, most-recently-updated first. Notes are
+ * global (not scoped to whichever symbol is currently open) — this is what
+ * the notes panel actually uses now. `symbol` on each note is kept purely
+ * as context (which pair you were looking at when you wrote it), not as a
+ * filter.
+ */
+export async function listAllNotes(): Promise<StickyNote[]> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readonly");
+    const req = tx.objectStore(STORE).getAll();
+    req.onsuccess = () => {
+      const rows = (req.result as StickyNote[]) ?? [];
+      rows.sort((a, b) => b.updatedAt - a.updatedAt);
+      resolve(rows);
+    };
+    req.onerror = () => reject(req.error ?? new Error("Failed to list all notes"));
+  });
+}
+
 /** Create or overwrite a note (matched by id). */
 export async function saveNote(note: StickyNote): Promise<void> {
   const db = await openDb();

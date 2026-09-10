@@ -152,10 +152,10 @@
       </div>
     </div>
 
-    <!-- Notes panel: sticky notes for this symbol, stored in IndexedDB -->
+    <!-- Notes panel: GLOBAL sticky notes, stored in IndexedDB, shared across every symbol -->
     <div v-if="notesOpen" class="notes-panel">
       <div class="notes-panel-header">
-        <span>Notes — {{ symbol }}</span>
+        <span>Notes</span>
         <button class="close-btn" @click="notesOpen = false">✕</button>
       </div>
       <div class="notes-panel-add">
@@ -179,13 +179,14 @@
           <template v-else>
             <p class="note-item-text" @dblclick="startNoteEdit(n)">{{ n.text }}</p>
             <div class="note-item-actions">
+              <span class="note-item-symbol">{{ n.symbol }}</span>
               <span class="note-item-time">{{ formatAxisTime(n.updatedAt) }}</span>
               <button @click="startNoteEdit(n)">Edit</button>
               <button @click="removeNote(n.id)">Delete</button>
             </div>
           </template>
         </div>
-        <div v-if="notes.length === 0" class="notes-panel-empty">No notes yet for this symbol.</div>
+        <div v-if="notes.length === 0" class="notes-panel-empty">No notes yet.</div>
       </div>
     </div>
 
@@ -634,7 +635,13 @@
             </template>
 
             <!-- rectangles -->
-            <g v-for="r in rectangles" :key="r.id" class="drawing-group" @mousedown.stop="selectDrawing('rectangle', r.id)">
+            <g
+              v-for="r in rectangles"
+              :key="r.id"
+              class="drawing-group"
+              @mousedown.stop="selectDrawing('rectangle', r.id)"
+              @dblclick.stop="startRectangleEdit(r.id)"
+            >
               <rect
                 class="drawn-rect"
                 :class="{ selected: isDrawingSelected('rectangle', r.id) }"
@@ -675,6 +682,12 @@
                 :y1="priceToY(hl.price)" :y2="priceToY(hl.price)"
                 @mousedown="startHorizontalLineMove(hl.id, $event)"
               />
+              <!-- date label below the line, at its original placement point -->
+              <text
+                class="horizontal-line-date-label"
+                :x="candleXAtTime(hl.time)"
+                :y="priceToY(hl.price) + 14"
+              >{{ formatAxisTime(hl.time) }}</text>
               <text
                 class="drawing-remove"
                 :x="plotWidth - 4"
@@ -685,7 +698,13 @@
             </g>
 
             <!-- vertical time lines -->
-            <g v-for="vl in verticalLines" :key="vl.id" class="drawing-group" @mousedown.stop="selectDrawing('vertical-line', vl.id)">
+            <g
+              v-for="vl in verticalLines"
+              :key="vl.id"
+              class="drawing-group"
+              @mousedown.stop="selectDrawing('vertical-line', vl.id)"
+              @dblclick.stop="startVerticalLineEdit(vl.id)"
+            >
               <line
                 class="drawn-vertical-line"
                 :class="{ selected: isDrawingSelected('vertical-line', vl.id) }"
@@ -698,6 +717,12 @@
                 y1="0" :y2="mainPlotHeight + subplotsHeight"
                 @mousedown="startVerticalLineMove(vl.id, $event)"
               />
+              <!-- price label at the right of the line, at its placement height -->
+              <text
+                class="vertical-line-price-label"
+                :x="candleXAtTime(vl.time) + 6"
+                :y="priceToY(vl.price) + 4"
+              >{{ formatPrice(vl.price) }}</text>
               <text
                 class="drawing-remove"
                 :x="candleXAtTime(vl.time) + 6"
@@ -713,27 +738,49 @@
               class="drawing-group text-annotation-group"
               @mousedown.stop="selectDrawing('text', ta.id)"
               @dblclick.stop="startTextEdit(ta.id)"
+              @mouseenter="hoveredTextId = ta.id"
+              @mouseleave="hoveredTextId = null"
             >
+              <!-- sticky broken line: only drawn once the label has been
+                   dragged away from its anchor (item 10) -->
+              <template v-if="ta.labelOffsetX || ta.labelOffsetY">
+                <line
+                  class="text-anchor-line"
+                  :x1="candleXAtTime(ta.time)" :y1="priceToY(ta.price)"
+                  :x2="textLabelX(ta)" :y2="textLabelY(ta)"
+                />
+                <circle class="text-anchor-dot" :cx="candleXAtTime(ta.time)" :cy="priceToY(ta.price)" r="2.5" />
+              </template>
+
               <text
                 class="drawn-text-annotation"
                 :class="{ selected: isDrawingSelected('text', ta.id) }"
-                :x="candleXAtTime(ta.time)"
-                :y="priceToY(ta.price)"
+                :x="textLabelX(ta)"
+                :y="textLabelY(ta)"
               >{{ ta.text }}</text>
               <rect
                 class="drawing-move-hit text-annotation-hit"
-                :x="candleXAtTime(ta.time) - 4"
-                :y="priceToY(ta.price) - 12"
+                :x="textLabelX(ta) - 4"
+                :y="textLabelY(ta) - 12"
                 :width="Math.max(20, ta.text.length * 6.4 + 8)"
                 height="18"
                 @mousedown="startTextMove(ta.id, $event)"
               />
               <text
                 class="drawing-remove"
-                :x="candleXAtTime(ta.time) + Math.max(20, ta.text.length * 6.4 + 8) - 4"
-                :y="priceToY(ta.price) - 14"
+                :x="textLabelX(ta) + Math.max(20, ta.text.length * 6.4 + 8) - 4"
+                :y="textLabelY(ta) - 14"
                 @click.stop="removeDrawing('text', ta.id)"
               >✕</text>
+
+              <!-- hover handles: drag to move the LABEL away from its
+                   fixed anchor (the sticky line follows) -->
+              <template v-if="hoveredTextId === ta.id">
+                <circle class="text-drag-handle" :cx="textLabelX(ta) + textLabelWidth(ta) / 2" :cy="textLabelY(ta) - 12" r="4" @mousedown.stop="startTextLabelHandleDrag(ta.id, $event)" />
+                <circle class="text-drag-handle" :cx="textLabelX(ta) + textLabelWidth(ta) / 2" :cy="textLabelY(ta) + 6" r="4" @mousedown.stop="startTextLabelHandleDrag(ta.id, $event)" />
+                <circle class="text-drag-handle" :cx="textLabelX(ta) - 4" :cy="textLabelY(ta) - 3" r="4" @mousedown.stop="startTextLabelHandleDrag(ta.id, $event)" />
+                <circle class="text-drag-handle" :cx="textLabelX(ta) + textLabelWidth(ta) - 4" :cy="textLabelY(ta) - 3" r="4" @mousedown.stop="startTextLabelHandleDrag(ta.id, $event)" />
+              </template>
             </g>
 
             <!-- price range measure boxes -->
@@ -863,6 +910,25 @@
                 class="time-label"
                 :x="candleX(t.gi)" y="14"
               >{{ t.label }}</text>
+
+              <!-- Hover time badge — Binance/TradingView style: filled tag
+                   under the crosshair showing the hovered candle's full
+                   formatted date+time, not just the terse axis tick. -->
+              <g v-if="hover && hoveredCandle" class="hover-time-badge-group">
+                <rect
+                  class="hover-time-badge"
+                  :x="hover.x - hoverTimeBadgeWidth / 2"
+                  y="2"
+                  :width="hoverTimeBadgeWidth"
+                  height="16"
+                  rx="2"
+                />
+                <text
+                  class="hover-time-badge-text"
+                  :x="hover.x"
+                  y="14"
+                >{{ formatHoverTime(hoveredCandle.openTime) }}</text>
+              </g>
             </g>
 
             <!-- Dynamic property subplots (defaults to volume; one row per entry in propRows) -->
@@ -901,6 +967,64 @@
             <div class="text-annotation-editor-actions">
               <button @click="commitTextEdit">Save</button>
               <button @click="cancelTextEdit">Cancel</button>
+            </div>
+          </div>
+
+          <!-- Vertical line inline editor: view/change/copy its anchor price -->
+          <div
+            v-if="editingVerticalLineId"
+            class="text-annotation-editor drawing-value-editor"
+            :style="verticalLineEditorStyle"
+          >
+            <label class="drawing-value-editor-label">Anchor price</label>
+            <div class="drawing-value-editor-row">
+              <input
+                type="number"
+                step="any"
+                v-model="verticalLineEditDraft"
+                @keydown.enter.exact.prevent="commitVerticalLineEdit"
+                @keydown.escape.stop.prevent="cancelVerticalLineEdit"
+              />
+              <button class="drawing-value-editor-copy" title="Copy price" @click="copyToClipboard(verticalLineEditDraft)">⧉</button>
+            </div>
+            <div class="drawing-value-editor-time">at {{ editingVerticalLineTimeLabel }}</div>
+            <div class="text-annotation-editor-actions">
+              <button @click="commitVerticalLineEdit">Save</button>
+              <button @click="cancelVerticalLineEdit">Cancel</button>
+            </div>
+          </div>
+
+          <!-- Rectangle inline editor: view/change/copy its upper/lower price bounds -->
+          <div
+            v-if="editingRectangleId"
+            class="text-annotation-editor drawing-value-editor"
+            :style="rectangleEditorStyle"
+          >
+            <label class="drawing-value-editor-label">Upper price</label>
+            <div class="drawing-value-editor-row">
+              <input
+                type="number"
+                step="any"
+                v-model="rectangleEditDraftUpper"
+                @keydown.enter.exact.prevent="commitRectangleEdit"
+                @keydown.escape.stop.prevent="cancelRectangleEdit"
+              />
+              <button class="drawing-value-editor-copy" title="Copy price" @click="copyToClipboard(rectangleEditDraftUpper)">⧉</button>
+            </div>
+            <label class="drawing-value-editor-label">Lower price</label>
+            <div class="drawing-value-editor-row">
+              <input
+                type="number"
+                step="any"
+                v-model="rectangleEditDraftLower"
+                @keydown.enter.exact.prevent="commitRectangleEdit"
+                @keydown.escape.stop.prevent="cancelRectangleEdit"
+              />
+              <button class="drawing-value-editor-copy" title="Copy price" @click="copyToClipboard(rectangleEditDraftLower)">⧉</button>
+            </div>
+            <div class="text-annotation-editor-actions">
+              <button @click="commitRectangleEdit">Save</button>
+              <button @click="cancelRectangleEdit">Cancel</button>
             </div>
           </div>
 
@@ -1130,7 +1254,7 @@ import { loadToolCache, saveToolCache } from "@/utility/toolCacheDb";
 import DialogComponent from '../../shared/dialog/DialogComponent.vue';
 import DialogHeaderComponent from '../../shared/dialog/DialogHeaderComponent.vue';
 import MovementAnalyzerComponent from './MovementAnalyzerComponent.vue';
-import { listNotes, saveNote, deleteNote, type StickyNote } from "@/utility/notesDb";
+import { listAllNotes, saveNote, deleteNote, type StickyNote } from "@/utility/notesDb";
 
 // ── Dynamic candle detail renderer ─────────────────────────────────────
 // Intentionally driven by the runtime object rather than CandleInfo's type
@@ -1425,9 +1549,27 @@ function connectBinanceWs() {
         if (Number.isFinite(low)) last.low = Math.min(last.low, low);
         last.closeTime = Number(k.T);
         if (Number.isFinite(volume)) last.volume = volume;
+        // Live-recompute the forming candle's own color on every tick —
+        // previously only open/high/low/close/volume updated, so a candle
+        // that flipped from bear to bull (or back) mid-formation kept
+        // rendering its color from whenever candleStructure was last
+        // computed by the simulation, not from the live price.
+        if (last.candleStructure) {
+          last.candleStructure.isBullish = last.close >= last.open;
+          last.candleStructure.isBearish = last.close < last.open;
+        }
       } else if (!last || openTime > last.openTime) {
         // A new primary candle has spawned — append it so the chart keeps
         // moving forward instead of freezing on the last cached candle.
+        // NOTE: candleStructure is intentionally NOT spread from `last`
+        // here — a brand-new candle inheriting the previous candle's
+        // isBullish/isBearish via spread was exactly the other half of
+        // the stale-color bug (a new candle would render in the OLD
+        // candle's color until enough ticks came in to overwrite it via
+        // the branch above, which never touched candleStructure at all
+        // before this fix). open === close at spawn, so isBullish/
+        // isBearish start as a neutral true/false pair and self-correct
+        // on the very next tick via the recompute above.
         candles.push({
           ...(last ?? {}),
           openTime,
@@ -1437,6 +1579,7 @@ function connectBinanceWs() {
           low: Number.isFinite(low) ? low : price,
           close: price,
           volume: Number.isFinite(volume) ? volume : 0,
+          candleStructure: { ...(last?.candleStructure ?? {}), isBullish: true, isBearish: false },
         } as CandleInfo);
       }
 
@@ -1557,7 +1700,6 @@ watch(() => props.symbol, () => {
   loadSymbolInfo();
   connectBinanceWs();
   loadToolCacheForSymbol();
-  loadNotesForSymbol();
 });
 
 // ── Timeframe selection ───────────────────────────────────────────────
@@ -1663,7 +1805,11 @@ function candleX(gi: number): number {
 }
 function indexAtX(x: number): number {
   const gi = displayStart.value + Math.round((x - PAD_LEFT - candleWidth.value / 2) / candleWidth.value);
-  return Math.max(0, Math.min(maxStartIndex.value, gi));
+  // Allow extending into the open space past the last real candle (the
+  // TradingView/Binance-style scrollable area) — only the lower bound
+  // stays clamped at 0, since there's no "before the first candle" data
+  // to place anything against.
+  return Math.max(0, gi);
 }
 
 // ── Time-anchored drawings ──────────────────────────────────────────────
@@ -1678,12 +1824,33 @@ function indexAtX(x: number): number {
 function timeFromGi(gi: number): number {
   const arr = primaryCandles.value;
   if (arr.length === 0) return Date.now();
-  const clamped = Math.max(0, Math.min(arr.length - 1, Math.round(gi)));
+  const dur = TF_DURATION_MS[primaryTf.value];
+  // Extrapolate for the open space beyond the last (or before the first)
+  // real candle — e.g. dragging right, TradingView/Binance-style, to
+  // place a line/text/AVWAP anchor past the most recent candle. Without
+  // this, a tool placed out there would store the LAST candle's time
+  // instead of the actual future time under the cursor.
+  if (gi > arr.length - 1) {
+    return arr[arr.length - 1].openTime + (gi - (arr.length - 1)) * dur;
+  }
+  if (gi < 0) {
+    return arr[0].openTime + gi * dur;
+  }
+  const clamped = Math.round(gi);
   return arr[clamped].openTime;
 }
 function giFromTime(t: number): number {
   const arr = primaryCandles.value;
   if (arr.length === 0) return 0;
+  const dur = TF_DURATION_MS[primaryTf.value];
+  const firstTime = arr[0].openTime;
+  const lastTime = arr[arr.length - 1].openTime;
+  // Symmetric extrapolation for the reverse direction — a stored time
+  // that falls in the open space needs to map back to a gi PAST the real
+  // data, not clamp onto the last real candle (which is what rendering
+  // something placed out there previously collapsed onto).
+  if (t > lastTime) return (arr.length - 1) + (t - lastTime) / dur;
+  if (t < firstTime) return -((firstTime - t) / dur);
   let lo = 0;
   let hi = arr.length - 1;
   while (lo < hi) {
@@ -1727,9 +1894,28 @@ function yToPrice(y: number): number {
 // signal that colors the last candle body), not a comparison against the
 // previous tick — that keeps the line's color in sync with the candle it
 // belongs to.
+//
+// IMPORTANT: symbolInfo is a shallowRef (deliberately — it holds a large,
+// frequently-mutated object, and deep reactivity over every nested field
+// on every websocket tick would be real overhead). That means reading
+// last.candleStructure.isBullish here does NOT register as a tracked
+// dependency: mutating it in the websocket handler never invalidates this
+// computed's cache, so it only ever recomputed on a full symbolInfo
+// reload — never on a live tick. The candle body's own color looked
+// correct anyway only as a side effect of OTHER reactive changes (like
+// livePrice itself) forcing a full template re-render, which happens to
+// re-read that plain object property fresh regardless of tracking. This
+// computed had no such lucky side effect, so it went stale and stuck.
+// Fix: read livePrice.value directly (a real, deep-reactive primitive
+// ref) so this computed is actually forced to re-run on every tick, and
+// derive bull/bear the same way the websocket handler does — comparing
+// price to the forming candle's own open — rather than trusting the
+// (untracked) cached flag.
 const livePriceBullish = computed(() => {
+  if (livePrice.value == null) return false;
   const last = primaryCandles.value[primaryCandles.value.length - 1];
-  return !!last?.candleStructure?.isBullish;
+  if (!last) return false;
+  return livePrice.value >= last.open;
 });
 const livePriceLineY = computed<number | null>(() => {
   if (livePrice.value == null) return null;
@@ -1883,7 +2069,11 @@ function onChartMouseMove(e: MouseEvent) {
     viewStartIndex.value = clamp(
       panStart.viewStartIndex - dx / candleWidth.value,
       0,
-      Math.max(0, primaryCandles.value.length - visibleBars.value)
+      // Allow scrolling past the last candle — TradingView/Binance-style
+      // open space on the right, however far you drag — down to at least
+      // one real candle staying visible (same bound displayStart already
+      // permits), not just "the last full page."
+      Math.max(0, primaryCandles.value.length - 1)
     );
     yPanOffset.value = panStart.yPanOffset + dy;
   } else if (toolDraft.value) {
@@ -1933,11 +2123,11 @@ function handleChartClick(x: number, y: number) {
 
   if (activeTool.value === "horizontal-line") {
     pushUndoSnapshot();
-    horizontalLines.value.push({ id: nextId(), price });
+    horizontalLines.value.push({ id: nextId(), price, time: timeFromGi(gi) });
     activeTool.value = "none";
   } else if (activeTool.value === "vertical-line") {
     pushUndoSnapshot();
-    verticalLines.value.push({ id: nextId(), time: timeFromGi(gi) });
+    verticalLines.value.push({ id: nextId(), time: timeFromGi(gi), price });
     activeTool.value = "none";
   } else if (activeTool.value === "text") {
     pushUndoSnapshot();
@@ -1983,7 +2173,7 @@ function onWheel(e: WheelEvent) {
     viewStartIndex.value = clamp(
       giUnderCursor - fraction * visibleBars.value,
       0,
-      Math.max(0, primaryCandles.value.length - visibleBars.value)
+      Math.max(0, primaryCandles.value.length - 1)
     );
   });
 }
@@ -2545,21 +2735,46 @@ const crossTfEmaLines = computed<Record<Tf, { gi: number; price: number }[]>>(()
 });
 const showCrossTfEma = ref(false);
 
+// Small helper: a ref that reads its initial value from localStorage and
+// writes back on every change, so a toggle's on/off state survives a
+// reload/reopen. Key is namespaced under "cev2." to avoid collisions with
+// anything else the app might store in localStorage.
+function persistedBooleanRef(key: string, defaultValue: boolean) {
+  const storageKey = `cev2.${key}`;
+  let initial = defaultValue;
+  try {
+    const stored = localStorage.getItem(storageKey);
+    if (stored !== null) initial = stored === "true";
+  } catch {
+    // localStorage unavailable (private browsing, etc.) — fall back to default.
+  }
+  const r = ref(initial);
+  watch(r, (val) => {
+    try {
+      localStorage.setItem(storageKey, String(val));
+    } catch {
+      // ignore — persistence is a nice-to-have, not required for the toggle to work this session
+    }
+  });
+  return r;
+}
+
 // Toggles the positioningState visualization (price x OI quadrant marker
 // below each candle + positioning readout in the HUD). Off by default,
 // same pattern as showCrossTfEma. Kept separate from any "OI state" naming
 // since positioningState is a distinct derived concept (see positioningState.ts).
-const showPositioning = ref(false);
+// Persisted to localStorage — see persistedBooleanRef above.
+const showPositioning = persistedBooleanRef("showPositioning", false);
 
 // Toggles the liquidity-anchor visualization: per-side (long/short)
 // lifecycle markers from liquidationHeatmapStamp (building/active/ended)
-// plus a sweep marker from liquiditySweepInfo. Off by default.
-const showLiquidityInfo = ref(false);
+// plus a sweep marker from liquiditySweepInfo. Off by default. Persisted.
+const showLiquidityInfo = persistedBooleanRef("showLiquidityInfo", false);
 
 // Toggles the price-action sequence visualization: the tracked level as a
 // horizontal ray (dashed until confirmed, solid once closeConfirmation is
-// reached) plus rejection/displacement stage dots. Off by default.
-const showPriceAction = ref(false);
+// reached) plus rejection/displacement stage dots. Off by default. Persisted.
+const showPriceAction = persistedBooleanRef("showPriceAction", false);
 
 const showMovementAnalyzer = ref(false);
 
@@ -2610,9 +2825,20 @@ function finalizeLiquidity(d: ToolDraft) {
 // candleX(shape.x1) when rendering these.
 interface RectShape { id: string; x1: number; x2: number; y1: number; y2: number }
 interface LineShape { id: string; x1: number; x2: number; y1: number; y2: number }
-interface HorizontalLineShape { id: string; price: number }
-interface VerticalLineShape { id: string; time: number }
-interface TextAnnotation { id: string; time: number; price: number; text: string }
+// `time` on a horizontal line and `price` on a vertical line are the point
+// where the line was originally PLACED (captured once at creation) — used
+// to position that line's new label (items 6/7), not to move the line
+// itself, since the line's actual position is still governed by `price`
+// (horizontal) / `time` (vertical) alone.
+interface HorizontalLineShape { id: string; price: number; time: number }
+interface VerticalLineShape { id: string; time: number; price: number }
+// labelOffsetX/Y (both in SVG pixel space, relative to the anchor point
+// [time, price]): when either is nonzero, the text label has been dragged
+// away from its anchor via one of the hover handles, and a dashed "sticky"
+// line connects the anchor to wherever the label actually renders. Absent
+// or zero means the label sits right at its anchor, same as before this
+// feature existed (backward compatible with already-saved annotations).
+interface TextAnnotation { id: string; time: number; price: number; text: string; labelOffsetX?: number; labelOffsetY?: number }
 interface PriceRangeBox { id: string; x1: number; x2: number; y1: number; y2: number }
 interface FrvpRow { priceLow: number; priceHigh: number; buyVolume: number; sellVolume: number; buyFrac: number; sellFrac: number }
 interface FrvpZone {
@@ -2925,16 +3151,16 @@ watch(
   { deep: true }
 );
 
-// ── Notes toolbar (sticky notes, IndexedDB, per symbol) ─────────────────
+// ── Notes toolbar (sticky notes, IndexedDB, GLOBAL — not per symbol) ────
 const notesOpen = ref(false);
 const notes = ref<StickyNote[]>([]);
 const newNoteDraft = ref("");
 const editingNoteId = ref<string | null>(null);
 const editingNoteDraft = ref("");
 
-async function loadNotesForSymbol() {
+async function loadAllNotes() {
   try {
-    notes.value = await listNotes(props.symbol);
+    notes.value = await listAllNotes();
   } catch (err) {
     console.error("Failed to load notes:", err);
   }
@@ -3253,6 +3479,44 @@ function startVerticalLineMove(id: string, event: MouseEvent) {
 }
 
 // ── Text annotations ────────────────────────────────────────────────────
+// Item 10: hover state driving the 4 drag handles, and helpers computing
+// where the label actually renders (anchor + offset) vs. its true anchor
+// point (ta.time / ta.price, used by the sticky connector line above).
+const hoveredTextId = ref<string | null>(null);
+
+function textLabelX(ta: TextAnnotation): number {
+  return candleXAtTime(ta.time) + (ta.labelOffsetX ?? 0);
+}
+function textLabelY(ta: TextAnnotation): number {
+  return priceToY(ta.price) + (ta.labelOffsetY ?? 0);
+}
+function textLabelWidth(ta: TextAnnotation): number {
+  return Math.max(20, ta.text.length * 6.4 + 8);
+}
+
+function startTextLabelHandleDrag(id: string, event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  const anno = textAnnotations.value.find(x => x.id === id);
+  if (!anno) return;
+  pushUndoSnapshot();
+  const anchorX = candleXAtTime(anno.time);
+  const anchorY = priceToY(anno.price);
+  const move = (e: MouseEvent) => {
+    const cur = chartPointFromClient(e.clientX, e.clientY);
+    if (!cur) return;
+    anno.labelOffsetX = cur.x - anchorX;
+    anno.labelOffsetY = cur.y - anchorY;
+  };
+  const up = () => {
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+  };
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+  selectDrawing("text", id);
+}
+
 function startTextMove(id: string, event: MouseEvent) {
   event.preventDefault();
   event.stopPropagation();
@@ -3332,6 +3596,116 @@ const textEditorStyle = computed(() => {
     top: `${priceToY(anno.price)}px`,
   };
 });
+
+// ── Vertical line edit popup (item 8: view/change/copy its anchor price) ──
+const editingVerticalLineId = ref<string | null>(null);
+const verticalLineEditDraft = ref("");
+
+function startVerticalLineEdit(id: string) {
+  const vl = verticalLines.value.find(x => x.id === id);
+  if (!vl) return;
+  editingVerticalLineId.value = id;
+  verticalLineEditDraft.value = String(vl.price);
+  nextTick(() => {
+    document.querySelector<HTMLInputElement>(".drawing-value-editor input")?.focus();
+    document.querySelector<HTMLInputElement>(".drawing-value-editor input")?.select();
+  });
+}
+
+function commitVerticalLineEdit() {
+  const id = editingVerticalLineId.value;
+  if (!id) return;
+  const vl = verticalLines.value.find(x => x.id === id);
+  const parsed = Number(verticalLineEditDraft.value);
+  if (vl && Number.isFinite(parsed)) {
+    if (vl.price !== parsed) pushUndoSnapshot();
+    vl.price = parsed;
+  }
+  editingVerticalLineId.value = null;
+  verticalLineEditDraft.value = "";
+}
+
+function cancelVerticalLineEdit() {
+  editingVerticalLineId.value = null;
+  verticalLineEditDraft.value = "";
+}
+
+const editingVerticalLineTimeLabel = computed(() => {
+  const vl = verticalLines.value.find(x => x.id === editingVerticalLineId.value);
+  return vl ? formatHoverTime(vl.time) : "";
+});
+
+const verticalLineEditorStyle = computed(() => {
+  if (!editingVerticalLineId.value) return { display: "none" };
+  const vl = verticalLines.value.find(x => x.id === editingVerticalLineId.value);
+  if (!vl) return { display: "none" };
+  return {
+    left: `${candleXAtTime(vl.time) + 10}px`,
+    top: `${priceToY(vl.price)}px`,
+  };
+});
+
+// ── Rectangle edit popup (item 9: view/change/copy upper/lower price) ────
+const editingRectangleId = ref<string | null>(null);
+const rectangleEditDraftUpper = ref("");
+const rectangleEditDraftLower = ref("");
+
+function startRectangleEdit(id: string) {
+  const r = rectangles.value.find(x => x.id === id);
+  if (!r) return;
+  editingRectangleId.value = id;
+  rectangleEditDraftUpper.value = String(Math.max(r.y1, r.y2));
+  rectangleEditDraftLower.value = String(Math.min(r.y1, r.y2));
+  nextTick(() => {
+    document.querySelectorAll<HTMLInputElement>(".drawing-value-editor input")[0]?.focus();
+    document.querySelectorAll<HTMLInputElement>(".drawing-value-editor input")[0]?.select();
+  });
+}
+
+function commitRectangleEdit() {
+  const id = editingRectangleId.value;
+  if (!id) return;
+  const r = rectangles.value.find(x => x.id === id);
+  const upper = Number(rectangleEditDraftUpper.value);
+  const lower = Number(rectangleEditDraftLower.value);
+  if (r && Number.isFinite(upper) && Number.isFinite(lower)) {
+    if (r.y1 !== upper || r.y2 !== lower) pushUndoSnapshot();
+    // Preserve which side was originally y1 vs y2 isn't important here —
+    // rendering already does Math.min/max — so just write upper/lower
+    // straight through.
+    r.y1 = upper;
+    r.y2 = lower;
+  }
+  editingRectangleId.value = null;
+  rectangleEditDraftUpper.value = "";
+  rectangleEditDraftLower.value = "";
+}
+
+function cancelRectangleEdit() {
+  editingRectangleId.value = null;
+  rectangleEditDraftUpper.value = "";
+  rectangleEditDraftLower.value = "";
+}
+
+const rectangleEditorStyle = computed(() => {
+  if (!editingRectangleId.value) return { display: "none" };
+  const r = rectangles.value.find(x => x.id === editingRectangleId.value);
+  if (!r) return { display: "none" };
+  return {
+    left: `${Math.max(candleXAtTime(r.x1), candleXAtTime(r.x2)) + 10}px`,
+    top: `${Math.min(priceToY(r.y1), priceToY(r.y2))}px`,
+  };
+});
+
+// Shared by both popups above.
+async function copyToClipboard(value: string) {
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch {
+    // Clipboard API unavailable/denied — the value is still visible and
+    // selectable in the input itself, so this isn't a hard failure.
+  }
+}
 
 function startAvwapResize(id: string, event: MouseEvent) {
   event.preventDefault();
@@ -3476,6 +3850,23 @@ function formatAxisTime(ts: number): string {
   if (primaryTf.value === "1d") return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
+
+// Full date + time for the hover crosshair badge (Binance/TradingView
+// style) — more detail than the terse axis ticks, since this is a single
+// on-demand label rather than something repeated across the whole axis.
+function formatHoverTime(ts: number): string {
+  const d = new Date(ts);
+  const datePart = d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  const timePart = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return primaryTf.value === "1d" ? datePart : `${datePart} ${timePart}`;
+}
+
+const hoverTimeBadgeWidth = computed(() => {
+  if (!hoveredCandle.value) return 0;
+  const text = formatHoverTime(hoveredCandle.value.openTime);
+  // Rough monospace width estimate, consistent with other badges in this file.
+  return Math.max(40, text.length * 6.2 + 10);
+});
 function formatPriceRangeLabel(pr: PriceRangeBox): string {
   const delta = pr.y2 - pr.y1;
   const pctDelta = pr.y1 !== 0 ? (delta / pr.y1) * 100 : 0;
@@ -3570,7 +3961,7 @@ onMounted(async () => {
   connectBinanceWs();
   nowTickInterval = window.setInterval(() => { nowTick.value = Date.now(); }, 1000);
   loadToolCacheForSymbol();
-  loadNotesForSymbol();
+  loadAllNotes();
 });
 
 onBeforeUnmount(() => {
@@ -3640,6 +4031,8 @@ watch(primaryCandles, () => {
 .drawn-rect.selected, .price-range-box.selected { stroke-width: 2; stroke-dasharray: 4 3; }
 .drawing-remove { fill: #ef5350; font-family: var(--mono); font-size: 12px; font-weight: 800; cursor: pointer; pointer-events: all; }
 .drawing-remove:hover { fill: #fff; }
+.vertical-line-price-label { fill: #c8ccd4; font-family: var(--mono); font-size: 10px; pointer-events: none; }
+.horizontal-line-date-label { fill: #c8ccd4; font-family: var(--mono); font-size: 10px; text-anchor: middle; pointer-events: none; }
 .heatmap-range-outline { fill: none; stroke: rgba(255,255,255,.25); stroke-width: 1; pointer-events: none; }
 .heatmap-range-outline.selected { stroke: #ff8a65; stroke-width: 2; stroke-dasharray: 4 3; }
 .preview-tp-line { stroke: var(--bull); stroke-width: 1; stroke-dasharray: 4 3; opacity: .85; pointer-events: none; }
@@ -3682,6 +4075,7 @@ watch(primaryCandles, () => {
 .note-item-text { color: #d7dde3; white-space: pre-wrap; margin: 0 0 4px; cursor: text; }
 .note-item-actions { display: flex; align-items: center; gap: 6px; }
 .note-item-time { color: #667; margin-right: auto; font-size: 10px; }
+.note-item-symbol { color: #5b9dd9; font-size: 10px; font-weight: 600; margin-right: 4px; }
 .note-item-actions button, .notes-panel-add button {
   border: 1px solid rgba(255,255,255,.12); background: transparent; color: #9aa4b2;
   border-radius: 4px; padding: 3px 8px; cursor: pointer; font-family: var(--mono); font-size: 10px;
@@ -3848,6 +4242,9 @@ width: 30rem;
 .price-label { fill: #6b7480; font-size: 10px; font-family: var(--mono); }
 .hover-price-label { fill: #0a0d12; }
 .time-label { fill: #6b7480; font-size: 10px; font-family: var(--mono); text-anchor: middle; }
+.hover-time-badge-group { pointer-events: none; }
+.hover-time-badge { fill: #2a2f36; stroke: #4a5058; stroke-width: 1; }
+.hover-time-badge-text { fill: #e8eaed; font-size: 10px; font-family: var(--mono); text-anchor: middle; dominant-baseline: middle; }
 .crosshair-line { stroke: rgba(255, 255, 255, 0.25); stroke-dasharray: 3 3; }
 
 /* overlay ghost candles */
@@ -3886,6 +4283,10 @@ width: 30rem;
 .drawing-hit-vertical { stroke: transparent; stroke-width: 12; pointer-events: stroke; cursor: ew-resize; }
 .drawn-text-annotation { fill: #e8eaed; font-family: var(--mono); font-size: 12px; pointer-events: none; }
 .drawn-text-annotation.selected { fill: #ffd54f; }
+.text-anchor-line { stroke: #8a919c; stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
+.text-anchor-dot { fill: #8a919c; pointer-events: none; }
+.text-drag-handle { fill: #1b1f24; stroke: #5b9dd9; stroke-width: 1.5; cursor: move; }
+.text-drag-handle:hover { fill: #5b9dd9; }
 .text-annotation-hit { fill: transparent; cursor: move; }
 .text-annotation-editor {
   position: absolute;
@@ -3921,6 +4322,29 @@ width: 30rem;
   cursor: pointer;
 }
 .text-annotation-editor-actions button:hover { background: #363c45; }
+.drawing-value-editor-label { font-size: 10px; color: #9aa4b2; font-family: var(--mono); }
+.drawing-value-editor-row { display: flex; gap: 4px; align-items: center; }
+.drawing-value-editor-row input {
+  width: 140px;
+  background: #0f1115;
+  color: #e8eaed;
+  border: 1px solid #3a4048;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 4px;
+}
+.drawing-value-editor-copy {
+  font-size: 12px;
+  padding: 3px 6px;
+  background: #2a2f36;
+  border: 1px solid #3a4048;
+  color: #e8eaed;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.drawing-value-editor-copy:hover { background: #363c45; }
+.drawing-value-editor-time { font-size: 10px; color: #6b7480; font-family: var(--mono); }
 .drawn-line.selected, .drawn-horizontal-line.selected, .drawn-vertical-line.selected { stroke-width: 2.4; }
 .draft-rect { fill: rgba(255, 255, 255, 0.06); stroke: #fff; stroke-dasharray: 4 3; stroke-width: 1; }
 .draft-line { stroke: #fff; stroke-dasharray: 4 3; stroke-width: 1.2; }
