@@ -155,6 +155,16 @@ export interface LiquiditySweepInfo {
     sweptPriceHigh: number | null
 
     /**
+     * The single price (within [sweptPriceLow, sweptPriceHigh]) where
+     * resting liquidity was densest at the moment of the sweep — a
+     * defensible candidate for "the level" this sweep was actually
+     * targeting, used by priceAction.ts to anchor rejection/reclaim
+     * checks against something more specific than the candle's own
+     * high/low. Null when there's no active heatmap to measure against.
+     */
+    peakPrice: number | null
+
+    /**
      * Which side(s) were ACTIVE and therefore in-scope for this
      * measurement. NOTE: the underlying heatmap pool does not separate
      * long vs short contributions by bucket (one merged pool — see

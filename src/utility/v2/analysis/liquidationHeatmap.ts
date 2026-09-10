@@ -182,6 +182,37 @@ export function getPoolValueInRange(
 }
 
 /**
+ * Finds the price (bucket midpoint) with the highest resting pool value
+ * within [low, high]. Used to answer "if this candle swept resting
+ * liquidity, WHERE specifically was it densest" — a more defensible
+ * anchor/level than arbitrarily picking the candle's own high or low.
+ * Returns null if no bucket in range has any value.
+ */
+export function getPeakPriceInRange(
+  result: Pick<LiquidationHeatmapResult, "finalPool" | "rangeLow" | "bucketHeight">,
+  low: number,
+  high: number
+): number | null {
+  let bestIdx = -1;
+  let bestValue = 0;
+  forEachOverlappingBucket(
+    low,
+    high,
+    result.rangeLow,
+    result.bucketHeight,
+    result.finalPool.length,
+    (idx) => {
+      if (result.finalPool[idx] > bestValue) {
+        bestValue = result.finalPool[idx];
+        bestIdx = idx;
+      }
+    }
+  );
+  if (bestIdx < 0) return null;
+  return result.rangeLow + bestIdx * result.bucketHeight + result.bucketHeight / 2;
+}
+
+/**
  * Computes a liquidation/liquidity heatmap for the given candle window.
  * `candles` should be in chronological order; the whole array is treated as
  * the analysis range (slice before calling if you only want a sub-range —

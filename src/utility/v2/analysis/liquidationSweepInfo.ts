@@ -7,7 +7,7 @@ import type {
     LIQUIDITY_SWEEP_BEHAVIOR,
 } from "@/core/interfacesv2";
 
-import { getLiquidationHeatmap, getPoolValueInRange } from "./liquidationHeatmap";
+import { getLiquidationHeatmap, getPoolValueInRange, getPeakPriceInRange } from "./liquidationHeatmap";
 
 const CONFIG = {
     // Fraction of the active anchor's own peak pool value that must be
@@ -24,6 +24,7 @@ function emptyResult(timestamp: number, reasons: string[]): LiquiditySweepInfo {
         sweptRatio: 0,
         sweptPriceLow: null,
         sweptPriceHigh: null,
+        peakPrice: null,
         measuredSides: [],
         anchorClusterIds: [],
         timestamp,
@@ -138,6 +139,12 @@ export function getLiquiditySweepInfo(
         currentCandle.high
     );
 
+    const peakPrice = getPeakPriceInRange(
+        heatmapResult,
+        currentCandle.low,
+        currentCandle.high
+    );
+
     const sweptRatio =
         heatmapResult.globalMaxPoolValue > 0
             ? sweptValue / heatmapResult.globalMaxPoolValue
@@ -165,6 +172,7 @@ export function getLiquiditySweepInfo(
         sweptRatio,
         sweptPriceLow: currentCandle.low,
         sweptPriceHigh: currentCandle.high,
+        peakPrice,
         measuredSides: activeSides.map(s => s.side),
         anchorClusterIds: activeSides
             .map(s => s.clusterId)

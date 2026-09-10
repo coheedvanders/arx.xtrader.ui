@@ -48,6 +48,13 @@
           @click="showLiquidityInfo = !showLiquidityInfo"
         >Liquidity Info</button>
 
+        <button
+          class="chip"
+          :class="{ active: showPriceAction }"
+          title="Show the tracked price-action level (sweep -> reject -> reclaim -> displace -> confirm)"
+          @click="showPriceAction = !showPriceAction"
+        >Price Action</button>
+
         <div class="prop-select-group">
           <div
             v-for="(row, rowIdx) in propRows"
@@ -277,6 +284,12 @@
                   :cx="candleX(c.gi) + 5" :cy="priceToY(c.candle.high) - 8" r="2.5"
                 /> -->
 
+                <circle
+                  v-if="c.candle.priceAction.sequence.liquiditySweep && c.candle.priceAction.sequence.rejection && c.candle.priceAction.sequence.reclaim && c.candle.priceAction.sequence.displacement && c.candle.priceAction.sequence.closeConfirmation"
+                  class="anchor-dot anchor-liq"
+                  :cx="candleX(c.gi) + 5" :cy="priceToY(c.candle.high) - 8" r="2.5"
+                />
+
                 <g
                     v-if="c.candle.confluenceScore?.direction !== 'NEUTRAL' && c.candle.confluenceScore?.confidence! >= 34"
                     class="confluence-marker"
@@ -414,8 +427,65 @@
                   </polygon>
                 </g>
 
+                <!--
+                  Price-action stage dots: rejection/displacement are
+                  MOMENTARY fields (true only on the exact triggering
+                  candle — see priceAction.ts field conventions), so no
+                  transition-detection is needed, just a direct check per
+                  candle. Reclaim gets no dot of its own: seeing a
+                  displacement dot already implies reclaim happened first
+                  (the state machine requires it), so a third dot would be
+                  redundant. The sweep event itself is already shown by
+                  Liquidity Info's star, so it's intentionally not repeated
+                  here.
+                -->
+                <g v-if="showPriceAction">
+                  <circle
+                    v-if="c.candle.priceAction?.rejection.detected"
+                    class="price-action-dot price-action-rejection"
+                    :class="c.candle.priceAction.rejection.direction === 'LONG' ? 'price-action-long' : 'price-action-short'"
+                    :cx="candleX(c.gi)"
+                    :cy="priceToY(c.candle.close)"
+                    r="3"
+                  >
+                    <title>{{ priceActionDotTooltip(c.candle, 'rejection') }}</title>
+                  </circle>
+                  <circle
+                    v-if="c.candle.priceAction?.displacement.detected"
+                    class="price-action-dot price-action-displacement"
+                    :class="c.candle.priceAction.displacement.direction === 'LONG' ? 'price-action-long' : 'price-action-short'"
+                    :cx="candleX(c.gi)"
+                    :cy="priceToY(c.candle.close)"
+                    r="4.5"
+                  >
+                    <title>{{ priceActionDotTooltip(c.candle, 'displacement') }}</title>
+                  </circle>
+                </g>
+
               </g>
             </g>
+
+            <!-- price action: tracked level as a horizontal ray -->
+            <template v-if="showPriceAction">
+              <g v-for="seg in priceActionSegments" :key="seg.id" class="price-action-segment">
+                <line
+                  class="price-action-line"
+                  :class="[seg.direction === 'LONG' ? 'price-action-long' : 'price-action-short', { 'price-action-confirmed': seg.confirmed }]"
+                  :x1="candleX(seg.startGi)"
+                  :x2="candleX(seg.endGi)"
+                  :y1="priceToY(seg.level)"
+                  :y2="priceToY(seg.level)"
+                >
+                  <title>{{ priceActionSegmentTooltip(seg) }}</title>
+                </line>
+                <text
+                  class="price-action-label"
+                  :class="seg.direction === 'LONG' ? 'price-action-long' : 'price-action-short'"
+                  :x="candleX(seg.endGi) + 4"
+                  :y="priceToY(seg.level) - 3"
+                >{{ seg.stage }}</text>
+              </g>
+            </template>
 
             <!-- liquidation heatmap -->
             <g v-for="range in liquidityRanges" :key="range.id" class="liquidity-heatmap" @mousedown.stop="selectDrawing('liquidity', range.id)">
@@ -905,6 +975,26 @@
             <div class="legend-row">
               <svg class="legend-shape" viewBox="0 0 12 12"><polygon points="6,0 7.5,4.5 12,6 7.5,7.5 6,12 4.5,7.5 0,6 4.5,4.5" fill="#fbbf24" /></svg>
               <span class="legend-label">Liquidity swept this candle</span>
+            </div>
+          </div>
+
+          <div v-if="showPriceAction" class="legend-box">
+            <div class="legend-title">Price Action</div>
+            <div class="legend-row">
+              <span class="legend-swatch" style="background:#2dd4bf"></span>
+              <span class="legend-label">Long setup (dashed = pending, solid = confirmed)</span>
+            </div>
+            <div class="legend-row">
+              <span class="legend-swatch" style="background:#a78bfa"></span>
+              <span class="legend-label">Short setup (dashed = pending, solid = confirmed)</span>
+            </div>
+            <div class="legend-row">
+              <svg class="legend-shape" viewBox="0 0 12 12"><circle cx="6" cy="6" r="3" fill="#e5e7eb" /></svg>
+              <span class="legend-label">Rejection candle</span>
+            </div>
+            <div class="legend-row">
+              <svg class="legend-shape" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#e5e7eb" /></svg>
+              <span class="legend-label">Displacement candle</span>
             </div>
           </div>
         </div>
@@ -2267,6 +2357,102 @@ function sweepTooltip(candle: CandleInfo): string {
   return lines.join("\n");
 }
 
+// ── Price action: tracked level segments (sweep -> reject -> reclaim -> displace -> confirm) ──
+// The level line is the one visual that directly answers "where's the
+// candidate anchor and how is it holding" — the actual point of this
+// whole pipeline. Segments are derived by grouping consecutive visible
+// candles that share the same (direction, level) pair; `reclaim.level` is
+// carried forward unchanged for the sequence's whole life (see
+// priceAction.ts), so exact equality is a safe grouping key here — it's
+// never recomputed mid-sequence, only copied.
+
+interface PriceActionSegment {
+  id: string;
+  startGi: number;
+  endGi: number;
+  level: number;
+  direction: "LONG" | "SHORT";
+  stage: string;
+  confirmed: boolean;
+}
+
+function priceActionStageLabel(candle: CandleInfo | undefined): string {
+  const seq = candle?.priceAction?.sequence;
+  if (!seq) return "";
+  if (seq.closeConfirmation) return "CONFIRMED";
+  if (seq.displacement) return "DISPLACED";
+  if (seq.reclaim) return "RECLAIMED";
+  if (seq.rejection) return "REJECTED";
+  if (seq.liquiditySweep) return "PENDING";
+  return "";
+}
+
+const priceActionSegments = computed<PriceActionSegment[]>(() => {
+  const segments: PriceActionSegment[] = [];
+  let current: { startGi: number; level: number; direction: "LONG" | "SHORT" } | null = null;
+
+  const closeSegment = (endGi: number) => {
+    if (!current) return;
+    const lastCandle = primaryCandles.value[endGi];
+    const seq = lastCandle?.priceAction?.sequence;
+    segments.push({
+      id: `pa-${current.startGi}-${current.direction}-${current.level}`,
+      startGi: current.startGi,
+      endGi,
+      level: current.level,
+      direction: current.direction,
+      stage: priceActionStageLabel(lastCandle),
+      confirmed: (seq?.completion ?? 0) >= 1,
+    });
+    current = null;
+  };
+
+  for (const { gi, candle } of displayCandles.value) {
+    const seq = candle.priceAction?.sequence;
+    const direction = seq?.direction;
+    const level = candle.priceAction?.reclaim.level;
+    const isActive = (direction === "LONG" || direction === "SHORT") && level !== undefined;
+
+    if (isActive && current && current.direction === direction && current.level === level) {
+      continue; // segment continues
+    }
+
+    if (current) closeSegment(gi - 1);
+
+    if (isActive) {
+      current = { startGi: gi, level: level as number, direction: direction as "LONG" | "SHORT" };
+    }
+  }
+
+  if (current) {
+    closeSegment(displayCandles.value[displayCandles.value.length - 1]?.gi ?? current.startGi);
+  }
+
+  return segments;
+});
+
+function priceActionSegmentTooltip(seg: PriceActionSegment): string {
+  const lastCandle = primaryCandles.value[seg.endGi];
+  const lines = [
+    `${seg.direction} price-action level: ${seg.level.toFixed(2)}`,
+    `stage: ${seg.stage}`,
+    "",
+    ...(lastCandle?.priceAction?.reasons ?? []),
+  ];
+  return lines.join("\n");
+}
+
+function priceActionDotTooltip(candle: CandleInfo, stage: "rejection" | "displacement"): string {
+  const event = candle.priceAction?.[stage];
+  if (!event) return "No price action data";
+  const lines = [
+    `${stage.toUpperCase()}: ${event.direction} (strength ${Math.round(event.strength)})`,
+    "",
+    ...event.reasons,
+  ];
+  return lines.join("\n");
+}
+
 function propBarsForRow(prop: string) {
   const matched = displayCandles.value.map((c) => ({
     gi: c.gi,
@@ -2358,6 +2544,11 @@ const showPositioning = ref(false);
 // lifecycle markers from liquidationHeatmapStamp (building/active/ended)
 // plus a sweep marker from liquiditySweepInfo. Off by default.
 const showLiquidityInfo = ref(false);
+
+// Toggles the price-action sequence visualization: the tracked level as a
+// horizontal ray (dashed until confirmed, solid once closeConfirmation is
+// reached) plus rejection/displacement stage dots. Off by default.
+const showPriceAction = ref(false);
 
 // ── Liquidity heatmap tool ─────────────────────────────────────────────
 
@@ -3888,6 +4079,24 @@ width: 30rem;
 .liquidity-marker.liquidity-building { stroke-dasharray: 2,1; }
 .liquidity-ended-ring { cursor: default; pointer-events: none; }
 .liquidity-sweep-star { cursor: default; }
+
+.price-action-line {
+    stroke-width: 1.5;
+    stroke-dasharray: 4,3;
+}
+.price-action-line.price-action-confirmed { stroke-dasharray: none; stroke-width: 2; }
+.price-action-line.price-action-long { stroke: #2dd4bf; }
+.price-action-line.price-action-short { stroke: #a78bfa; }
+.price-action-label {
+    font-family: var(--mono); font-size: 9px; letter-spacing: .3px;
+    dominant-baseline: middle;
+}
+.price-action-label.price-action-long { fill: #2dd4bf; }
+.price-action-label.price-action-short { fill: #a78bfa; }
+.price-action-dot { stroke: #0a0d12; stroke-width: 1; cursor: default; }
+.price-action-dot.price-action-long { fill: #2dd4bf; }
+.price-action-dot.price-action-short { fill: #a78bfa; }
+.price-action-dot.price-action-displacement { stroke-width: 1.5; }
 
 .hud-reasons {
     color: #9aa4b2;

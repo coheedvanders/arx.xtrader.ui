@@ -55,8 +55,6 @@ export class SimulationUtilityV2 {
 
             //candle.anchors = getAnchorDecision(movingCandles);
 
-            //candle.priceAction = getPriceAction(movingCandles);
-
             candle.openInterest = getOpenInterestState(targetSymbol,movingCandles,interval);
 
             candle.longShort = getLongShortRatioState(targetSymbol,movingCandles,interval);
@@ -66,6 +64,8 @@ export class SimulationUtilityV2 {
             candle.liquidationHeatmapStamp = getLiquidationHeatmapStamp(movingCandles);
             
             candle.liquiditySweepInfo = getLiquiditySweepInfo(movingCandles);
+
+            candle.priceAction = getPriceAction(movingCandles);
 
             //candle.marketAlignment = getMarketAlignment(movingCandles,mainMarkets,interval);
 
