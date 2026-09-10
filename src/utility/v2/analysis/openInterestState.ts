@@ -2,10 +2,13 @@ import type {
     CandleInfo,
     SymbolInfo,
     OpenInterestHistEntry,
+    LongShortRatioEntry,
     OpenInterestState,
     OI_STATE,
     MARKET_INTERVAL,
 } from "@/core/interfacesv2";
+
+import { getLatestEntry, getPreviousEntry } from "./casualLookup";
 
 import {
     computePositioningState,
@@ -20,6 +23,11 @@ const CONFIG = {
     STRONG_CHANGE_PERCENT: 2.0,
 
     STRENGTH_MAX_CHANGE_PERCENT: 5.0,
+
+    // Flat threshold for long-account-share change, in percentage points
+    // (share is expressed 0-100). ARBITRARY, uncalibrated — same status as
+    // the constants above. Not validated against data yet.
+    ACCOUNT_SHARE_FLAT_THRESHOLD_PERCENT: 2.0,
 };
 
 function getOpenInterestHistory(
@@ -42,42 +50,68 @@ function getOpenInterestHistory(
     }
 }
 
-function getLatestOpenInterest(
-    history: OpenInterestHistEntry[],
-    timestamp: number
-): OpenInterestHistEntry | null {
+function getLongShortRatioHistory(
+    symbol: SymbolInfo,
+    interval: MARKET_INTERVAL
+): LongShortRatioEntry[] {
 
-    let result: OpenInterestHistEntry | null = null;
+    switch (interval) {
+        case "15m":
+            return symbol.ls_15m;
 
-    for (const entry of history) {
+        case "1h":
+            return symbol.ls_1h;
 
-        if (entry.timestamp > timestamp) {
-            break;
-        }
+        case "4h":
+            return symbol.ls_4h;
 
-        result = entry;
+        case "1d":
+            return symbol.ls_1d;
     }
-
-    return result;
 }
 
-function getPreviousOpenInterest(
-    history: OpenInterestHistEntry[],
-    timestamp: number,
+/**
+ * Long-account share as a percentage: longAccount / (longAccount +
+ * shortAccount) * 100. Kept separate from `longShortRatio` on the entry
+ * (which is longAccount/shortAccount, a different scale) since a share
+ * is what's directly comparable across time as a "trend".
+ */
+function longAccountSharePercent(entry: LongShortRatioEntry): number | null {
+    const total = entry.longAccount + entry.shortAccount;
+    if (total === 0) return null;
+    return (entry.longAccount / total) * 100;
+}
+
+/**
+ * Percent-point change in long-account share between the current candle's
+ * timestamp and `lookback` LS entries before it. Returns null when there
+ * isn't enough causal LS history to compute this — distinct from 0, which
+ * would legitimately mean "share unchanged".
+ */
+function computeAccountShareChangePercent(
+    symbol: SymbolInfo,
+    interval: MARKET_INTERVAL,
+    asOfTimestamp: number,
     lookback: number
-): OpenInterestHistEntry | null {
+): number | null {
 
-    const eligible = history.filter(
-        entry => entry.timestamp <= timestamp
-    );
+    const history = getLongShortRatioHistory(symbol, interval);
+    if (!history.length) return null;
 
-    if (eligible.length <= lookback) {
-        return eligible.length > 1
-            ? eligible[0]
-            : null;
-    }
+    const current = getLatestEntry(history, asOfTimestamp);
+    if (!current) return null;
 
-    return eligible[eligible.length - 1 - lookback];
+    const previous = getPreviousEntry(history, current.timestamp, lookback);
+    if (!previous) return null;
+
+    const currentShare = longAccountSharePercent(current);
+    const previousShare = longAccountSharePercent(previous);
+
+    if (currentShare === null || previousShare === null) return null;
+
+    // Difference in percentage points (not a percent-of-percent change) —
+    // shares are already 0-100, so a plain difference is the natural unit.
+    return currentShare - previousShare;
 }
 
 export function getOpenInterestState(
@@ -127,7 +161,7 @@ export function getOpenInterestState(
         };
     }
 
-    const current = getLatestOpenInterest(
+    const current = getLatestEntry(
         history,
         currentCandle.openTime
     );
@@ -152,7 +186,7 @@ export function getOpenInterestState(
         };
     }
 
-    const previous = getPreviousOpenInterest(
+    const previous = getPreviousEntry(
         history,
         current.timestamp,
         CONFIG.LOOKBACK
@@ -262,15 +296,27 @@ export function getOpenInterestState(
         );
     }
 
+    // Long/short account-share change, computed the same causal way as OI
+    // (as-of currentCandle.openTime, looking `CONFIG.LOOKBACK` LS entries
+    // back). Independent data source from OI — see computeAccountShareChangePercent.
+    const accountShareChangePercent = computeAccountShareChangePercent(
+        symbol,
+        interval,
+        currentCandle.openTime,
+        CONFIG.LOOKBACK
+    );
+
     // Positioning classification reuses the OI change data already
-    // computed above (single source of truth) and adds the price/volume
-    // side of the price x OI matrix. See positioningState.ts.
+    // computed above (single source of truth) and adds the price/volume/
+    // account-share side of the analysis. See positioningState.ts.
     const positioningState = computePositioningState({
         candles: movingCandles,
         lookback: CONFIG.LOOKBACK,
         oiChangePercent: valueChangePercent,
         oiFlatThresholdPercent: CONFIG.FLAT_THRESHOLD_PERCENT,
         oiMagnitude: strength,
+        accountShareChangePercent,
+        accountShareFlatThresholdPercent: CONFIG.ACCOUNT_SHARE_FLAT_THRESHOLD_PERCENT,
         timestamp: current.timestamp,
     });
 

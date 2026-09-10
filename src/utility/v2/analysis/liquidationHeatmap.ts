@@ -60,6 +60,16 @@ export interface LiquidationHeatmapResult {
   bucketHeight: number;
   /** The raw (pre-normalization) pool value of the hottest cell — useful for legends/debugging. */
   globalMaxPoolValue: number;
+  /**
+   * The raw, unfiltered, un-normalized per-bucket pool values as of the
+   * LAST candle in the input range (i.e. the final simulation state).
+   * `cells` is a lossy, display-oriented view of this (thresholded by
+   * HEATMAP_MIN_RENDER_RATIO and normalized against the global max) — use
+   * `finalPool` + `getPoolValueInRange` when you need an exact numeric
+   * answer (e.g. "how much resting liquidity sits in this exact price
+   * range") rather than a rendering.
+   */
+  finalPool: number[];
 }
 
 /** Low→high heat gradient: faint blue (cold) → yellow → red (hot). Opacity rises with intensity too, so a cold cell reads as "barely there" rather than just a different hue. */
@@ -79,6 +89,37 @@ function heatColor(intensity: number): string {
   return `rgba(${r},${g},${b},${0.33 + k * 0.55})`;
 }
 
+/**
+ * Walks every bucket that [low, high] overlaps and invokes `cb` with the
+ * bucket's own [bLow, bHigh] bounds, its index, and the overlap fraction
+ * (0..1) of [low, high] that falls inside that bucket. Shared by every
+ * caller that needs "which buckets does this price range touch, and how
+ * much" — previously this index math was duplicated between
+ * distributeIntoPool and clearSweptRange; now there's one place that can
+ * be wrong instead of two that can silently drift apart.
+ */
+function forEachOverlappingBucket(
+  low: number,
+  high: number,
+  rangeLow: number,
+  bucketHeight: number,
+  numBuckets: number,
+  cb: (bucketIndex: number, overlapFraction: number) => void
+) {
+  if (high <= low || bucketHeight <= 0) return;
+  const startIdx = Math.max(0, Math.floor((low - rangeLow) / bucketHeight));
+  const endIdx = Math.min(numBuckets - 1, Math.floor((high - rangeLow) / bucketHeight));
+  for (let idx = startIdx; idx <= endIdx; idx++) {
+    const bLow = rangeLow + idx * bucketHeight;
+    const bHigh = bLow + bucketHeight;
+    const overlapLow = Math.max(low, bLow);
+    const overlapHigh = Math.min(high, bHigh);
+    if (overlapHigh > overlapLow) {
+      cb(idx, (overlapHigh - overlapLow) / (high - low));
+    }
+  }
+}
+
 /** Adds `weight` into every bucket [low, high] overlaps, split proportionally by overlap fraction. */
 function distributeIntoPool(
   pool: number[],
@@ -89,18 +130,10 @@ function distributeIntoPool(
   bucketHeight: number,
   numBuckets: number
 ) {
-  if (weight <= 0 || high <= low || bucketHeight <= 0) return;
-  const startIdx = Math.max(0, Math.floor((low - rangeLow) / bucketHeight));
-  const endIdx = Math.min(numBuckets - 1, Math.floor((high - rangeLow) / bucketHeight));
-  for (let idx = startIdx; idx <= endIdx; idx++) {
-    const bLow = rangeLow + idx * bucketHeight;
-    const bHigh = bLow + bucketHeight;
-    const overlapLow = Math.max(low, bLow);
-    const overlapHigh = Math.min(high, bHigh);
-    if (overlapHigh > overlapLow) {
-      pool[idx] += weight * ((overlapHigh - overlapLow) / (high - low));
-    }
-  }
+  if (weight <= 0) return;
+  forEachOverlappingBucket(low, high, rangeLow, bucketHeight, numBuckets, (idx, frac) => {
+    pool[idx] += weight * frac;
+  });
 }
 
 /** Zeroes every bucket a candle's actual [low, high] traded through — that resting liquidity has been swept/grabbed. */
@@ -112,10 +145,40 @@ function clearSweptRange(
   bucketHeight: number,
   numBuckets: number
 ) {
-  if (high <= low || bucketHeight <= 0) return;
-  const startIdx = Math.max(0, Math.floor((low - rangeLow) / bucketHeight));
-  const endIdx = Math.min(numBuckets - 1, Math.floor((high - rangeLow) / bucketHeight));
-  for (let idx = startIdx; idx <= endIdx; idx++) pool[idx] = 0;
+  forEachOverlappingBucket(low, high, rangeLow, bucketHeight, numBuckets, (idx) => {
+    pool[idx] = 0;
+  });
+}
+
+/**
+ * Sums how much pool value currently rests inside [low, high], using the
+ * same overlap-fraction math as clearSweptRange — i.e. this returns
+ * exactly the amount clearSweptRange would have zeroed out if a candle
+ * with this exact [low, high] traded against this exact pool right now.
+ * Read-only: does not mutate `pool`.
+ *
+ * This is what makes "how much did this candle sweep" measurable from
+ * OUTSIDE the simulation loop, against a heatmap computed for an earlier
+ * point in time (e.g. "the heatmap as of the previous candle") — see
+ * getLiquiditySweepInfo in liquiditySweepInfo.ts.
+ */
+export function getPoolValueInRange(
+  result: Pick<LiquidationHeatmapResult, "finalPool" | "rangeLow" | "bucketHeight">,
+  low: number,
+  high: number
+): number {
+  let sum = 0;
+  forEachOverlappingBucket(
+    low,
+    high,
+    result.rangeLow,
+    result.bucketHeight,
+    result.finalPool.length,
+    (idx, frac) => {
+      sum += result.finalPool[idx] * frac;
+    }
+  );
+  return sum;
 }
 
 /**
@@ -220,6 +283,7 @@ export function getLiqudationHeatmap(candles: CandleInfo[]): LiquidationHeatmapR
     rangeHigh,
     bucketHeight,
     globalMaxPoolValue: globalMax,
+    finalPool: pool.slice(),
   };
 }
 

@@ -41,6 +41,13 @@
           @click="showPositioning = !showPositioning"
         >Positioning</button>
 
+        <button
+          class="chip"
+          :class="{ active: showLiquidityInfo }"
+          title="Show liquidity anchor lifecycle (building/active/ended, per side) and sweep events"
+          @click="showLiquidityInfo = !showLiquidityInfo"
+        >Liquidity Info</button>
+
         <div class="prop-select-group">
           <div
             v-for="(row, rowIdx) in propRows"
@@ -334,6 +341,78 @@
                 >
                   <title>{{ positioningTooltip(c.candle) }}</title>
                 </rect>
+
+                <!--
+                  Liquidity anchor markers (see LiquidationHeatmapStamp /
+                  LiquiditySweepInfo in interfacesv2.ts). Two independent
+                  per-side lifecycle markers (short above the candle, long
+                  below, since that's literally where each side's pool
+                  sits) plus a sweep star when this candle actually cleared
+                  a meaningful amount of resting liquidity. Deliberately
+                  different shapes/positions from the Positioning tick
+                  above so the two toggles never visually collide.
+                -->
+                <g v-if="showLiquidityInfo">
+                  <polygon
+                    v-if="liquiditySideMarker(c.candle, 'short') !== null"
+                    class="liquidity-marker liquidity-short"
+                    :class="liquiditySideMarker(c.candle, 'short')!.statusClass"
+                    :points="trianglePoints(candleX(c.gi), priceToY(c.candle.high) - 10, candleWidth * 0.5, 'up')"
+                    :fill="liquiditySideMarker(c.candle, 'short')!.filled ? '#a78bfa' : 'none'"
+                    stroke="#a78bfa"
+                    stroke-width="1"
+                    :opacity="liquiditySideMarker(c.candle, 'short')!.opacity"
+                  >
+                    <title>{{ liquidityStampTooltip(c.candle, 'short') }}</title>
+                  </polygon>
+                  <circle
+                    v-if="liquiditySideMarker(c.candle, 'short')?.ended"
+                    class="liquidity-ended-ring liquidity-short"
+                    :cx="candleX(c.gi)"
+                    :cy="priceToY(c.candle.high) - 10"
+                    r="5"
+                    fill="none"
+                    stroke="#a78bfa"
+                    stroke-width="1.5"
+                  >
+                    <title>{{ liquidityStampTooltip(c.candle, 'short') }}</title>
+                  </circle>
+
+                  <polygon
+                    v-if="liquiditySideMarker(c.candle, 'long') !== null"
+                    class="liquidity-marker liquidity-long"
+                    :class="liquiditySideMarker(c.candle, 'long')!.statusClass"
+                    :points="trianglePoints(candleX(c.gi), priceToY(c.candle.low) + 16, candleWidth * 0.5, 'down')"
+                    :fill="liquiditySideMarker(c.candle, 'long')!.filled ? '#2dd4bf' : 'none'"
+                    stroke="#2dd4bf"
+                    stroke-width="1"
+                    :opacity="liquiditySideMarker(c.candle, 'long')!.opacity"
+                  >
+                    <title>{{ liquidityStampTooltip(c.candle, 'long') }}</title>
+                  </polygon>
+                  <circle
+                    v-if="liquiditySideMarker(c.candle, 'long')?.ended"
+                    class="liquidity-ended-ring liquidity-long"
+                    :cx="candleX(c.gi)"
+                    :cy="priceToY(c.candle.low) + 16"
+                    r="5"
+                    fill="none"
+                    stroke="#2dd4bf"
+                    stroke-width="1.5"
+                  >
+                    <title>{{ liquidityStampTooltip(c.candle, 'long') }}</title>
+                  </circle>
+
+                  <polygon
+                    v-if="c.candle.liquiditySweepInfo?.behavior === 'SWEPT'"
+                    class="liquidity-sweep-star"
+                    :points="starPoints(candleX(c.gi), (priceToY(c.candle.high) + priceToY(c.candle.low)) / 2, 5 + sweepStarBoost(c.candle))"
+                    fill="#fbbf24"
+                    :opacity="sweepStarOpacity(c.candle)"
+                  >
+                    <title>{{ sweepTooltip(c.candle) }}</title>
+                  </polygon>
+                </g>
 
               </g>
             </g>
@@ -794,18 +873,39 @@
           </div>
         </template>
 
-        <!-- Positioning legend: what each marker color means. Only shown
-             while the Positioning toggle is on, so it doesn't clutter the
-             chart when the feature isn't in use. -->
-        <div v-if="showPositioning" class="positioning-legend">
-          <div class="positioning-legend-title">Positioning</div>
-          <div
-            v-for="item in POSITIONING_LEGEND"
-            :key="item.behavior"
-            class="positioning-legend-row"
-          >
-            <span class="positioning-legend-swatch" :style="{ background: item.color }"></span>
-            <span class="positioning-legend-label">{{ item.label }}</span>
+        <!-- Chart legends, stacked top-right. Each individual legend only
+             renders while its corresponding toggle is on. Using a flex
+             column wrapper (rather than each legend absolutely positioning
+             itself) so adding more legends later doesn't require guessing
+             pixel offsets to avoid overlap. -->
+        <div class="chart-legends">
+          <div v-if="showPositioning" class="legend-box">
+            <div class="legend-title">Positioning</div>
+            <div
+              v-for="item in POSITIONING_LEGEND"
+              :key="item.behavior"
+              class="legend-row"
+            >
+              <span class="legend-swatch" :style="{ background: item.color }"></span>
+              <span class="legend-label">{{ item.label }}</span>
+            </div>
+          </div>
+
+          <div v-if="showLiquidityInfo" class="legend-box">
+            <div class="legend-title">Liquidity</div>
+            <div class="legend-row">
+              <svg class="legend-shape" viewBox="0 0 12 12"><polygon points="6,1 11,10 1,10" fill="#2dd4bf" /></svg>
+              <span class="legend-label">Long-side liquidity (below price)</span>
+            </div>
+            <div class="legend-row">
+              <svg class="legend-shape" viewBox="0 0 12 12"><polygon points="1,2 11,2 6,11" fill="#a78bfa" /></svg>
+              <span class="legend-label">Short-side liquidity (above price)</span>
+            </div>
+            <div class="legend-row liquidity-legend-note">hollow = building · solid = active · ring = ended</div>
+            <div class="legend-row">
+              <svg class="legend-shape" viewBox="0 0 12 12"><polygon points="6,0 7.5,4.5 12,6 7.5,7.5 6,12 4.5,7.5 0,6 4.5,4.5" fill="#fbbf24" /></svg>
+              <span class="legend-label">Liquidity swept this candle</span>
+            </div>
           </div>
         </div>
 
@@ -2070,8 +2170,99 @@ function positioningTooltip(candle: CandleInfo): string {
     `price: ${p.priceDirection} ${p.priceChangePercent.toFixed(2)}% (${p.priceChangeAtr.toFixed(2)}x ATR)`,
     `OI: ${p.oiDirection} ${p.oiChangePercent.toFixed(2)}%`,
     `volume: ${p.volumeDirection} ${p.volumeChangePercent.toFixed(2)}% (${p.volumeConfirmation})`,
+    `long/short accounts: ${p.accountShareDirection} ${p.accountShareChangePercent.toFixed(2)}pp (${p.accountAgreement})`,
     "",
     ...p.reasons,
+  ];
+  return lines.join("\n");
+}
+
+// ── Liquidity anchor markers (lifecycle + sweep) ────────────────────────
+// Pure display mapping from LiquidationHeatmapStamp / LiquiditySweepInfo.
+// Deliberately different shapes/positions/colors from the Positioning tick
+// (triangles above/below the candle, not a strip under the low) so both
+// toggles can be on at once without overlapping visually. Long = teal
+// (pool sits below price), short = violet (pool sits above price) — a
+// different palette from Positioning's green/blue/red/amber on purpose,
+// since the two concepts can be visible together and shouldn't be
+// confused for the same color language.
+
+interface LiquiditySideMarker {
+  filled: boolean;    // true = ACTIVE (solid triangle), false = BUILDING (hollow)
+  ended: boolean;     // true = also draw the "ended" ring on top
+  opacity: number;
+  statusClass: string;
+}
+
+function liquiditySideMarker(candle: CandleInfo, side: "long" | "short"): LiquiditySideMarker | null {
+  const stamp = candle.liquidationHeatmapStamp?.[side];
+  if (!stamp || stamp.status === "NONE") return null;
+
+  if (stamp.status === "BUILDING") {
+    return { filled: false, ended: false, opacity: 0.55, statusClass: "liquidity-building" };
+  }
+  if (stamp.status === "ACTIVE") {
+    return { filled: true, ended: false, opacity: 0.9, statusClass: "liquidity-active" };
+  }
+  // ENDED — solid fill (it was active up until this candle) plus a ring
+  // drawn separately to mark "resolved here".
+  return { filled: true, ended: true, opacity: 0.9, statusClass: "liquidity-ended" };
+}
+
+/** Upward or downward equilateral-ish triangle, centered at (cx, cy). */
+function trianglePoints(cx: number, cy: number, size: number, dir: "up" | "down"): string {
+  const half = size / 2;
+  if (dir === "up") {
+    return `${cx},${cy - half} ${cx + half},${cy + half} ${cx - half},${cy + half}`;
+  }
+  return `${cx},${cy + half} ${cx + half},${cy - half} ${cx - half},${cy - half}`;
+}
+
+/** 8-point star, centered at (cx, cy), for the sweep marker. */
+function starPoints(cx: number, cy: number, r: number): string {
+  const inner = r * 0.45;
+  const pts: string[] = [];
+  for (let i = 0; i < 8; i++) {
+    const radius = i % 2 === 0 ? r : inner;
+    const angle = (Math.PI / 4) * i - Math.PI / 2;
+    pts.push(`${cx + radius * Math.cos(angle)},${cy + radius * Math.sin(angle)}`);
+  }
+  return pts.join(" ");
+}
+
+function sweepStarOpacity(candle: CandleInfo): number {
+  const ratio = candle.liquiditySweepInfo?.sweptRatio ?? 0;
+  return 0.4 + Math.max(0, Math.min(1, ratio)) * 0.6;
+}
+
+function sweepStarBoost(candle: CandleInfo): number {
+  const ratio = candle.liquiditySweepInfo?.sweptRatio ?? 0;
+  return Math.max(0, Math.min(1, ratio)) * 4; // up to +4px radius for a big sweep
+}
+
+function liquidityStampTooltip(candle: CandleInfo, side: "long" | "short"): string {
+  const stamp = candle.liquidationHeatmapStamp?.[side];
+  if (!stamp) return "No liquidity data";
+  const lines: string[] = [`${side.toUpperCase()} side: ${stamp.status}`];
+  if (stamp.eventOpenTime) lines.push(`started: ${formatDateTime(stamp.eventOpenTime)}`);
+  if (stamp.confirmedOpenTime) lines.push(`confirmed: ${formatDateTime(stamp.confirmedOpenTime)}`);
+  if (stamp.endOpenTime) lines.push(`ended: ${formatDateTime(stamp.endOpenTime)}`);
+  if (stamp.clusterId) lines.push(`cluster: ${stamp.clusterId}`);
+  lines.push(`run length: ${stamp.runLength}`);
+  lines.push("");
+  lines.push(...(candle.liquidationHeatmapStamp?.reasons ?? []));
+  return lines.join("\n");
+}
+
+function sweepTooltip(candle: CandleInfo): string {
+  const s = candle.liquiditySweepInfo;
+  if (!s) return "No sweep data";
+  const lines = [
+    `${s.behavior} (${(s.sweptRatio * 100).toFixed(1)}% of anchor's peak pool)`,
+    `measured against: ${s.measuredSides.join(" + ") || "none"}`,
+    `swept range: [${s.sweptPriceLow?.toFixed(2) ?? "?"}, ${s.sweptPriceHigh?.toFixed(2) ?? "?"}]`,
+    "",
+    ...s.reasons,
   ];
   return lines.join("\n");
 }
@@ -2162,6 +2353,11 @@ const showCrossTfEma = ref(false);
 // same pattern as showCrossTfEma. Kept separate from any "OI state" naming
 // since positioningState is a distinct derived concept (see positioningState.ts).
 const showPositioning = ref(false);
+
+// Toggles the liquidity-anchor visualization: per-side (long/short)
+// lifecycle markers from liquidationHeatmapStamp (building/active/ended)
+// plus a sweep marker from liquiditySweepInfo. Off by default.
+const showLiquidityInfo = ref(false);
 
 // ── Liquidity heatmap tool ─────────────────────────────────────────────
 
@@ -3688,6 +3884,11 @@ width: 30rem;
 .hud-item.positioning-neutral,
 .hud-item.positioning-insufficient-data { color: #6b7280; }
 
+.liquidity-marker { cursor: default; }
+.liquidity-marker.liquidity-building { stroke-dasharray: 2,1; }
+.liquidity-ended-ring { cursor: default; pointer-events: none; }
+.liquidity-sweep-star { cursor: default; }
+
 .hud-reasons {
     color: #9aa4b2;
     font-weight: 400;
@@ -3698,19 +3899,25 @@ width: 30rem;
     white-space: nowrap;
 }
 
-.positioning-legend {
+.chart-legends {
     position: absolute; top: 6px; right: 6px; z-index: 15;
+    display: flex; flex-direction: column; gap: 6px;
+    pointer-events: none;
+}
+.legend-box {
     background: rgba(10,13,18,.88); border: 1px solid rgba(255,255,255,.12);
     border-radius: 6px; padding: 6px 8px; font-family: var(--mono); font-size: 10px;
-    pointer-events: none; display: flex; flex-direction: column; gap: 3px;
+    display: flex; flex-direction: column; gap: 3px;
 }
-.positioning-legend-title {
+.legend-title {
     color: #9aa4b2; text-transform: uppercase; letter-spacing: .5px;
     font-size: 9px; margin-bottom: 2px;
 }
-.positioning-legend-row { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-.positioning-legend-swatch {
+.legend-row { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.legend-swatch {
     width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto;
 }
-.positioning-legend-label { color: #cdd3db; }
+.legend-shape { width: 12px; height: 12px; flex: 0 0 auto; }
+.legend-label { color: #cdd3db; }
+.liquidity-legend-note { color: #7d8590; font-style: italic; font-size: 9px; }
 </style>

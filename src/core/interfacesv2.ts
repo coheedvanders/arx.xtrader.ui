@@ -69,6 +69,107 @@ export type LS_STATE =
     | 'SHORT_INCREASING'
     | 'NEUTRAL'
 
+export type TREND_DIRECTION =
+    | 'RISING'
+    | 'FALLING'
+    | 'FLAT'
+    | 'INSUFFICIENT_DATA'
+
+export type POSITIONING_BEHAVIOR =
+    | 'LONG_BUILDUP'      // price rising + OI rising    -> new longs entering
+    | 'SHORT_COVERING'    // price rising + OI falling   -> shorts closing
+    | 'SHORT_BUILDUP'     // price falling + OI rising   -> new shorts entering
+    | 'LONG_UNWINDING'    // price falling + OI falling  -> longs closing / profit booking
+    | 'NEUTRAL'           // price or OI flat -> not classified
+    | 'INSUFFICIENT_DATA'
+
+// Generic "does this second signal agree with the primary trend" result.
+// Reused for both volume-vs-OI confirmation and long/short-account-share-
+// vs-price agreement, since both are structurally the same comparison
+// (CONFIRMS / DIVERGES / NEUTRAL / INSUFFICIENT_DATA) — kept as one type
+// rather than two identical ones per the project's "avoid abstraction for
+// its own sake" rule cutting the other way here (these really are the same
+// concept applied twice).
+export type VOLUME_CONFIRMATION =
+    | 'CONFIRMS'
+    | 'DIVERGES'
+    | 'NEUTRAL'
+    | 'INSUFFICIENT_DATA'
+
+export type LIQUIDITY_ANCHOR_STATUS =
+    | 'BUILDING'    // OI buildup run in progress on this side, not yet long enough to confirm
+    | 'ACTIVE'      // confirmed: this side's cluster is live and its heatmap should be tracked
+    | 'ENDED'       // same-side OI unwind occurred on this candle -> cluster resolved as of here
+    | 'NONE'        // no buildup happening on this side, no active/pending cluster
+
+/**
+ * Lifecycle state for ONE side (long or short) of a liquidity anchor.
+ * Long and short sides are tracked independently and can be active
+ * simultaneously — see liquidationHeatmap.ts's own docstring: it models a
+ * long-side pool and a short-side pool as coexisting at all times, so
+ * forcing a single unified "the anchor" status would misrepresent that.
+ */
+export interface LiquiditySideStamp {
+    status: LIQUIDITY_ANCHOR_STATUS
+
+    /** Groups every candle belonging to the same episode. Null when status is NONE. */
+    clusterId: string | null
+
+    /** First candle of the OI-buildup run — the anchor/heatmap-start candidate. */
+    eventOpenTime: number | null
+    /** Index of that candle within whatever candles array produced this stamp. */
+    eventCandleIndex: number | null
+
+    /** When the run reached the confirmation threshold and became ACTIVE. */
+    confirmedOpenTime: number | null
+
+    /** Candle where the same-side unwind occurred and the cluster was marked ENDED. */
+    endOpenTime: number | null
+
+    /** How many consecutive same-direction buildup candles seen so far (diagnostic; resets on break). */
+    runLength: number
+}
+
+export interface LiquidationHeatmapStamp {
+    long: LiquiditySideStamp
+    short: LiquiditySideStamp
+
+    timestamp: number
+    reasons: string[]
+}
+
+export type LIQUIDITY_SWEEP_BEHAVIOR =
+    | 'SWEPT'             // this candle's range cleared a meaningful amount of an active anchor's resting pool
+    | 'NO_SWEEP'          // an active anchor exists, but this candle didn't clear a meaningful amount
+    | 'NO_ACTIVE_HEATMAP' // no ACTIVE long or short cluster to measure against
+
+export interface LiquiditySweepInfo {
+    behavior: LIQUIDITY_SWEEP_BEHAVIOR
+
+    /** Raw pool value this candle's [low, high] cleared from the active anchor's heatmap. */
+    sweptValue: number
+    /** sweptValue / that heatmap's own globalMaxPoolValue (0-1). Normalized within this anchor only. */
+    sweptRatio: number
+
+    sweptPriceLow: number | null
+    sweptPriceHigh: number | null
+
+    /**
+     * Which side(s) were ACTIVE and therefore in-scope for this
+     * measurement. NOTE: the underlying heatmap pool does not separate
+     * long vs short contributions by bucket (one merged pool — see
+     * liquidationHeatmap.ts), so `sweptValue` cannot be split into "how
+     * much was long-side vs short-side" — only which side(s)' anchors were
+     * live is known, not the composition of what got cleared.
+     */
+    measuredSides: Array<'LONG' | 'SHORT'>
+
+    anchorClusterIds: string[]
+
+    timestamp: number
+    reasons: string[]
+}
+
 export type MARKET_REGIME =
     | 'TREND_UP'
     | 'TREND_DOWN'
@@ -119,26 +220,6 @@ export type TRADE_LEVEL_TYPE =
     | 'AVWAP'
     | 'LIQUIDITY'
 
-export type TREND_DIRECTION =
-    | 'RISING'
-    | 'FALLING'
-    | 'FLAT'
-    | 'INSUFFICIENT_DATA'
-
-export type POSITIONING_BEHAVIOR =
-    | 'LONG_BUILDUP'      // price rising + OI rising    -> new longs entering
-    | 'SHORT_COVERING'    // price rising + OI falling   -> shorts closing
-    | 'SHORT_BUILDUP'     // price falling + OI rising   -> new shorts entering
-    | 'LONG_UNWINDING'    // price falling + OI falling  -> longs closing / profit booking
-    | 'NEUTRAL'           // price or OI flat -> not classified
-    | 'INSUFFICIENT_DATA'
-
-export type VOLUME_CONFIRMATION =
-    | 'CONFIRMS'          // volume trend matches OI trend over the same window
-    | 'DIVERGES'          // volume trend contradicts OI trend
-    | 'NEUTRAL'           // volume or OI flat -> confirmation not meaningful
-    | 'INSUFFICIENT_DATA'
-
 export interface SymbolInfo {
     name: string
 
@@ -183,6 +264,10 @@ export interface CandleInfo {
     volumeState: VolumeState
 
     marketAlignment: MarketAlignment
+
+    liquidationHeatmapStamp: LiquidationHeatmapStamp
+
+    liquiditySweepInfo: LiquiditySweepInfo
 
     confluenceScore?: ConfluenceScore
 }
@@ -339,24 +424,6 @@ export interface PriceAction {
     reasons: string[]
 }
 
-export interface OpenInterestState {
-    value: number
-    valueChange: number
-    valueChangePercent: number
-
-    direction: MARKET_DIRECTION
-
-    state: OI_STATE
-
-    strength: number
-
-    timestamp: number
-
-    reasons: string[]
-
-    positioningState: PositioningState
-}
-
 export interface PositioningState {
     behavior: POSITIONING_BEHAVIOR
 
@@ -377,10 +444,38 @@ export interface PositioningState {
     volumeChangePercent: number
     volumeConfirmation: VOLUME_CONFIRMATION
 
+    // Independent signal from LongShortRatioEntry account counts. Checks
+    // whether the crowd's long-account share is trending the same way as
+    // price — NOT the same thing as oiDirection (see positioningState.ts
+    // module comment: account count and OI notional can move differently).
+    // This does NOT feed into `strength` above; it's reported separately
+    // so it can be inspected/validated on its own before being trusted.
+    accountShareDirection: TREND_DIRECTION
+    accountShareChangePercent: number
+    accountAgreement: VOLUME_CONFIRMATION
+
     lookback: number
     timestamp: number
 
     reasons: string[]
+}
+
+export interface OpenInterestState {
+    value: number
+    valueChange: number
+    valueChangePercent: number
+
+    direction: MARKET_DIRECTION
+
+    state: OI_STATE
+
+    strength: number
+
+    timestamp: number
+
+    reasons: string[]
+
+    positioningState: PositioningState
 }
 
 export interface LongShortState {

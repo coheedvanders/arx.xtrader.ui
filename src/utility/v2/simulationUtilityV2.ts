@@ -10,6 +10,8 @@ import { getVolumeState } from "./analysis/volumeState";
 import { KlineUtility } from "../klineUtility";
 import { getMarketAlignment } from "./analysis/marketAlignment";
 import { getConfluenceScore } from "./analysis/confluenceScore";
+import { getLiquidationHeatmapStamp } from "./analysis/liquidationHeatmapStamp";
+import { getLiquiditySweepInfo } from "./analysis/liquidationSweepInfo";
 
 export class SimulationUtilityV2 {
     static async constructSymbolInfo(symbol:string,limit:number){
@@ -59,7 +61,11 @@ export class SimulationUtilityV2 {
 
             candle.longShort = getLongShortRatioState(targetSymbol,movingCandles,interval);
 
-            candle.volumeState = getVolumeState(movingCandles)
+            candle.volumeState = getVolumeState(movingCandles);
+
+            candle.liquidationHeatmapStamp = getLiquidationHeatmapStamp(movingCandles);
+            
+            candle.liquiditySweepInfo = getLiquiditySweepInfo(movingCandles);
 
             //candle.marketAlignment = getMarketAlignment(movingCandles,mainMarkets,interval);
 

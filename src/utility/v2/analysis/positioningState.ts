@@ -7,7 +7,8 @@ import type {
 } from "@/core/interfacesv2";
 
 /**
- * Config for the price/volume side of positioning classification.
+ * Config for the price/volume/account-share side of positioning
+ * classification.
  *
  * These are ARBITRARY, uncalibrated constants — same status as the
  * pre-existing OI strength constants in openInterestState.ts. They have
@@ -34,7 +35,7 @@ export interface PositioningInput {
      */
     candles: CandleInfo[]
 
-    /** Number of candles back used for the price/OI comparison window. */
+    /** Number of candles back used for the price/OI/account comparison window. */
     lookback: number
 
     /** OI percent change already computed by the caller (single source of truth). */
@@ -45,6 +46,18 @@ export interface PositioningInput {
 
     /** OI magnitude (0-100) already computed by the caller. */
     oiMagnitude: number
+
+    /**
+     * Percent change in long-account share (longAccount / (longAccount +
+     * shortAccount)) over the lookback window, already computed by the
+     * caller from LongShortRatioEntry history. `null` when there isn't
+     * enough long/short ratio history to compute it — kept distinct from
+     * `0`, which would legitimately mean "no change".
+     */
+    accountShareChangePercent: number | null
+
+    /** Flat threshold for account share change, in percentage points. */
+    accountShareFlatThresholdPercent: number
 
     timestamp: number
 }
@@ -67,16 +80,26 @@ function average(values: number[]): number {
     return values.reduce((sum, v) => sum + v, 0) / values.length;
 }
 
-function classifyOiDirection(
-    oiChangePercent: number,
+/**
+ * Classifies a percent-change value into RISING/FALLING/FLAT against a
+ * flat threshold, or INSUFFICIENT_DATA when the value itself is unknown.
+ * Shared by OI direction and account-share direction — both are "percent
+ * change vs a flat threshold" classifications, just over different data.
+ */
+function classifyTrendFromPercent(
+    changePercent: number | null,
     flatThresholdPercent: number
 ): TREND_DIRECTION {
 
-    if (Math.abs(oiChangePercent) <= flatThresholdPercent) {
+    if (changePercent === null) {
+        return "INSUFFICIENT_DATA";
+    }
+
+    if (Math.abs(changePercent) <= flatThresholdPercent) {
         return "FLAT";
     }
 
-    return oiChangePercent > 0 ? "RISING" : "FALLING";
+    return changePercent > 0 ? "RISING" : "FALLING";
 }
 
 function computePriceComponent(
@@ -193,23 +216,25 @@ function classifyBehavior(
     return "LONG_UNWINDING";
 }
 
-function classifyVolumeConfirmation(
-    volumeDirection: TREND_DIRECTION,
-    oiDirection: TREND_DIRECTION
+/**
+ * Generic "does trend A agree with trend B" classifier. Used both for
+ * volume-vs-OI confirmation and account-share-vs-price agreement — same
+ * comparison, different inputs.
+ */
+function classifyTrendAgreement(
+    a: TREND_DIRECTION,
+    b: TREND_DIRECTION
 ): VOLUME_CONFIRMATION {
 
-    if (
-        volumeDirection === "INSUFFICIENT_DATA" ||
-        oiDirection === "INSUFFICIENT_DATA"
-    ) {
+    if (a === "INSUFFICIENT_DATA" || b === "INSUFFICIENT_DATA") {
         return "INSUFFICIENT_DATA";
     }
 
-    if (volumeDirection === "FLAT" || oiDirection === "FLAT") {
+    if (a === "FLAT" || b === "FLAT") {
         return "NEUTRAL";
     }
 
-    return volumeDirection === oiDirection ? "CONFIRMS" : "DIVERGES";
+    return a === b ? "CONFIRMS" : "DIVERGES";
 }
 
 export function emptyPositioningState(
@@ -236,6 +261,10 @@ export function emptyPositioningState(
         volumeChangePercent: 0,
         volumeConfirmation: "INSUFFICIENT_DATA",
 
+        accountShareDirection: "INSUFFICIENT_DATA",
+        accountShareChangePercent: 0,
+        accountAgreement: "INSUFFICIENT_DATA",
+
         lookback,
         timestamp,
 
@@ -247,10 +276,17 @@ export function emptyPositioningState(
  * Classifies price/OI positioning behavior into the four textbook
  * quadrants (long buildup, short covering, short buildup, long
  * unwinding), reports the magnitude of each contributing leg, and
- * separately reports whether volume corroborates the OI move.
+ * separately reports two independent confirmation channels:
+ *   - volume vs OI (does volume corroborate the OI move)
+ *   - long-account share vs price (does crowd positioning agree with
+ *     the direction price is moving)
+ *
+ * Neither confirmation channel feeds into `strength` or `behavior` — they
+ * are reported as-is so they can be inspected and validated on their own
+ * before being trusted or acted on.
  *
  * Pure function: no I/O, no hidden state. All inputs must already be
- * causal (no candle in `candles` may close after `timestamp`).
+ * causal (no candle/entry may reflect data after `timestamp`).
  */
 export function computePositioningState(
     input: PositioningInput
@@ -262,6 +298,8 @@ export function computePositioningState(
         oiChangePercent,
         oiFlatThresholdPercent,
         oiMagnitude,
+        accountShareChangePercent,
+        accountShareFlatThresholdPercent,
         timestamp,
     } = input;
 
@@ -275,15 +313,27 @@ export function computePositioningState(
 
     const price = computePriceComponent(candles, lookback);
     const volume = computeVolumeComponent(candles, lookback);
-    const oiDirection = classifyOiDirection(
+
+    const oiDirection = classifyTrendFromPercent(
         oiChangePercent,
         oiFlatThresholdPercent
     );
 
+    const accountShareDirection = classifyTrendFromPercent(
+        accountShareChangePercent,
+        accountShareFlatThresholdPercent
+    );
+
     const behavior = classifyBehavior(price.direction, oiDirection);
-    const volumeConfirmation = classifyVolumeConfirmation(
+
+    const volumeConfirmation = classifyTrendAgreement(
         volume.direction,
         oiDirection
+    );
+
+    const accountAgreement = classifyTrendAgreement(
+        accountShareDirection,
+        price.direction
     );
 
     const isQuadrant =
@@ -327,6 +377,14 @@ export function computePositioningState(
         );
     }
 
+    if (accountShareDirection === "INSUFFICIENT_DATA") {
+        reasons.push("Not enough long/short account ratio history to check crowd agreement");
+    } else {
+        reasons.push(
+            `Long-account share ${accountShareDirection.toLowerCase()} ${(accountShareChangePercent as number).toFixed(2)}pp over the same window`
+        );
+    }
+
     switch (behavior) {
         case "LONG_BUILDUP":
             reasons.push(
@@ -365,6 +423,14 @@ export function computePositioningState(
         );
     }
 
+    if (accountAgreement === "CONFIRMS") {
+        reasons.push("Long-account share is trending with price — crowd agrees with the move");
+    } else if (accountAgreement === "DIVERGES") {
+        reasons.push(
+            "Long-account share is trending against price — crowd positioning disagrees with the move"
+        );
+    }
+
     return {
         behavior,
         strength,
@@ -382,6 +448,10 @@ export function computePositioningState(
         volumeDirection: volume.direction,
         volumeChangePercent: volume.changePercent,
         volumeConfirmation,
+
+        accountShareDirection,
+        accountShareChangePercent: accountShareChangePercent ?? 0,
+        accountAgreement,
 
         lookback,
         timestamp,
