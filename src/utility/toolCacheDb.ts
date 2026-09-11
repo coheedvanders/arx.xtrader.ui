@@ -30,6 +30,7 @@ export interface ToolCachePayload {
   verticalLines: unknown[];
   priceRangeBoxes: unknown[];
   textAnnotations: unknown[];
+  positions: unknown[];
   updatedAt: number;
 }
 

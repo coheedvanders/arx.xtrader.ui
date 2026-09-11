@@ -57,6 +57,32 @@
 
         <button
           class="chip"
+          :class="{ active: trainingMode }"
+          title="Training Mode: backtest replay. N = next candle, B = back 1, 5 = jump 5"
+          @click="trainingMode = !trainingMode"
+        >Training Mode</button>
+
+        <label class="chip training-start-index-label" title="Candle index Training Mode starts from — remembered across sessions">
+          Start idx:
+          <input
+            type="number"
+            min="0"
+            step="1"
+            v-model.number="trainingStartIndex"
+            class="training-start-index-input"
+            @change="onTrainingStartIndexChange"
+          />
+        </label>
+
+        <template v-if="trainingMode">
+          <button class="chip" title="Back 1 candle (B)" @click="advanceTraining(-1)">◀</button>
+          <button class="chip" title="Next candle (N)" @click="advanceTraining(1)">▶</button>
+          <button class="chip" title="Jump 5 candles (5)" @click="advanceTraining(5)">▶▶5</button>
+          <span class="chip training-position-readout">{{ (trainingIndex ?? 0) + 1 }} / {{ primaryCandles.length }}</span>
+        </template>
+
+        <button
+          class="chip"
           title="Open the movement analyzer — dynamic-horizon outcome analysis, downloadable as JSON"
           @click="showMovementAnalyzer = true"
         >Movement Analyzer</button>
@@ -148,6 +174,12 @@
           title="Notes"
           @click="notesOpen = !notesOpen"
         >🗒{{ notes.length ? ` ${notes.length}` : "" }}</button>
+        <button
+          class="icon-btn notes-toolbar"
+          :class="{ active: scoreOpen }"
+          title="Score — manual trade journal"
+          @click="scoreOpen = !scoreOpen"
+        >🎯{{ scoreEntries.length ? ` ${scoreEntries.length}` : "" }}</button>
         <button class="icon-btn" title="Keyboard shortcuts (?)" @click="showHotkeysModal = true">⌨</button>
       </div>
     </div>
@@ -187,6 +219,57 @@
           </template>
         </div>
         <div v-if="notes.length === 0" class="notes-panel-empty">No notes yet.</div>
+      </div>
+    </div>
+
+    <!-- Score panel: GLOBAL manual trade journal, stored in IndexedDB, shared across every symbol -->
+    <div v-if="scoreOpen" class="notes-panel score-panel">
+      <div class="notes-panel-header">
+        <span>Score</span>
+        <button class="close-btn" @click="scoreOpen = false">✕</button>
+      </div>
+
+      <div class="score-summary">
+        <div><span class="score-summary-label">Trades</span><span class="score-summary-value">{{ scoreSummary.total }}</span></div>
+        <div><span class="score-summary-label">Win rate</span><span class="score-summary-value">{{ scoreSummary.total ? scoreSummary.winRate.toFixed(0) + '%' : '—' }}</span></div>
+        <div><span class="score-summary-label">W / L</span><span class="score-summary-value">{{ scoreSummary.wins }} / {{ scoreSummary.losses }}</span></div>
+        <div><span class="score-summary-label">Total R</span><span class="score-summary-value">{{ scoreSummary.hasR ? (scoreSummary.totalR >= 0 ? '+' : '') + scoreSummary.totalR.toFixed(2) : '—' }}</span></div>
+        <div><span class="score-summary-label">Avg R</span><span class="score-summary-value">{{ scoreSummary.hasR ? (scoreSummary.avgR >= 0 ? '+' : '') + scoreSummary.avgR.toFixed(2) : '—' }}</span></div>
+      </div>
+
+      <div class="notes-panel-add score-panel-add">
+        <div class="score-result-toggle">
+          <button :class="{ active: newScoreResult === 'win' }" @click="newScoreResult = 'win'">Win</button>
+          <button :class="{ active: newScoreResult === 'loss' }" @click="newScoreResult = 'loss'">Loss</button>
+        </div>
+        <input type="number" step="any" v-model="newScoreR" class="score-r-input" placeholder="R (optional)" />
+        <textarea
+          v-model="newScoreNote"
+          rows="1"
+          placeholder="Note (optional)…"
+          @keydown.enter.exact.prevent="addScoreEntry"
+        ></textarea>
+        <button @click="addScoreEntry">Add</button>
+      </div>
+
+      <div class="notes-panel-list">
+        <div v-for="s in scoreEntries" :key="s.id" class="note-item score-item">
+          <div class="score-item-row">
+            <span class="score-badge" :class="s.result">{{ s.result.toUpperCase() }}</span>
+            <span v-if="s.rMultiple !== null" class="score-item-r">{{ s.rMultiple >= 0 ? '+' : '' }}{{ s.rMultiple.toFixed(2) }}R</span>
+            <span class="note-item-symbol">{{ s.symbol }}</span>
+          </div>
+          <p v-if="s.note" class="note-item-text">{{ s.note }}</p>
+          <div class="note-item-actions">
+            <span class="note-item-time">{{ formatAxisTime(s.createdAt) }}</span>
+            <button @click="removeScoreEntry(s.id)">Delete</button>
+          </div>
+        </div>
+        <div v-if="scoreEntries.length === 0" class="notes-panel-empty">No trades logged yet.</div>
+      </div>
+
+      <div class="score-panel-footer">
+        <button class="score-clear-btn" :disabled="!scoreEntries.length" @click="clearAllScores">Clear All</button>
       </div>
     </div>
 
@@ -658,6 +741,83 @@
               <text class="drawing-remove" :x="Math.max(candleXAtTime(r.x1), candleXAtTime(r.x2)) - 4" :y="Math.min(priceToY(r.y1), priceToY(r.y2)) - 6" text-anchor="end" @click.stop="removeDrawing('rectangle', r.id)">✕</text>
             </g>
 
+            <!-- long/short positions -->
+            <g
+              v-for="p in positions"
+              :key="p.id"
+              class="drawing-group"
+              @mousedown.stop="selectDrawing('position', p.id)"
+              @dblclick.stop="startPositionEdit(p.id)"
+            >
+              <!-- profit zone: above entry for long, below entry for short -->
+              <rect
+                class="position-zone position-profit"
+                :class="{ selected: isDrawingSelected('position', p.id) }"
+                :x="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2))"
+                :y="Math.min(priceToY(p.entry), priceToY(p.tp))"
+                :width="Math.max(2, Math.abs(candleXAtTime(p.x2) - candleXAtTime(p.x1)))"
+                :height="Math.max(1, Math.abs(priceToY(p.entry) - priceToY(p.tp)))"
+                @mousedown="startDrawingMove('position', p.id, $event)"
+              />
+              <!-- loss zone: below entry for long, above entry for short -->
+              <rect
+                class="position-zone position-loss"
+                :class="{ selected: isDrawingSelected('position', p.id) }"
+                :x="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2))"
+                :y="Math.min(priceToY(p.entry), priceToY(p.sl))"
+                :width="Math.max(2, Math.abs(candleXAtTime(p.x2) - candleXAtTime(p.x1)))"
+                :height="Math.max(1, Math.abs(priceToY(p.entry) - priceToY(p.sl)))"
+                @mousedown="startDrawingMove('position', p.id, $event)"
+              />
+
+              <!-- entry line -->
+              <line class="position-entry-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2))" :y1="priceToY(p.entry)" :y2="priceToY(p.entry)" />
+              <line class="position-hit-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2))" :y1="priceToY(p.entry)" :y2="priceToY(p.entry)" @mousedown.stop="startPositionLevelDrag(p.id, 'entry', $event)" />
+              <text class="position-level-label position-entry-label" :x="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2)) + 4" :y="priceToY(p.entry) + 3">Entry {{ formatPrice(p.entry) }}</text>
+
+              <!-- take-profit line -->
+              <line class="position-tp-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2))" :y1="priceToY(p.tp)" :y2="priceToY(p.tp)" />
+              <line class="position-hit-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2))" :y1="priceToY(p.tp)" :y2="priceToY(p.tp)" @mousedown.stop="startPositionLevelDrag(p.id, 'tp', $event)" />
+              <text class="position-level-label position-tp-label" :x="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2)) + 4" :y="priceToY(p.tp) + 3">TP {{ formatPrice(p.tp) }}</text>
+
+              <!-- stop-loss line -->
+              <line class="position-sl-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2))" :y1="priceToY(p.sl)" :y2="priceToY(p.sl)" />
+              <line class="position-hit-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2))" :y1="priceToY(p.sl)" :y2="priceToY(p.sl)" @mousedown.stop="startPositionLevelDrag(p.id, 'sl', $event)" />
+              <text class="position-level-label position-sl-label" :x="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2)) + 4" :y="priceToY(p.sl) + 3">SL {{ formatPrice(p.sl) }}</text>
+
+              <!-- info readout -->
+              <text class="position-info-label" :x="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2)) + 4" :y="Math.min(priceToY(p.tp), priceToY(p.sl)) - 6">
+                {{ p.kind.toUpperCase() }} · R:R {{ positionRR(p).toFixed(2) }} · +{{ positionProfitPct(p).toFixed(1) }}% / -{{ positionLossPct(p).toFixed(1) }}%
+              </text>
+
+              <!-- right-edge width handle -->
+              <rect
+                class="position-edge-handle"
+                :x="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2)) - 2"
+                :y="Math.min(priceToY(p.tp), priceToY(p.sl))"
+                width="4"
+                :height="Math.max(1, Math.abs(priceToY(p.tp) - priceToY(p.sl)))"
+                @mousedown.stop="startPositionEdgeDrag(p.id, candleXAtTime(p.x1) > candleXAtTime(p.x2) ? 'x1' : 'x2', $event)"
+              />
+              <!-- left-edge width handle -->
+              <rect
+                class="position-edge-handle"
+                :x="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2)) - 2"
+                :y="Math.min(priceToY(p.tp), priceToY(p.sl))"
+                width="4"
+                :height="Math.max(1, Math.abs(priceToY(p.tp) - priceToY(p.sl)))"
+                @mousedown.stop="startPositionEdgeDrag(p.id, candleXAtTime(p.x1) > candleXAtTime(p.x2) ? 'x2' : 'x1', $event)"
+              />
+
+              <text
+                class="drawing-remove"
+                :x="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2)) - 4"
+                :y="Math.min(priceToY(p.tp), priceToY(p.sl)) - 6"
+                text-anchor="end"
+                @click.stop="removeDrawing('position', p.id)"
+              >✕</text>
+            </g>
+
             <!-- lines -->
             <g v-for="l in trendLines" :key="l.id" class="drawing-group" @mousedown.stop="selectDrawing('line', l.id)">
               <line class="drawn-line" :class="{ selected: isDrawingSelected('line', l.id) }" :x1="candleXAtTime(l.x1)" :y1="priceToY(l.y1)" :x2="candleXAtTime(l.x2)" :y2="priceToY(l.y2)" />
@@ -949,6 +1109,30 @@
                 :height="Math.max(0.5, b.h)"
               />
             </g>
+
+            <!-- Price action strength: zero-centered oscillator, green/red
+                 when strength confirms the candle's own direction, amber
+                 when it diverges. Appended after the generic propRows lanes. -->
+            <g
+              v-if="showPriceAction"
+              class="subplot prop-subplot price-action-strength-subplot"
+              :transform="`translate(0, ${mainPlotHeight + 4 + propRowY(propRows.length)})`"
+            >
+              <text class="subplot-title" x="4" y="10">PRICE ACTION STRENGTH</text>
+              <line class="pa-strength-zero-line" x1="0" :x2="plotWidth" :y1="PROP_HEIGHT / 2" :y2="PROP_HEIGHT / 2" />
+              <rect
+                v-for="b in priceActionStrengthBars()"
+                :key="'pas' + b.gi"
+                class="prop-bar"
+                :class="b.cls"
+                :x="candleX(b.gi) - candleWidth * 0.62 / 2"
+                :y="priceActionStrengthBarY(b.signed)"
+                :width="candleWidth * 0.62"
+                :height="Math.max(0.5, priceActionStrengthBarHeight(b.signed))"
+              >
+                <title>{{ priceActionStrengthTooltip(b.candle) }}</title>
+              </rect>
+            </g>
           </svg>
 
           <!-- Text annotation inline editor -->
@@ -1025,6 +1209,51 @@
             <div class="text-annotation-editor-actions">
               <button @click="commitRectangleEdit">Save</button>
               <button @click="cancelRectangleEdit">Cancel</button>
+            </div>
+          </div>
+
+          <!-- Position inline editor: view/change/copy entry/tp/sl -->
+          <div
+            v-if="editingPositionId"
+            class="text-annotation-editor drawing-value-editor"
+            :style="positionEditorStyle"
+          >
+            <label class="drawing-value-editor-label">Entry</label>
+            <div class="drawing-value-editor-row">
+              <input
+                type="number"
+                step="any"
+                v-model="positionEditDraftEntry"
+                @keydown.enter.exact.prevent="commitPositionEdit"
+                @keydown.escape.stop.prevent="cancelPositionEdit"
+              />
+              <button class="drawing-value-editor-copy" title="Copy price" @click="copyToClipboard(positionEditDraftEntry)">⧉</button>
+            </div>
+            <label class="drawing-value-editor-label">Take profit</label>
+            <div class="drawing-value-editor-row">
+              <input
+                type="number"
+                step="any"
+                v-model="positionEditDraftTp"
+                @keydown.enter.exact.prevent="commitPositionEdit"
+                @keydown.escape.stop.prevent="cancelPositionEdit"
+              />
+              <button class="drawing-value-editor-copy" title="Copy price" @click="copyToClipboard(positionEditDraftTp)">⧉</button>
+            </div>
+            <label class="drawing-value-editor-label">Stop loss</label>
+            <div class="drawing-value-editor-row">
+              <input
+                type="number"
+                step="any"
+                v-model="positionEditDraftSl"
+                @keydown.enter.exact.prevent="commitPositionEdit"
+                @keydown.escape.stop.prevent="cancelPositionEdit"
+              />
+              <button class="drawing-value-editor-copy" title="Copy price" @click="copyToClipboard(positionEditDraftSl)">⧉</button>
+            </div>
+            <div class="text-annotation-editor-actions">
+              <button @click="commitPositionEdit">Save</button>
+              <button @click="cancelPositionEdit">Cancel</button>
             </div>
           </div>
 
@@ -1119,6 +1348,15 @@
             <div class="legend-row">
               <svg class="legend-shape" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#e5e7eb" /></svg>
               <span class="legend-label">Displacement candle</span>
+            </div>
+            <div class="legend-row liquidity-legend-note">strength subplot below chart:</div>
+            <div class="legend-row">
+              <span class="legend-swatch" style="background:#22c55e"></span>
+              <span class="legend-label">Confirms price direction</span>
+            </div>
+            <div class="legend-row">
+              <span class="legend-swatch" style="background:#f59e0b"></span>
+              <span class="legend-label">Diverges from price direction</span>
             </div>
           </div>
         </div>
@@ -1255,6 +1493,7 @@ import DialogComponent from '../../shared/dialog/DialogComponent.vue';
 import DialogHeaderComponent from '../../shared/dialog/DialogHeaderComponent.vue';
 import MovementAnalyzerComponent from './MovementAnalyzerComponent.vue';
 import { listAllNotes, saveNote, deleteNote, type StickyNote } from "@/utility/notesDb";
+import { listScoreEntries, saveScoreEntry, deleteScoreEntry, clearAllScoreEntries, type ScoreEntry } from "@/utility/ScoreDb.ts";
 
 // ── Dynamic candle detail renderer ─────────────────────────────────────
 // Intentionally driven by the runtime object rather than CandleInfo's type
@@ -1700,6 +1939,13 @@ watch(() => props.symbol, () => {
   loadSymbolInfo();
   connectBinanceWs();
   loadToolCacheForSymbol();
+  // Training mode stays on across a symbol switch — just restart the
+  // replay from the configured start index for whatever loads in, rather
+  // than leaving it pointed at an index that belonged to the old symbol's
+  // data. initTrainingMode reads primaryCandles.value.length reactively,
+  // so this is safe to call even before the new symbol's candles have
+  // actually finished loading — it'll just re-clamp correctly once they do.
+  if (trainingMode.value) initTrainingMode();
 });
 
 // ── Timeframe selection ───────────────────────────────────────────────
@@ -1765,7 +2011,69 @@ const displayStart = computed(() => {
   const v = Math.floor(viewStartIndex.value);
   return Math.max(0, Math.min(v, Math.max(0, primaryCandles.value.length - 1)));
 });
-const displayEnd = computed(() => Math.min(primaryCandles.value.length, displayStart.value + Math.round(visibleBars.value)));
+
+// ── Training Mode (backtest replay) ─────────────────────────────────────
+// baseDisplayEnd is the ordinary "how many bars fit in the viewport" end
+// index — kept separate from the final (possibly training-capped)
+// displayEnd so displayEnd's own capping logic has an uncapped value to
+// cap FROM, without depending on itself.
+const baseDisplayEnd = computed(() => Math.min(primaryCandles.value.length, displayStart.value + Math.round(visibleBars.value)));
+
+const trainingMode = persistedBooleanRef("trainingMode", false);
+// Configurable, persisted starting point for a training/backtest replay —
+// "candle 100" by default, editable via the Start idx input in the
+// toolbar. Used both when Training Mode is first turned on and whenever a
+// new symbol is opened while it's already on, so replay always begins
+// from the same place instead of "wherever the view happened to be".
+const trainingStartIndex = persistedNumberRef("trainingStartIndex", 100);
+// Index of the last REVEALED candle while training — everything after it
+// is hidden, same as a real backtest replay where you don't get to see
+// the future. Null when not in training mode.
+const trainingIndex = ref<number | null>(null);
+
+function initTrainingMode() {
+  const maxIdx = Math.max(0, primaryCandles.value.length - 1);
+  const start = clamp(Math.round(trainingStartIndex.value), 0, maxIdx);
+  trainingIndex.value = start;
+  // Bring the starting candle into view, at the right edge of a normal
+  // page — same "ensure visible" placement advanceTraining uses, so
+  // starting training feels like arriving at "the latest candle" for
+  // that starting point rather than leaving the view wherever it was.
+  viewStartIndex.value = clamp(start - Math.round(visibleBars.value) + 1, 0, maxIdx);
+}
+
+// Re-applies the configured start index immediately if training is
+// already active — e.g. the user edited the Start idx input mid-replay.
+function onTrainingStartIndexChange() {
+  if (trainingMode.value) initTrainingMode();
+}
+
+watch(trainingMode, (on) => {
+  if (on) {
+    initTrainingMode();
+  } else {
+    trainingIndex.value = null;
+  }
+});
+
+function advanceTraining(delta: number) {
+  if (trainingIndex.value === null) return;
+  const maxIdx = Math.max(0, primaryCandles.value.length - 1);
+  trainingIndex.value = clamp(trainingIndex.value + delta, 0, maxIdx);
+  // Keep the current training candle in view — jump the viewport if
+  // stepping would otherwise move it off-screen.
+  const next = trainingIndex.value;
+  if (next > displayEnd.value - 1 || next < displayStart.value) {
+    viewStartIndex.value = clamp(next - Math.round(visibleBars.value) + 1, 0, Math.max(0, primaryCandles.value.length - 1));
+  }
+}
+
+const displayEnd = computed(() => {
+  if (trainingMode.value && trainingIndex.value !== null) {
+    return Math.min(baseDisplayEnd.value, trainingIndex.value + 1);
+  }
+  return baseDisplayEnd.value;
+});
 const displayCandles = computed(() => {
   const out: { gi: number; candle: CandleInfo }[] = [];
   for (let i = displayStart.value; i < displayEnd.value; i++) {
@@ -1789,8 +2097,9 @@ const TIME_AXIS_HEIGHT = 20;
 const FRVP_MAX_WIDTH = 90;
 
 const plotWidth = computed(() => Math.max(50, chartWidth.value - PAD_RIGHT));
-// Grows with the number of stacked dynamic-property bar rows (see propRows).
-const subplotsHeight = computed(() => propRows.value.length * (PROP_HEIGHT + SUBPLOT_GAP));
+// Grows with the number of stacked dynamic-property bar rows (see propRows),
+// plus one more reserved row when the price-action strength subplot is showing.
+const subplotsHeight = computed(() => (propRows.value.length + (showPriceAction.value ? 1 : 0)) * (PROP_HEIGHT + SUBPLOT_GAP));
 const mainPlotHeight = computed(() =>
   Math.max(80, chartHeight.value - PAD_TOP - subplotsHeight.value - TIME_AXIS_HEIGHT)
 );
@@ -1918,6 +2227,7 @@ const livePriceBullish = computed(() => {
   return livePrice.value >= last.open;
 });
 const livePriceLineY = computed<number | null>(() => {
+  if (trainingMode.value) return null;
   if (livePrice.value == null) return null;
   const y = priceToY(livePrice.value);
   if (!Number.isFinite(y) || y < 0 || y > mainPlotHeight.value) return null;
@@ -1984,7 +2294,7 @@ function measureContainer() {
 }
 
 // ── Pan / zoom interaction ─────────────────────────────────────────────
-type Tool = "none" | "rectangle" | "line" | "horizontal-line" | "vertical-line" | "text" | "price-range" | "frvp" | "avwap" | "liquidity";
+type Tool = "none" | "rectangle" | "line" | "horizontal-line" | "vertical-line" | "text" | "price-range" | "frvp" | "avwap" | "liquidity" | "long-position" | "short-position";
 const activeTool = ref<Tool>("none");
 
 const TOOL_DEFS: { id: Tool; icon: string; label: string; key: string }[] = [
@@ -1997,6 +2307,8 @@ const TOOL_DEFS: { id: Tool; icon: string; label: string; key: string }[] = [
   { id: "frvp", icon: "▤", label: "Fixed-range volume profile", key: "v" },
   { id: "avwap", icon: "◇", label: "Anchored VWAP (click a candle)", key: "a" },
   { id: "liquidity", icon: "▦", label: "Liquidity heatmap (drag a range)", key: "h" },
+  { id: "long-position", icon: "▲$", label: "Long position (drag: entry -> risk)", key: "u" },
+  { id: "short-position", icon: "▼$", label: "Short position (drag: entry -> risk)", key: "d" },
 ];
 
 function setActiveTool(t: Tool) {
@@ -2051,7 +2363,7 @@ function onChartMouseDown(e: MouseEvent) {
   if (activeTool.value === "none") {
     isPanning = true;
     panStart = { x, y, viewStartIndex: viewStartIndex.value, yPanOffset: yPanOffset.value };
-  } else if (["rectangle", "line", "price-range", "frvp", "liquidity"].includes(activeTool.value)) {
+  } else if (["rectangle", "line", "price-range", "frvp", "liquidity", "long-position", "short-position"].includes(activeTool.value)) {
     toolDraft.value = { startGi: gi, startPrice: price, curGi: gi, curPrice: price };
   }
   // Horizontal price lines, AVWAP and preview buy/sell are click-to-place tools.
@@ -2669,6 +2981,73 @@ function propRowY(index: number): number {
   return index * (PROP_HEIGHT + SUBPLOT_GAP);
 }
 
+// ── Price action strength subplot (confirmation vs divergence) ─────────
+// Separate question from the level-line's stage label: that shows WHICH
+// stage a sequence reached; this shows whether the underlying strength
+// currently AGREES with the candle's own price direction right now,
+// candle by candle — the same "does momentum confirm or diverge from
+// price" read you'd get from comparing price against RSI/MACD, just built
+// from data this pipeline already computes rather than a new indicator.
+
+// Signed so it can render as a zero-centered oscillator: positive when
+// LONG is dominant, negative when SHORT is dominant, zero otherwise.
+function priceActionSignedStrength(candle: CandleInfo): number {
+  const pa = candle.priceAction;
+  if (!pa || pa.dominant === "NEUTRAL") return 0;
+  return pa.dominant === "LONG" ? pa.strength : -pa.strength;
+}
+
+// Confirm = strength's dominant side agrees with this candle's own
+// bullish/bearish close. Diverge = they disagree (price moved one way,
+// the tracked sequence's strength points the other way) — this is
+// candle-by-candle agreement, not a full swing-high/swing-low divergence
+// pattern match; that would need its own dedicated detection later if
+// this simpler version turns out to be useful.
+function priceActionDivergenceClass(candle: CandleInfo): string {
+  const pa = candle.priceAction;
+  if (!pa || pa.dominant === "NEUTRAL" || pa.strength === 0) return "pa-strength-neutral";
+  const bull = candle.candleStructure?.isBullish;
+  const bear = candle.candleStructure?.isBearish;
+  if (pa.dominant === "LONG" && bull) return "pa-strength-confirm-bull";
+  if (pa.dominant === "SHORT" && bear) return "pa-strength-confirm-bear";
+  if (pa.dominant === "LONG" && bear) return "pa-strength-diverge";
+  if (pa.dominant === "SHORT" && bull) return "pa-strength-diverge";
+  return "pa-strength-neutral";
+}
+
+function priceActionStrengthBars() {
+  return displayCandles.value.map(c => ({
+    gi: c.gi,
+    candle: c.candle,
+    signed: priceActionSignedStrength(c.candle),
+    cls: priceActionDivergenceClass(c.candle),
+  }));
+}
+
+function priceActionStrengthBarY(signed: number): number {
+  const half = (PROP_HEIGHT - 12) / 2;
+  const center = PROP_HEIGHT / 2;
+  if (signed >= 0) return center - Math.min(half, (signed / 100) * half);
+  return center;
+}
+function priceActionStrengthBarHeight(signed: number): number {
+  const half = (PROP_HEIGHT - 12) / 2;
+  return Math.min(half, (Math.abs(signed) / 100) * half);
+}
+function priceActionStrengthTooltip(candle: CandleInfo): string {
+  const pa = candle.priceAction;
+  if (!pa) return "No price action data";
+  const cls = priceActionDivergenceClass(candle);
+  const verdict = cls === "pa-strength-diverge" ? "DIVERGES from price"
+    : cls === "pa-strength-neutral" ? "no active sequence"
+    : "CONFIRMS price direction";
+  return [
+    `dominant: ${pa.dominant} (strength ${Math.round(pa.strength)})`,
+    `candle: ${candle.candleStructure?.isBullish ? "bullish" : candle.candleStructure?.isBearish ? "bearish" : "flat"}`,
+    verdict,
+  ].join("\n");
+}
+
 // ── Multi-timeframe ghost candle overlays ──────────────────────────────
 interface OverlayBox { id: string; x1: number; x2: number; open: number; high: number; low: number; close: number; bullish: boolean }
 
@@ -2759,6 +3138,31 @@ function persistedBooleanRef(key: string, defaultValue: boolean) {
   return r;
 }
 
+// Same pattern as persistedBooleanRef, for a numeric setting (e.g. the
+// Training Mode start index).
+function persistedNumberRef(key: string, defaultValue: number) {
+  const storageKey = `cev2.${key}`;
+  let initial = defaultValue;
+  try {
+    const stored = localStorage.getItem(storageKey);
+    if (stored !== null) {
+      const parsed = Number(stored);
+      if (Number.isFinite(parsed)) initial = parsed;
+    }
+  } catch {
+    // localStorage unavailable — fall back to default.
+  }
+  const r = ref(initial);
+  watch(r, (val) => {
+    try {
+      localStorage.setItem(storageKey, String(val));
+    } catch {
+      // ignore — persistence is a nice-to-have
+    }
+  });
+  return r;
+}
+
 // Toggles the positioningState visualization (price x OI quadrant marker
 // below each candle + positioning readout in the HUD). Off by default,
 // same pattern as showCrossTfEma. Kept separate from any "OI state" naming
@@ -2824,6 +3228,12 @@ function finalizeLiquidity(d: ToolDraft) {
 // above candleXAtTime/giFromTime. Use candleXAtTime(shape.x1) rather than
 // candleX(shape.x1) when rendering these.
 interface RectShape { id: string; x1: number; x2: number; y1: number; y2: number }
+
+// Long/short position tool. x1/x2 (time, same time-anchored convention as
+// every other drawing here) span the box width; entry/tp/sl are prices,
+// each independently draggable. kind decides which side of entry the
+// profit zone sits on (above for long, below for short).
+interface PositionShape { id: string; kind: "long" | "short"; x1: number; x2: number; entry: number; tp: number; sl: number }
 interface LineShape { id: string; x1: number; x2: number; y1: number; y2: number }
 // `time` on a horizontal line and `price` on a vertical line are the point
 // where the line was originally PLACED (captured once at creation) — used
@@ -2853,6 +3263,7 @@ interface LiquidityRange {
 interface PreviewPosition { side: "buy" | "sell"; entryGi: number; entryPrice: number; tp: number; sl: number }
 
 const rectangles = ref<RectShape[]>([]);
+const positions = ref<PositionShape[]>([]);
 const trendLines = ref<LineShape[]>([]);
 const horizontalLines = ref<HorizontalLineShape[]>([]);
 const verticalLines = ref<VerticalLineShape[]>([]);
@@ -2864,7 +3275,7 @@ const frvpZones = ref<FrvpZone[]>([]);
 const avwapLines = ref<AvwapLine[]>([]);
 const liquidityRanges = ref<LiquidityRange[]>([]);
 const previewPosition = ref<PreviewPosition | null>(null);
-const selectedDrawing = ref<{ type: "rectangle" | "line" | "horizontal-line" | "vertical-line" | "text" | "price-range" | "frvp" | "avwap" | "liquidity"; id: string } | null>(null);
+const selectedDrawing = ref<{ type: DrawingType; id: string } | null>(null);
 
 const previewMargin = ref(5);
 const targetTpRoi = ref(2);
@@ -2944,6 +3355,28 @@ function finalizeToolDraft(d: ToolDraft) {
     case "liquidity":
       finalizeLiquidity(d);
       break;
+    case "long-position":
+    case "short-position": {
+      pushUndoSnapshot();
+      const kind = activeTool.value === "long-position" ? "long" : "short";
+      const entry = d.startPrice;
+      // The drag's vertical distance defines the RISK (stop-loss) side —
+      // dragging toward the natural risk direction for that position type
+      // sets the stop; take-profit defaults to a 2:1 reward:risk box,
+      // freely adjustable afterward by dragging the TP/SL lines themselves.
+      const dragDistance = Math.abs(d.curPrice - d.startPrice);
+      const riskDistance = dragDistance > 0 ? dragDistance : Math.max(Math.abs(entry) * 0.01, 0.0001);
+      const sl = kind === "long" ? entry - riskDistance : entry + riskDistance;
+      const tp = kind === "long" ? entry + riskDistance * 2 : entry - riskDistance * 2;
+      positions.value.push({
+        id: nextId(),
+        kind,
+        x1: timeFromGi(d.startGi),
+        x2: timeFromGi(d.curGi),
+        entry, tp, sl,
+      });
+      break;
+    }
   }
 }
 
@@ -3051,6 +3484,7 @@ function clearAllDrawings() {
   frvpZones.value = [];
   avwapLines.value = [];
   liquidityRanges.value = [];
+  positions.value = [];
   previewPosition.value = null;
   selectedDrawing.value = null;
 }
@@ -3071,6 +3505,7 @@ interface DrawingsSnapshot {
   verticalLines: VerticalLineShape[];
   priceRangeBoxes: PriceRangeBox[];
   textAnnotations: TextAnnotation[];
+  positions: PositionShape[];
 }
 const MAX_UNDO = 50;
 const undoStack: DrawingsSnapshot[] = [];
@@ -3083,6 +3518,7 @@ function pushUndoSnapshot() {
     verticalLines: JSON.parse(JSON.stringify(verticalLines.value)),
     priceRangeBoxes: JSON.parse(JSON.stringify(priceRangeBoxes.value)),
     textAnnotations: JSON.parse(JSON.stringify(textAnnotations.value)),
+    positions: JSON.parse(JSON.stringify(positions.value)),
   });
   if (undoStack.length > MAX_UNDO) undoStack.shift();
 }
@@ -3096,6 +3532,7 @@ function undoLastDrawingChange() {
   verticalLines.value = snap.verticalLines;
   priceRangeBoxes.value = snap.priceRangeBoxes;
   textAnnotations.value = snap.textAnnotations;
+  positions.value = snap.positions;
   selectedDrawing.value = null;
 }
 
@@ -3117,6 +3554,7 @@ async function loadToolCacheForSymbol() {
     verticalLines.value = (cached?.verticalLines as VerticalLineShape[]) ?? [];
     priceRangeBoxes.value = (cached?.priceRangeBoxes as PriceRangeBox[]) ?? [];
     textAnnotations.value = (cached?.textAnnotations as TextAnnotation[]) ?? [];
+    positions.value = (cached?.positions as PositionShape[]) ?? [];
   } catch (err) {
     console.error("Failed to load tool cache:", err);
   } finally {
@@ -3140,13 +3578,14 @@ function scheduleToolCacheSave() {
       verticalLines: verticalLines.value,
       priceRangeBoxes: priceRangeBoxes.value,
       textAnnotations: textAnnotations.value,
+      positions: positions.value,
       updatedAt: Date.now(),
     }).catch((err) => console.error("Failed to save tool cache:", err));
   }, 400);
 }
 
 watch(
-  [rectangles, trendLines, horizontalLines, verticalLines, priceRangeBoxes, textAnnotations],
+  [rectangles, trendLines, horizontalLines, verticalLines, priceRangeBoxes, textAnnotations, positions],
   scheduleToolCacheSave,
   { deep: true }
 );
@@ -3217,9 +3656,79 @@ async function removeNote(id: string) {
   }
 }
 
+// ── Score / manual trade journal (IndexedDB, GLOBAL — not per symbol) ──
+const scoreOpen = ref(false);
+const scoreEntries = ref<ScoreEntry[]>([]);
+const newScoreResult = ref<"win" | "loss">("win");
+const newScoreR = ref("");
+const newScoreNote = ref("");
+
+async function loadAllScoreEntries() {
+  try {
+    scoreEntries.value = await listScoreEntries();
+  } catch (err) {
+    console.error("Failed to load score entries:", err);
+  }
+}
+
+async function addScoreEntry() {
+  const rParsed = newScoreR.value.trim() === "" ? null : Number(newScoreR.value);
+  const entry: ScoreEntry = {
+    id: nextId(),
+    symbol: props.symbol,
+    result: newScoreResult.value,
+    rMultiple: rParsed !== null && Number.isFinite(rParsed) ? rParsed : null,
+    note: newScoreNote.value.trim(),
+    createdAt: Date.now(),
+  };
+  scoreEntries.value = [entry, ...scoreEntries.value];
+  newScoreR.value = "";
+  newScoreNote.value = "";
+  try {
+    await saveScoreEntry(entry);
+  } catch (err) {
+    console.error("Failed to save score entry:", err);
+  }
+}
+
+async function removeScoreEntry(id: string) {
+  scoreEntries.value = scoreEntries.value.filter((s) => s.id !== id);
+  try {
+    await deleteScoreEntry(id);
+  } catch (err) {
+    console.error("Failed to delete score entry:", err);
+  }
+}
+
+async function clearAllScores() {
+  if (!scoreEntries.value.length) return;
+  if (!confirm("Clear your entire trade journal? This can't be undone.")) return;
+  scoreEntries.value = [];
+  try {
+    await clearAllScoreEntries();
+  } catch (err) {
+    console.error("Failed to clear score entries:", err);
+  }
+}
+
+const scoreSummary = computed(() => {
+  const total = scoreEntries.value.length;
+  const wins = scoreEntries.value.filter(s => s.result === "win").length;
+  const losses = total - wins;
+  const rValues = scoreEntries.value.map(s => s.rMultiple).filter((r): r is number => r !== null);
+  const hasR = rValues.length > 0;
+  const totalR = rValues.reduce((sum, r) => sum + r, 0);
+  const avgR = hasR ? totalR / rValues.length : 0;
+  return {
+    total, wins, losses,
+    winRate: total > 0 ? (wins / total) * 100 : 0,
+    hasR, totalR, avgR,
+  };
+});
+
 
 // ── Post-placement drawing selection / editing ─────────────────────────
-type DrawingType = "rectangle" | "line" | "horizontal-line" | "vertical-line" | "text" | "price-range" | "frvp" | "avwap" | "liquidity";
+type DrawingType = "rectangle" | "line" | "horizontal-line" | "vertical-line" | "text" | "price-range" | "frvp" | "avwap" | "liquidity" | "position";
 
 function selectDrawing(type: DrawingType, id: string) {
   selectedDrawing.value = { type, id };
@@ -3230,7 +3739,7 @@ function isDrawingSelected(type: DrawingType, id: string) {
 }
 
 function removeDrawing(type: DrawingType, id: string) {
-  if (["rectangle", "line", "horizontal-line", "vertical-line", "text", "price-range"].includes(type)) {
+  if (["rectangle", "line", "horizontal-line", "vertical-line", "text", "price-range", "position"].includes(type)) {
     pushUndoSnapshot();
   }
   if (type === "rectangle") rectangles.value = rectangles.value.filter(x => x.id !== id);
@@ -3242,6 +3751,7 @@ function removeDrawing(type: DrawingType, id: string) {
   if (type === "frvp") frvpZones.value = frvpZones.value.filter(x => x.id !== id);
   if (type === "avwap") avwapLines.value = avwapLines.value.filter(x => x.id !== id);
   if (type === "liquidity") liquidityRanges.value = liquidityRanges.value.filter(x => x.id !== id);
+  if (type === "position") positions.value = positions.value.filter(x => x.id !== id);
   if (selectedDrawing.value?.type === type && selectedDrawing.value.id === id) selectedDrawing.value = null;
 }
 
@@ -3251,6 +3761,17 @@ function chartPointFromClient(clientX: number, clientY: number) {
   const x = clientX - rect.left;
   const y = clientY - rect.top;
   return { x, y, gi: indexAtX(x), price: yToPrice(y) };
+}
+
+// Explicit type predicate rather than an inline `"entry" in shape` check —
+// TS's `in` narrowing doesn't reliably discriminate this particular union
+// (several members share the same x1/x2 keys, and the union came through
+// an `as` cast rather than plain inference), so an inline check left
+// `shape` un-narrowed inside its own branch. A named predicate function
+// with an explicit `s is PositionShape` return type forces correct
+// narrowing regardless.
+function isPositionShape(s: RectShape | LineShape | PriceRangeBox | PositionShape): s is PositionShape {
+  return "entry" in s;
 }
 
 function startDrawingMove(type: DrawingType, id: string, event: MouseEvent) {
@@ -3265,9 +3786,10 @@ function startDrawingMove(type: DrawingType, id: string, event: MouseEvent) {
     if (type === "line") return trendLines.value.find(x => x.id === id);
     if (type === "horizontal-line") return horizontalLines.value.find(x => x.id === id);
     if (type === "price-range") return priceRangeBoxes.value.find(x => x.id === id);
+    if (type === "position") return positions.value.find(x => x.id === id);
     return null;
   };
-  const shape = getShape() as RectShape | LineShape | PriceRangeBox | undefined;
+  const shape = getShape() as RectShape | LineShape | PriceRangeBox | PositionShape | undefined;
   if (!shape) return;
 
   // x1/x2 are stored as time; convert the drag's gi delta into a time delta
@@ -3282,11 +3804,19 @@ function startDrawingMove(type: DrawingType, id: string, event: MouseEvent) {
     if (!cur) return;
     const dT = timeFromGi(cur.gi) - startT;
     const dPrice = cur.price - startPrice;
-    if ("x1" in shape) {
+    if (isPositionShape(shape)) {
+      // Position shape: shift the box width and all three price levels
+      // together, preserving R:R (unlike dragging one level individually).
       shape.x1 = original.x1 + dT;
       shape.x2 = original.x2 + dT;
-      shape.y1 = original.y1 + dPrice;
-      shape.y2 = original.y2 + dPrice;
+      shape.entry = (original as PositionShape).entry + dPrice;
+      shape.tp = (original as PositionShape).tp + dPrice;
+      shape.sl = (original as PositionShape).sl + dPrice;
+    } else if ("x1" in shape) {
+      shape.x1 = original.x1 + dT;
+      shape.x2 = original.x2 + dT;
+      (shape as RectShape | LineShape | PriceRangeBox).y1 = (original as RectShape | LineShape | PriceRangeBox).y1 + dPrice;
+      (shape as RectShape | LineShape | PriceRangeBox).y2 = (original as RectShape | LineShape | PriceRangeBox).y2 + dPrice;
     }
   };
   const up = () => {
@@ -3358,6 +3888,112 @@ function startDrawingResize(
   document.addEventListener("mouseup", up);
   selectDrawing(type, id);
 }
+
+// Drags ONE price level (entry, tp, or sl) independently — the other two
+// levels and the box's time width stay fixed. This is what lets you widen
+// or shrink the reward/risk shape after the initial 2:1 default.
+function startPositionLevelDrag(id: string, level: "entry" | "tp" | "sl", event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  const p = positions.value.find(x => x.id === id);
+  if (!p) return;
+  pushUndoSnapshot();
+  const move = (e: MouseEvent) => {
+    const cur = chartPointFromClient(e.clientX, e.clientY);
+    if (!cur) return;
+    p[level] = cur.price;
+  };
+  const up = () => {
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+  };
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+  selectDrawing("position", id);
+}
+
+// Drags one time edge (x1 or x2) to resize the box's width, independent of
+// price levels — mirrors the rectangle's left/right resize handles.
+function startPositionEdgeDrag(id: string, edge: "x1" | "x2", event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  const p = positions.value.find(x => x.id === id);
+  if (!p) return;
+  pushUndoSnapshot();
+  const move = (e: MouseEvent) => {
+    const cur = chartPointFromClient(e.clientX, e.clientY);
+    if (!cur) return;
+    p[edge] = timeFromGi(cur.gi);
+  };
+  const up = () => {
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+  };
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+  selectDrawing("position", id);
+}
+
+function positionRR(p: PositionShape): number {
+  const risk = Math.abs(p.entry - p.sl);
+  const reward = Math.abs(p.tp - p.entry);
+  return risk > 0 ? reward / risk : 0;
+}
+function positionProfitPct(p: PositionShape): number {
+  return p.entry !== 0 ? (Math.abs(p.tp - p.entry) / Math.abs(p.entry)) * 100 : 0;
+}
+function positionLossPct(p: PositionShape): number {
+  return p.entry !== 0 ? (Math.abs(p.entry - p.sl) / Math.abs(p.entry)) * 100 : 0;
+}
+
+// ── Position edit popup: view/change/copy entry/tp/sl ───────────────────
+const editingPositionId = ref<string | null>(null);
+const positionEditDraftEntry = ref("");
+const positionEditDraftTp = ref("");
+const positionEditDraftSl = ref("");
+
+function startPositionEdit(id: string) {
+  const p = positions.value.find(x => x.id === id);
+  if (!p) return;
+  editingPositionId.value = id;
+  positionEditDraftEntry.value = String(p.entry);
+  positionEditDraftTp.value = String(p.tp);
+  positionEditDraftSl.value = String(p.sl);
+  nextTick(() => {
+    document.querySelectorAll<HTMLInputElement>(".drawing-value-editor input")[0]?.focus();
+    document.querySelectorAll<HTMLInputElement>(".drawing-value-editor input")[0]?.select();
+  });
+}
+
+function commitPositionEdit() {
+  const id = editingPositionId.value;
+  if (!id) return;
+  const p = positions.value.find(x => x.id === id);
+  const entry = Number(positionEditDraftEntry.value);
+  const tp = Number(positionEditDraftTp.value);
+  const sl = Number(positionEditDraftSl.value);
+  if (p && Number.isFinite(entry) && Number.isFinite(tp) && Number.isFinite(sl)) {
+    if (p.entry !== entry || p.tp !== tp || p.sl !== sl) pushUndoSnapshot();
+    p.entry = entry;
+    p.tp = tp;
+    p.sl = sl;
+  }
+  editingPositionId.value = null;
+}
+
+function cancelPositionEdit() {
+  editingPositionId.value = null;
+}
+
+const positionEditorStyle = computed(() => {
+  if (!editingPositionId.value) return { display: "none" };
+  const p = positions.value.find(x => x.id === editingPositionId.value);
+  if (!p) return { display: "none" };
+  return {
+    left: `${Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2)) + 10}px`,
+    top: `${priceToY(p.entry)}px`,
+  };
+});
 
 function startLineEndpointResize(id: string, endpoint: "start" | "end", event: MouseEvent) {
   event.preventDefault();
@@ -3926,6 +4562,11 @@ function onKeydown(e: KeyboardEvent) {
     case "v": setActiveTool("frvp"); break;
     case "a": setActiveTool("avwap"); break;
     case "h": setActiveTool("liquidity"); break;
+    case "u": setActiveTool("long-position"); break;
+    case "d": setActiveTool("short-position"); break;
+    case "n": if (trainingMode.value) advanceTraining(1); break;
+    case "b": if (trainingMode.value) advanceTraining(-1); break;
+    case "5": if (trainingMode.value) advanceTraining(5); break;
     case "1": overlayFlags["1h"] = !overlayFlags["1h"]; break;
     case "2": overlayFlags["4h"] = !overlayFlags["4h"]; break;
     case "3": overlayFlags["1d"] = !overlayFlags["1d"]; break;
@@ -3962,6 +4603,7 @@ onMounted(async () => {
   nowTickInterval = window.setInterval(() => { nowTick.value = Date.now(); }, 1000);
   loadToolCacheForSymbol();
   loadAllNotes();
+  loadAllScoreEntries();
 });
 
 onBeforeUnmount(() => {
@@ -4029,6 +4671,21 @@ watch(primaryCandles, () => {
 .drawing-hit-line { stroke: transparent; stroke-width: 10; pointer-events: stroke; cursor: move; }
 .drawing-move-hit { fill: transparent; stroke: none; cursor: move; pointer-events: all; }
 .drawn-rect.selected, .price-range-box.selected { stroke-width: 2; stroke-dasharray: 4 3; }
+
+.position-zone { pointer-events: all; cursor: move; }
+.position-zone.position-profit { fill: rgba(34, 197, 94, 0.18); stroke: #22c55e; stroke-width: 1; }
+.position-zone.position-loss { fill: rgba(239, 68, 68, 0.18); stroke: #ef4444; stroke-width: 1; }
+.position-zone.selected { stroke-width: 2; stroke-dasharray: 4 3; }
+.position-entry-line { stroke: #e8eaed; stroke-width: 1.5; stroke-dasharray: 4 2; pointer-events: none; }
+.position-tp-line { stroke: #22c55e; stroke-width: 1; pointer-events: none; }
+.position-sl-line { stroke: #ef4444; stroke-width: 1; pointer-events: none; }
+.position-hit-line { stroke: transparent; stroke-width: 10; pointer-events: stroke; cursor: ns-resize; }
+.position-level-label { font-family: var(--mono); font-size: 10px; pointer-events: none; dominant-baseline: middle; }
+.position-entry-label { fill: #e8eaed; }
+.position-tp-label { fill: #22c55e; }
+.position-sl-label { fill: #ef4444; }
+.position-info-label { fill: #9aa4b2; font-family: var(--mono); font-size: 10px; pointer-events: none; }
+.position-edge-handle { fill: transparent; stroke: transparent; pointer-events: all; cursor: ew-resize; }
 .drawing-remove { fill: #ef5350; font-family: var(--mono); font-size: 12px; font-weight: 800; cursor: pointer; pointer-events: all; }
 .drawing-remove:hover { fill: #fff; }
 .vertical-line-price-label { fill: #c8ccd4; font-family: var(--mono); font-size: 10px; pointer-events: none; }
@@ -4072,6 +4729,44 @@ watch(primaryCandles, () => {
 .notes-panel-list { overflow-y: auto; padding: 6px 10px; display: flex; flex-direction: column; gap: 8px; }
 .notes-panel-empty { color: #667; padding: 10px 0; text-align: center; }
 .note-item { border-bottom: 1px solid rgba(255,255,255,.06); padding-bottom: 8px; }
+
+/* Score panel reuses .notes-panel's look but must not overlap it when
+   both are open at once — shifted left by its own width + a gap. */
+.score-panel { right: 272px; }
+
+.score-summary {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 4px;
+  padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.08);
+}
+.score-summary-label { display: block; color: #667; font-size: 9px; text-transform: uppercase; letter-spacing: .3px; }
+.score-summary-value { display: block; color: #e8eaed; font-size: 13px; font-weight: 700; }
+
+.score-panel-add { flex-direction: column; }
+.score-result-toggle { display: flex; gap: 4px; }
+.score-result-toggle button {
+  flex: 1; padding: 4px 0; background: #171b21; border: 1px solid #3a4048;
+  color: #8b95a1; border-radius: 3px; cursor: pointer; font-family: var(--mono); font-size: 11px;
+}
+.score-result-toggle button.active:first-child { background: rgba(38,166,154,.2); border-color: var(--bull); color: var(--bull); }
+.score-result-toggle button.active:last-child { background: rgba(239,83,80,.2); border-color: var(--bear); color: var(--bear); }
+.score-r-input {
+  width: 100%; background: #0f1115; color: #e8eaed;
+  border: 1px solid #3a4048; border-radius: 3px; font-family: var(--mono); font-size: 11px; padding: 5px;
+}
+
+.score-item-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.score-badge { font-size: 9px; font-weight: 800; padding: 1px 6px; border-radius: 3px; letter-spacing: .3px; }
+.score-badge.win { background: rgba(38,166,154,.2); color: var(--bull); }
+.score-badge.loss { background: rgba(239,83,80,.2); color: var(--bear); }
+.score-item-r { font-size: 10px; color: #cdd3db; font-weight: 600; }
+
+.score-panel-footer { padding: 8px 10px; border-top: 1px solid rgba(255,255,255,.08); }
+.score-clear-btn {
+  width: 100%; padding: 5px 0; background: rgba(239,83,80,.12); border: 1px solid var(--bear);
+  color: var(--bear); border-radius: 4px; cursor: pointer; font-family: var(--mono); font-size: 11px; font-weight: 600;
+}
+.score-clear-btn:hover:not(:disabled) { background: rgba(239,83,80,.22); }
+.score-clear-btn:disabled { opacity: .35; cursor: not-allowed; }
 .note-item-text { color: #d7dde3; white-space: pre-wrap; margin: 0 0 4px; cursor: text; }
 .note-item-actions { display: flex; align-items: center; gap: 6px; }
 .note-item-time { color: #667; margin-right: auto; font-size: 10px; }
@@ -4133,6 +4828,15 @@ watch(primaryCandles, () => {
 }
 .chip.active { background: rgba(38, 166, 154, 0.18); border-color: var(--bull); color: var(--bull); }
 .chip.disabled { opacity: 0.35; cursor: not-allowed; }
+.training-position-readout { cursor: default; color: #cdd3db; }
+.training-start-index-label {
+  display: flex; align-items: center; gap: 4px; cursor: default;
+}
+.training-start-index-input {
+  width: 52px; background: #0f1115; color: #e8eaed;
+  border: 1px solid #3a4048; border-radius: 3px;
+  font-family: var(--mono); font-size: 11px; padding: 2px 4px;
+}
 
 .prop-select-group { display: flex; align-items: center; gap: 4px; }
 .prop-select { position: relative; display: flex; align-items: center; }
@@ -4370,6 +5074,11 @@ width: 30rem;
 /* subplots */
 .subplot-title { fill: #576172; font-size: 9px; font-family: var(--mono); letter-spacing: 0.6px; }
 .prop-bar { fill: rgba(79, 195, 247, 0.55); }
+.pa-strength-zero-line { stroke: rgba(255,255,255,.15); stroke-width: 1; }
+.prop-bar.pa-strength-confirm-bull { fill: #22c55e; }
+.prop-bar.pa-strength-confirm-bear { fill: #ef4444; }
+.prop-bar.pa-strength-diverge { fill: #f59e0b; }
+.prop-bar.pa-strength-neutral { fill: #4b5563; }
 
 /* HUD */
 .hud {
