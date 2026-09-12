@@ -98,7 +98,7 @@ function heatColor(intensity: number): string {
  * distributeIntoPool and clearSweptRange; now there's one place that can
  * be wrong instead of two that can silently drift apart.
  */
-function forEachOverlappingBucket(
+export function forEachOverlappingBucket(
   low: number,
   high: number,
   rangeLow: number,

@@ -139,42 +139,46 @@ export interface LiquidationHeatmapStamp {
 }
 
 export type LIQUIDITY_SWEEP_BEHAVIOR =
-    | 'SWEPT'             // this candle's range cleared a meaningful amount of an active anchor's resting pool
-    | 'NO_SWEEP'          // an active anchor exists, but this candle didn't clear a meaningful amount
-    | 'NO_ACTIVE_HEATMAP' // no ACTIVE long or short cluster to measure against
+    | 'SWEPT_AND_RESPECTED' // entered the previous segment's hot (yellow/red) zone, then closed back on the side it came from — the zone held as support/resistance
+    | 'SWEPT_AND_CONTINUED' // entered the hot zone and closed through it — the zone did NOT hold
+    | 'NO_SWEEP'            // a previous segment exists, but this candle's range never reached its hot zone
+    | 'NO_PREVIOUS_ANCHOR'  // no previously-confirmed liquidity heatmap anchor segment exists yet to measure against
 
 export interface LiquiditySweepInfo {
     behavior: LIQUIDITY_SWEEP_BEHAVIOR
 
-    /** Raw pool value this candle's [low, high] cleared from the active anchor's heatmap. */
+    /** Which previously-confirmed trend segment this was measured against (see liquidityHeatmapAnchor.ts) — null when behavior is NO_PREVIOUS_ANCHOR. */
+    previousAnchorPairId: string | null
+    /** That segment's own direction (LONG = uptrend, SHORT = downtrend). */
+    previousAnchorDirection: SIGNAL_DIRECTION | null
+
+    /**
+     * Raw pool value this candle's [low, high] cleared, counting ONLY the
+     * segment's "yellow and red" (hot — intensity >= 0.5, see heatColor in
+     * liquidationHeatmap.ts) buckets. Cold liquidity is deliberately
+     * excluded — that's not what a trader means by "the pool" when
+     * looking at a heatmap.
+     */
     sweptValue: number
-    /** sweptValue / that heatmap's own globalMaxPoolValue (0-1). Normalized within this anchor only. */
+    /** The segment's TOTAL hot-pool value — how much yellow/red liquidity existed in total, the denominator for sweptRatio. */
+    totalHotPoolValue: number
+    /**
+     * sweptValue / totalHotPoolValue (0-1). NOTE: this is a per-candle
+     * snapshot against the reference segment's ORIGINAL, unconsumed hot
+     * pool — not a running depletion tracker across multiple candles that
+     * each nibble at the same zone. See the module comment in
+     * liquiditySweepInfo.ts for why, and what that does and doesn't catch.
+     */
     sweptRatio: number
+    /** 0-100 — currently just sweptRatio scaled. See module comment for exactly what this does and doesn't capture. */
+    strength: number
+
+    /** The hot zone's own price bounds (bounding box of every intensity>=0.5 bucket in the reference segment) — set whenever a previous anchor exists, regardless of whether THIS candle touched them. */
+    hotZoneLow: number | null
+    hotZoneHigh: number | null
 
     sweptPriceLow: number | null
     sweptPriceHigh: number | null
-
-    /**
-     * The single price (within [sweptPriceLow, sweptPriceHigh]) where
-     * resting liquidity was densest at the moment of the sweep — a
-     * defensible candidate for "the level" this sweep was actually
-     * targeting, used by priceAction.ts to anchor rejection/reclaim
-     * checks against something more specific than the candle's own
-     * high/low. Null when there's no active heatmap to measure against.
-     */
-    peakPrice: number | null
-
-    /**
-     * Which side(s) were ACTIVE and therefore in-scope for this
-     * measurement. NOTE: the underlying heatmap pool does not separate
-     * long vs short contributions by bucket (one merged pool — see
-     * liquidationHeatmap.ts), so `sweptValue` cannot be split into "how
-     * much was long-side vs short-side" — only which side(s)' anchors were
-     * live is known, not the composition of what got cleared.
-     */
-    measuredSides: Array<'LONG' | 'SHORT'>
-
-    anchorClusterIds: string[]
 
     timestamp: number
     reasons: string[]
@@ -278,6 +282,13 @@ export interface CandleInfo {
     liquidationHeatmapStamp: LiquidationHeatmapStamp
 
     liquiditySweepInfo: LiquiditySweepInfo
+
+    // Usually empty. A candle can genuinely be BOTH the end of one trend
+    // segment and the start of the next (a clean reversal point) — this is
+    // common, not an edge case — so this must be an array, not a single
+    // nullable value; a single field silently overwrote one of the two on
+    // any candle where that happened. See liquidityHeatmapAnchor.ts.
+    liquidityAnchor: LiquidityHeatmapAnchor[]
 
     confluenceScore?: ConfluenceScore
 }
@@ -430,6 +441,17 @@ export interface PriceAction {
     dominant: SIGNAL_DIRECTION
 
     strength: number
+
+    /**
+     * True for a STRONG, confirmed price-action moment — either the final
+     * displacement stage of a full sweep->reject->reclaim->displace
+     * sequence, or a decisive (above-threshold) SWEPT_AND_RESPECTED sweep
+     * on its own. See priceAction.ts's STRONG_SWEEP_STRENGTH_THRESHOLD for
+     * the exact cutoff. `dominant` gives the direction, `reasons` gives
+     * the why — this field is just the filter, deliberately not a
+     * separate score or narrative of its own.
+     */
+    strongAction: boolean
 
     reasons: string[]
 }
@@ -956,4 +978,33 @@ export interface SimulationAnalysisReport {
     magnetAnalysis: MagnetAnalysisResult[]
     eventTimelines: EventTimelineWindow[]
     crossModuleConsistencyChecks: CrossCheckResult[]
+}
+
+// ── Liquidity heatmap anchor points (liquidityHeatmapAnchor.ts) ────
+// Where should a liquidity heatmap actually be anchored? Not a fixed
+// lookback — the START/END of a real structural trend segment, identified
+// from swing-point structure (HH/HL for uptrends, LH/LL for downtrends).
+// START and END are confirmed independently and asynchronously: END fires
+// the moment structure breaks (one new swing is enough), START only once
+// a full new two-swing pattern confirms a fresh trend — so there is
+// honestly a "we don't know yet" gap between one segment's END and the
+// next segment's START, not a forced hand-off between them.
+
+export type LIQUIDITY_ANCHOR_TYPE = 'START' | 'END'
+
+export interface LiquidityHeatmapAnchor {
+    type: LIQUIDITY_ANCHOR_TYPE
+
+    direction: SIGNAL_DIRECTION
+
+    price: number
+    swingType: 'high' | 'low'
+
+    pairId: string
+    sequenceIndex: number
+
+    confirmedOpenTime: number
+    anchorOpenTime: number
+
+    reasons: string[]
 }

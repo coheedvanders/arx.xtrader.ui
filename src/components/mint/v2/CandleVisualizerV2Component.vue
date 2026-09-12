@@ -36,22 +36,15 @@
 
         <button
           class="chip"
-          :class="{ active: showPositioning }"
-          title="Show price x OI positioning (long buildup / short covering / short buildup / long unwinding) below each candle"
-          @click="showPositioning = !showPositioning"
-        >Positioning</button>
-
-        <button
-          class="chip"
-          :class="{ active: showLiquidityInfo }"
-          title="Show liquidity anchor lifecycle (building/active/ended, per side) and sweep events"
-          @click="showLiquidityInfo = !showLiquidityInfo"
-        >Liquidity Info</button>
+          :class="{ active: showLHAnchors }"
+          title="Liquidity heatmap anchors: START/END of each trend segment (swing structure), auto-anchors the heatmap over every confirmed segment"
+          @click="showLHAnchors = !showLHAnchors"
+        >LH Anchors</button>
 
         <button
           class="chip"
           :class="{ active: showPriceAction }"
-          title="Show the tracked price-action level (sweep -> reject -> reclaim -> displace -> confirm)"
+          title="Strong confirmed price action only: a completed sweep->reject->reclaim->displace sequence, or a decisive rejection at a previous liquidity anchor's hot zone"
           @click="showPriceAction = !showPriceAction"
         >Price Action</button>
 
@@ -168,6 +161,7 @@
 
         <button class="icon-btn" title="Reset view (E)" @click="scrollToLatest">⇥</button>
         <button class="icon-btn" title="Refresh from IndexedDB" @click="loadSymbolInfo">⟳</button>
+        <button class="icon-btn" title="Download the full symbolInfo as JSON" @click="downloadSymbolInfoJson">⬇</button>
         <button
           class="icon-btn notes-toolbar"
           :class="{ active: notesOpen }"
@@ -417,159 +411,76 @@
                 </g>
 
                 <!--
-                  Positioning marker: price x OI quadrant for this candle
-                  (see PositioningState in interfacesv2.ts / positioningState.ts).
-                  Deliberately a plain flat tick, not a chevron/score badge —
-                  this is a category + a directly-displayed magnitude, not a
-                  new derived signal. Color = behavior, opacity = strength.
-                  Rendered as its own row so several candles' ticks form a
-                  readable strip under the chart, same spirit as propRows.
+                  Liquidity heatmap anchor marker(s): this candle is a
+                  confirmed START or END of a trend segment (swing
+                  structure — see liquidityHeatmapAnchor.ts). A candle can
+                  hold MORE than one — a clean reversal point is commonly
+                  both the END of one segment and the START of the next —
+                  so this iterates the array and offsets multiple markers
+                  horizontally rather than stacking them exactly on top of
+                  each other. Triangle orientation follows the swing
+                  itself (up at a swing high, down at a swing low); color
+                  follows direction; fill vs hollow distinguishes
+                  START vs END.
                 -->
-                <rect
-                  v-if="showPositioning && positioningMarkerFill(c.candle) !== null"
-                  class="positioning-marker"
-                  :class="positioningMarkerClass(c.candle)"
-                  :x="candleX(c.gi) - candleWidth * 0.62 / 2"
-                  :y="priceToY(c.candle.low) + 6"
-                  :width="candleWidth * 0.62"
-                  height="4"
-                  :fill="positioningMarkerFill(c.candle)!"
-                  :opacity="positioningMarkerOpacity(c.candle)"
-                >
-                  <title>{{ positioningTooltip(c.candle) }}</title>
-                </rect>
+                <template v-if="showLHAnchors">
+                  <template v-for="(anchor, aidx) in c.candle.liquidityAnchor" :key="'lha-' + c.gi + '-' + aidx">
+                    <polygon
+                      class="lh-anchor-marker"
+                      :class="[anchor.direction === 'LONG' ? 'lh-anchor-long' : 'lh-anchor-short', anchor.type === 'START' ? 'lh-anchor-start' : 'lh-anchor-end']"
+                      :points="trianglePoints(
+                        candleX(c.gi) + (aidx * 8 - (c.candle.liquidityAnchor.length - 1) * 4),
+                        anchor.swingType === 'high' ? priceToY(anchor.price) - 10 : priceToY(anchor.price) + 10,
+                        6,
+                        anchor.swingType === 'high' ? 'up' : 'down'
+                      )"
+                    >
+                      <title>{{ lhAnchorEntryTooltip(anchor) }}</title>
+                    </polygon>
+                    <text
+                      class="lh-anchor-label"
+                      :class="anchor.direction === 'LONG' ? 'lh-anchor-long' : 'lh-anchor-short'"
+                      :x="candleX(c.gi) + (aidx * 8 - (c.candle.liquidityAnchor.length - 1) * 4)"
+                      :y="anchor.swingType === 'high' ? priceToY(anchor.price) - 16 : priceToY(anchor.price) + 24"
+                      text-anchor="middle"
+                    >{{ anchor.type === "START" ? "S" : "E" }}</text>
+                  </template>
+                </template>
 
                 <!--
-                  Liquidity anchor markers (see LiquidationHeatmapStamp /
-                  LiquiditySweepInfo in interfacesv2.ts). Two independent
-                  per-side lifecycle markers (short above the candle, long
-                  below, since that's literally where each side's pool
-                  sits) plus a sweep star when this candle actually cleared
-                  a meaningful amount of resting liquidity. Deliberately
-                  different shapes/positions from the Positioning tick
-                  above so the two toggles never visually collide.
+                  Price Action marker: a single simple dot at candle close,
+                  shown ONLY when candle.priceAction.strongAction is true
+                  (computed once in priceAction.ts, not recomputed here —
+                  see its own doc comment for the exact filter). Direction
+                  and reasoning come straight from the same precomputed
+                  object (dominant, reasons) — no separate UI-side logic.
+                  Positioned above the high (LONG) or below the low
+                  (SHORT) rather than on the candle body/wick itself —
+                  sitting on the close made it easy to lose against the
+                  candle. A larger, brighter-outlined halo circle behind
+                  the main dot adds contrast against the dark background.
                 -->
-                <g v-if="showLiquidityInfo">
-                  <polygon
-                    v-if="liquiditySideMarker(c.candle, 'short') !== null"
-                    class="liquidity-marker liquidity-short"
-                    :class="liquiditySideMarker(c.candle, 'short')!.statusClass"
-                    :points="trianglePoints(candleX(c.gi), priceToY(c.candle.high) - 10, candleWidth * 0.5, 'up')"
-                    :fill="liquiditySideMarker(c.candle, 'short')!.filled ? '#a78bfa' : 'none'"
-                    stroke="#a78bfa"
-                    stroke-width="1"
-                    :opacity="liquiditySideMarker(c.candle, 'short')!.opacity"
-                  >
-                    <title>{{ liquidityStampTooltip(c.candle, 'short') }}</title>
-                  </polygon>
+                <g v-if="showPriceAction && c.candle.priceAction?.strongAction">
                   <circle
-                    v-if="liquiditySideMarker(c.candle, 'short')?.ended"
-                    class="liquidity-ended-ring liquidity-short"
+                    class="strong-price-action-halo"
+                    :class="c.candle.priceAction.dominant === 'LONG' ? 'lh-anchor-long' : 'lh-anchor-short'"
                     :cx="candleX(c.gi)"
-                    :cy="priceToY(c.candle.high) - 10"
+                    :cy="c.candle.priceAction.dominant === 'LONG' ? priceToY(c.candle.high) - 24 : priceToY(c.candle.low) + 32"
+                    r="8"
+                  />
+                  <circle
+                    class="strong-price-action-marker"
+                    :class="c.candle.priceAction.dominant === 'LONG' ? 'lh-anchor-long' : 'lh-anchor-short'"
+                    :cx="candleX(c.gi)"
+                    :cy="c.candle.priceAction.dominant === 'LONG' ? priceToY(c.candle.high) - 24 : priceToY(c.candle.low) + 32"
                     r="5"
-                    fill="none"
-                    stroke="#a78bfa"
-                    stroke-width="1.5"
                   >
-                    <title>{{ liquidityStampTooltip(c.candle, 'short') }}</title>
-                  </circle>
-
-                  <polygon
-                    v-if="liquiditySideMarker(c.candle, 'long') !== null"
-                    class="liquidity-marker liquidity-long"
-                    :class="liquiditySideMarker(c.candle, 'long')!.statusClass"
-                    :points="trianglePoints(candleX(c.gi), priceToY(c.candle.low) + 16, candleWidth * 0.5, 'down')"
-                    :fill="liquiditySideMarker(c.candle, 'long')!.filled ? '#2dd4bf' : 'none'"
-                    stroke="#2dd4bf"
-                    stroke-width="1"
-                    :opacity="liquiditySideMarker(c.candle, 'long')!.opacity"
-                  >
-                    <title>{{ liquidityStampTooltip(c.candle, 'long') }}</title>
-                  </polygon>
-                  <circle
-                    v-if="liquiditySideMarker(c.candle, 'long')?.ended"
-                    class="liquidity-ended-ring liquidity-long"
-                    :cx="candleX(c.gi)"
-                    :cy="priceToY(c.candle.low) + 16"
-                    r="5"
-                    fill="none"
-                    stroke="#2dd4bf"
-                    stroke-width="1.5"
-                  >
-                    <title>{{ liquidityStampTooltip(c.candle, 'long') }}</title>
-                  </circle>
-
-                  <polygon
-                    v-if="c.candle.liquiditySweepInfo?.behavior === 'SWEPT'"
-                    class="liquidity-sweep-star"
-                    :points="starPoints(candleX(c.gi), (priceToY(c.candle.high) + priceToY(c.candle.low)) / 2, 5 + sweepStarBoost(c.candle))"
-                    fill="#fbbf24"
-                    :opacity="sweepStarOpacity(c.candle)"
-                  >
-                    <title>{{ sweepTooltip(c.candle) }}</title>
-                  </polygon>
-                </g>
-
-                <!--
-                  Price-action stage dots: rejection/displacement are
-                  MOMENTARY fields (true only on the exact triggering
-                  candle — see priceAction.ts field conventions), so no
-                  transition-detection is needed, just a direct check per
-                  candle. Reclaim gets no dot of its own: seeing a
-                  displacement dot already implies reclaim happened first
-                  (the state machine requires it), so a third dot would be
-                  redundant. The sweep event itself is already shown by
-                  Liquidity Info's star, so it's intentionally not repeated
-                  here.
-                -->
-                <g v-if="showPriceAction">
-                  <circle
-                    v-if="c.candle.priceAction?.rejection.detected"
-                    class="price-action-dot price-action-rejection"
-                    :class="c.candle.priceAction.rejection.direction === 'LONG' ? 'price-action-long' : 'price-action-short'"
-                    :cx="candleX(c.gi)"
-                    :cy="priceToY(c.candle.close)"
-                    r="3"
-                  >
-                    <title>{{ priceActionDotTooltip(c.candle, 'rejection') }}</title>
-                  </circle>
-                  <circle
-                    v-if="c.candle.priceAction?.displacement.detected"
-                    class="price-action-dot price-action-displacement"
-                    :class="c.candle.priceAction.displacement.direction === 'LONG' ? 'price-action-long' : 'price-action-short'"
-                    :cx="candleX(c.gi)"
-                    :cy="priceToY(c.candle.close)"
-                    r="4.5"
-                  >
-                    <title>{{ priceActionDotTooltip(c.candle, 'displacement') }}</title>
+                    <title>{{ c.candle.priceAction.reasons.join('\n') }}</title>
                   </circle>
                 </g>
 
               </g>
             </g>
-
-            <!-- price action: tracked level as a horizontal ray -->
-            <template v-if="showPriceAction">
-              <g v-for="seg in priceActionSegments" :key="seg.id" class="price-action-segment">
-                <line
-                  class="price-action-line"
-                  :class="[seg.direction === 'LONG' ? 'price-action-long' : 'price-action-short', { 'price-action-confirmed': seg.confirmed }]"
-                  :x1="candleX(seg.startGi)"
-                  :x2="candleX(seg.endGi)"
-                  :y1="priceToY(seg.level)"
-                  :y2="priceToY(seg.level)"
-                >
-                  <title>{{ priceActionSegmentTooltip(seg) }}</title>
-                </line>
-                <text
-                  class="price-action-label"
-                  :class="seg.direction === 'LONG' ? 'price-action-long' : 'price-action-short'"
-                  :x="candleX(seg.endGi) + 4"
-                  :y="priceToY(seg.level) - 3"
-                >{{ seg.stage }}</text>
-              </g>
-            </template>
 
             <!-- liquidation heatmap -->
             <g v-for="range in liquidityRanges" :key="range.id" class="liquidity-heatmap" @mousedown.stop="selectDrawing('liquidity', range.id)">
@@ -593,7 +504,116 @@
               <line class="drawing-edge-handle" :x1="candleX(range.startGi) - candleWidth / 2" :x2="candleX(range.startGi) - candleWidth / 2" :y1="priceToY(range.high)" :y2="priceToY(range.low)" @mousedown="startLiquidityResize(range.id, 'left', $event)" />
               <line class="drawing-edge-handle" :x1="candleX(range.endGi) + candleWidth / 2" :x2="candleX(range.endGi) + candleWidth / 2" :y1="priceToY(range.high)" :y2="priceToY(range.low)" @mousedown="startLiquidityResize(range.id, 'right', $event)" />
               <text class="drawing-remove" :x="candleX(range.startGi) - candleWidth / 2 + 4" :y="priceToY(range.high) - 6" @click.stop="removeDrawing('liquidity', range.id)">✕</text>
+
+              <!--
+                Predict: runs predictMovement.ts over exactly this range's
+                own candles (see runPrediction) — user-triggered only,
+                never automatic. Once run, shows a dashed line at the
+                predicted target price with its probability, or "No clear
+                target" when signals didn't converge on an available
+                hot zone. Full signal breakdown is in the line's tooltip.
+              -->
+              <g
+                class="predict-button"
+                :transform="`translate(${candleX(range.startGi) - candleWidth / 2 + 34}, ${priceToY(range.high) - 12})`"
+                @click.stop="runPrediction(range)"
+              >
+                <rect class="predict-button-bg" x="-2" y="-10" width="52" height="14" rx="3" />
+                <text class="predict-button-label" x="24" y="0" text-anchor="middle">Predict</text>
+              </g>
+
+              <!--
+                Download: exports exactly this range's own candles, its
+                computed heatmap cells, and its prediction result (if
+                Predict has been run) as one JSON file — a focused,
+                shareable snapshot of this specific range, alongside the
+                full symbolInfo download in the toolbar.
+              -->
+              <g
+                class="predict-button"
+                :transform="`translate(${candleX(range.startGi) - candleWidth / 2 + 90}, ${priceToY(range.high) - 12})`"
+                @click.stop="downloadLiquidityRangeJson(range)"
+              >
+                <rect class="predict-button-bg" x="-2" y="-10" width="64" height="14" rx="3" />
+                <text class="predict-button-label" x="30" y="0" text-anchor="middle">Download</text>
+              </g>
+
+              <template v-if="range.prediction && range.prediction.levels.length">
+                <g v-for="(lvl, lvlIdx) in range.prediction.levels" :key="'lvl-' + lvlIdx">
+                  <line
+                    class="prediction-target-line"
+                    :class="lvl.direction === 'up' ? 'lh-anchor-long' : 'lh-anchor-short'"
+                    :style="{ opacity: Math.max(0.25, lvl.probability / 100) }"
+                    :x1="candleX(range.startGi) - candleWidth / 2"
+                    :x2="candleX(range.endGi) + candleWidth / 2"
+                    :y1="priceToY(lvl.targetPrice)"
+                    :y2="priceToY(lvl.targetPrice)"
+                  >
+                    <title>{{ range.prediction.reasons.join('\n') }}</title>
+                  </line>
+                  <!--
+                    Drag handle: wide, invisible hit-line so grabbing a
+                    prediction level doesn't require pixel precision (same
+                    generous stroke-width convention as every other
+                    drag handle in this file). Dragging recomputes
+                    poolValue/probability live at the new price using the
+                    SAME signal weights the original prediction computed —
+                    see recomputeLevelAtPrice's own doc comment.
+                  -->
+                  <line
+                    class="prediction-hit-line"
+                    :x1="candleX(range.startGi) - candleWidth / 2"
+                    :x2="candleX(range.endGi) + candleWidth / 2"
+                    :y1="priceToY(lvl.targetPrice)"
+                    :y2="priceToY(lvl.targetPrice)"
+                    @mousedown="startPredictionLevelDrag(range, lvl, $event)"
+                  />
+                  <text
+                    class="prediction-target-label"
+                    :class="lvl.direction === 'up' ? 'lh-anchor-long' : 'lh-anchor-short'"
+                    :style="{ opacity: Math.max(0.4, lvl.probability / 100) }"
+                    :x="candleX(range.endGi) + candleWidth / 2 + 4"
+                    :y="priceToY(lvl.targetPrice) + 3"
+                  >{{ lvl.probability }}% -> {{ formatPrice(lvl.targetPrice) }}</text>
+                </g>
+              </template>
+              <text
+                v-else-if="range.prediction && !range.prediction.levels.length"
+                class="prediction-target-label prediction-none"
+                :x="candleX(range.startGi) - candleWidth / 2 + 4"
+                :y="priceToY(range.high) - 24"
+              >No achievable level found ({{ range.prediction.reasons[range.prediction.reasons.length - 1] }})</text>
             </g>
+
+            <!-- LH Anchors: auto-anchored heatmap over every confirmed trend
+                 segment (see lhAnchorRanges). Read-only — no resize/delete
+                 handles, since these are derived from candle structure, not
+                 drawn by hand. Outline color follows segment direction;
+                 dashed outline = segment still ongoing (no END confirmed
+                 yet, heatmap runs to the most recent candle). -->
+            <template v-if="showLHAnchors">
+              <g v-for="range in lhAnchorRanges" :key="'lh-' + range.pairId" class="lh-anchor-heatmap">
+                <rect
+                  v-for="cell in range.cells"
+                  :key="'lhcell-' + range.pairId + '-' + cell.candleIndex + '-' + cell.bucketIndex"
+                  :x="candleX(cell.candleIndex + range.startGi) - candleWidth / 2"
+                  :y="priceToY(cell.priceHigh)"
+                  :width="candleWidth"
+                  :height="Math.max(1, priceToY(cell.priceLow) - priceToY(cell.priceHigh))"
+                  :fill="cell.color"
+                />
+                <rect
+                  class="lh-anchor-heatmap-outline"
+                  :class="[range.direction === 'LONG' ? 'lh-anchor-long' : 'lh-anchor-short', { ongoing: range.ongoing }]"
+                  :x="candleX(range.startGi) - candleWidth / 2"
+                  :y="priceToY(range.high)"
+                  :width="Math.max(2, candleX(range.endGi) - candleX(range.startGi) + candleWidth)"
+                  :height="Math.max(2, priceToY(range.low) - priceToY(range.high))"
+                >
+                  <title>{{ lhAnchorRangeTooltip(range) }}</title>
+                </rect>
+              </g>
+            </template>
 
             <!-- multi-tf ghost candles -->
             <template v-for="tf in OVERLAY_TF_LIST" :key="'ov-' + tf">
@@ -1109,30 +1129,6 @@
                 :height="Math.max(0.5, b.h)"
               />
             </g>
-
-            <!-- Price action strength: zero-centered oscillator, green/red
-                 when strength confirms the candle's own direction, amber
-                 when it diverges. Appended after the generic propRows lanes. -->
-            <g
-              v-if="showPriceAction"
-              class="subplot prop-subplot price-action-strength-subplot"
-              :transform="`translate(0, ${mainPlotHeight + 4 + propRowY(propRows.length)})`"
-            >
-              <text class="subplot-title" x="4" y="10">PRICE ACTION STRENGTH</text>
-              <line class="pa-strength-zero-line" x1="0" :x2="plotWidth" :y1="PROP_HEIGHT / 2" :y2="PROP_HEIGHT / 2" />
-              <rect
-                v-for="b in priceActionStrengthBars()"
-                :key="'pas' + b.gi"
-                class="prop-bar"
-                :class="b.cls"
-                :x="candleX(b.gi) - candleWidth * 0.62 / 2"
-                :y="priceActionStrengthBarY(b.signed)"
-                :width="candleWidth * 0.62"
-                :height="Math.max(0.5, priceActionStrengthBarHeight(b.signed))"
-              >
-                <title>{{ priceActionStrengthTooltip(b.candle) }}</title>
-              </rect>
-            </g>
           </svg>
 
           <!-- Text annotation inline editor -->
@@ -1272,20 +1268,18 @@
                 {{ (hoveredCandle.candleStructure?.bodyRatio * 100).toFixed(0) }}% body
               </span>
               <span class="hud-item">ATR<b>{{ formatPrice(hoveredCandle.atr) }}</b></span>
-              <template v-if="showPositioning && hoveredCandle.openInterest?.positioningState">
-                <span
-                  class="hud-item positioning-hud"
-                  :class="positioningMarkerClass(hoveredCandle)"
-                  :title="positioningTooltip(hoveredCandle)"
-                >
-                  {{ hoveredCandle.openInterest.positioningState.behavior }}
-                  <b v-if="hoveredCandle.openInterest.positioningState.behavior !== 'NEUTRAL' && hoveredCandle.openInterest.positioningState.behavior !== 'INSUFFICIENT_DATA'">
-                    ({{ Math.round(hoveredCandle.openInterest.positioningState.strength) }})
-                  </b>
-                </span>
-                <span class="hud-item hud-reasons">
-                  {{ hoveredCandle.openInterest.positioningState.reasons[hoveredCandle.openInterest.positioningState.reasons.length - 1] }}
-                </span>
+              <template v-if="showLHAnchors">
+                <template v-for="(a, aidx) in (hoveredCandle.liquidityAnchor || [])" :key="'hud-lha-' + aidx">
+                  <span
+                    class="hud-item lh-anchor-hud"
+                    :class="a.direction === 'LONG' ? 'lh-anchor-long' : 'lh-anchor-short'"
+                  >
+                    {{ a.type }} #{{ a.sequenceIndex }} ({{ a.direction }})
+                  </span>
+                  <span class="hud-item hud-reasons">
+                    {{ a.reasons[a.reasons.length - 1] }}
+                  </span>
+                </template>
               </template>
             </template>
           <div v-if="selectedDrawing" class="drawing-toolbar">
@@ -1302,62 +1296,49 @@
              itself) so adding more legends later doesn't require guessing
              pixel offsets to avoid overlap. -->
         <div class="chart-legends">
-          <div v-if="showPositioning" class="legend-box">
-            <div class="legend-title">Positioning</div>
-            <div
-              v-for="item in POSITIONING_LEGEND"
-              :key="item.behavior"
-              class="legend-row"
-            >
-              <span class="legend-swatch" :style="{ background: item.color }"></span>
-              <span class="legend-label">{{ item.label }}</span>
+          <div v-if="showLHAnchors" class="legend-box">
+            <div class="legend-title">LH Anchors</div>
+            <div class="legend-row">
+              <svg class="legend-shape" viewBox="0 0 12 12"><polygon points="6,1 11,10 1,10" fill="#22c55e" /></svg>
+              <span class="legend-label">Uptrend segment (swing high)</span>
             </div>
+            <div class="legend-row">
+              <svg class="legend-shape" viewBox="0 0 12 12"><polygon points="1,2 11,2 6,11" fill="#ef4444" /></svg>
+              <span class="legend-label">Downtrend segment (swing low)</span>
+            </div>
+            <div class="legend-row liquidity-legend-note">S = segment start · E = segment end</div>
+            <div class="legend-row liquidity-legend-note">dashed heatmap outline = still ongoing (no E yet)</div>
           </div>
 
-          <div v-if="showLiquidityInfo" class="legend-box">
-            <div class="legend-title">Liquidity</div>
-            <div class="legend-row">
-              <svg class="legend-shape" viewBox="0 0 12 12"><polygon points="6,1 11,10 1,10" fill="#2dd4bf" /></svg>
-              <span class="legend-label">Long-side liquidity (below price)</span>
-            </div>
-            <div class="legend-row">
-              <svg class="legend-shape" viewBox="0 0 12 12"><polygon points="1,2 11,2 6,11" fill="#a78bfa" /></svg>
-              <span class="legend-label">Short-side liquidity (above price)</span>
-            </div>
-            <div class="legend-row liquidity-legend-note">hollow = building · solid = active · ring = ended</div>
-            <div class="legend-row">
-              <svg class="legend-shape" viewBox="0 0 12 12"><polygon points="6,0 7.5,4.5 12,6 7.5,7.5 6,12 4.5,7.5 0,6 4.5,4.5" fill="#fbbf24" /></svg>
-              <span class="legend-label">Liquidity swept this candle</span>
+          <!-- LH Anchors segment picker: markers always show for every
+               confirmed segment, but the heatmap itself (the heavy part)
+               only renders for segments checked here — old candle to
+               current, top to bottom. -->
+          <div v-if="showLHAnchors && lhAnchorPairs.length" class="legend-box lh-anchor-picker">
+            <div class="legend-title">Heatmaps</div>
+            <div class="lh-anchor-picker-list">
+              <label v-for="p in lhAnchorPairs" :key="p.pairId" class="lh-anchor-picker-row">
+                <input
+                  type="checkbox"
+                  :checked="selectedLhAnchorPairIds.has(p.pairId)"
+                  @change="toggleLhAnchorPairSelection(p.pairId)"
+                />
+                <span :class="p.direction === 'LONG' ? 'lh-anchor-long' : 'lh-anchor-short'">{{ lhAnchorPairLabel(p) }}</span>
+              </label>
             </div>
           </div>
 
           <div v-if="showPriceAction" class="legend-box">
             <div class="legend-title">Price Action</div>
             <div class="legend-row">
-              <span class="legend-swatch" style="background:#2dd4bf"></span>
-              <span class="legend-label">Long setup (dashed = pending, solid = confirmed)</span>
+              <svg class="legend-shape" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#22c55e" /></svg>
+              <span class="legend-label">Strong LONG action</span>
             </div>
             <div class="legend-row">
-              <span class="legend-swatch" style="background:#a78bfa"></span>
-              <span class="legend-label">Short setup (dashed = pending, solid = confirmed)</span>
+              <svg class="legend-shape" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#ef4444" /></svg>
+              <span class="legend-label">Strong SHORT action</span>
             </div>
-            <div class="legend-row">
-              <svg class="legend-shape" viewBox="0 0 12 12"><circle cx="6" cy="6" r="3" fill="#e5e7eb" /></svg>
-              <span class="legend-label">Rejection candle</span>
-            </div>
-            <div class="legend-row">
-              <svg class="legend-shape" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#e5e7eb" /></svg>
-              <span class="legend-label">Displacement candle</span>
-            </div>
-            <div class="legend-row liquidity-legend-note">strength subplot below chart:</div>
-            <div class="legend-row">
-              <span class="legend-swatch" style="background:#22c55e"></span>
-              <span class="legend-label">Confirms price direction</span>
-            </div>
-            <div class="legend-row">
-              <span class="legend-swatch" style="background:#f59e0b"></span>
-              <span class="legend-label">Diverges from price direction</span>
-            </div>
+            <div class="legend-row liquidity-legend-note">confirmed displacement, or a decisive respected sweep — not every sweep/reject</div>
           </div>
         </div>
 
@@ -1483,9 +1464,12 @@ import type {
   CandleStructure,
   OpenInterestHistEntry,
   LongShortRatioEntry,
+  SIGNAL_DIRECTION,
+  LiquidityHeatmapAnchor,
 } from "@/core/interfacesv2";
 import { klineDbUtilityV2 } from "@/utility/v2/klineDbUtilityV2";
 import { getLiqudationHeatmap, type LiquidationHeatmapCell } from "@/utility/v2/analysis/liquidationHeatmap";
+import { predictMovement, recomputeLevelAtPrice, type MovementPrediction, type PredictedLevel } from "@/utility/v2/analysis/predictMovement";
 import { OrderMakerUtility } from "@/utility/OrderMakerUtility";
 import { useNotificationStore } from "@/stores/notificationStore.ts";
 import { loadToolCache, saveToolCache } from "@/utility/toolCacheDb";
@@ -1493,7 +1477,7 @@ import DialogComponent from '../../shared/dialog/DialogComponent.vue';
 import DialogHeaderComponent from '../../shared/dialog/DialogHeaderComponent.vue';
 import MovementAnalyzerComponent from './MovementAnalyzerComponent.vue';
 import { listAllNotes, saveNote, deleteNote, type StickyNote } from "@/utility/notesDb";
-import { listScoreEntries, saveScoreEntry, deleteScoreEntry, clearAllScoreEntries, type ScoreEntry } from "@/utility/ScoreDb.ts";
+import { listScoreEntries, saveScoreEntry, deleteScoreEntry, clearAllScoreEntries, type ScoreEntry } from "@/utility/ScoreDb";
 
 // ── Dynamic candle detail renderer ─────────────────────────────────────
 // Intentionally driven by the runtime object rather than CandleInfo's type
@@ -1859,6 +1843,26 @@ async function loadSymbolInfo() {
   }
 }
 
+// Downloads the currently loaded symbolInfo (every timeframe's candles,
+// with every computed field — candleStructure, openInterest, priceAction,
+// liquidityAnchor, etc. — already attached) as a single JSON file. Meant
+// for sharing a concrete dataset when debugging something that only shows
+// up in real data, not in a synthetic test case.
+function downloadSymbolInfoJson() {
+  if (!symbolInfo.value) return;
+  const json = JSON.stringify(symbolInfo.value, null, 2);
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  a.href = url;
+  a.download = `symbolInfo-${props.symbol}-${stamp}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 // ── Load older candles ───────────────────────────────────────────────────
 // Pulls history from before the oldest candle currently loaded for the
 // active primary timeframe. klineDbUtilityV2 only exposes whatever is
@@ -2099,7 +2103,7 @@ const FRVP_MAX_WIDTH = 90;
 const plotWidth = computed(() => Math.max(50, chartWidth.value - PAD_RIGHT));
 // Grows with the number of stacked dynamic-property bar rows (see propRows),
 // plus one more reserved row when the price-action strength subplot is showing.
-const subplotsHeight = computed(() => (propRows.value.length + (showPriceAction.value ? 1 : 0)) * (PROP_HEIGHT + SUBPLOT_GAP));
+const subplotsHeight = computed(() => propRows.value.length * (PROP_HEIGHT + SUBPLOT_GAP));
 const mainPlotHeight = computed(() =>
   Math.max(80, chartHeight.value - PAD_TOP - subplotsHeight.value - TIME_AXIS_HEIGHT)
 );
@@ -2347,8 +2351,18 @@ function eventLocalPos(e: MouseEvent): { x: number; y: number } {
 function isInteractiveOverlayTarget(e: MouseEvent): boolean {
   const el = e.target as HTMLElement | null;
   if (!el) return false;
+  // .drawing-remove and .predict-button are SVG elements (the "✕" delete
+  // buttons on every drawing, and the Predict/Download buttons) that only
+  // ever had @click.stop, with no @mousedown handler to stop propagation
+  // at that phase. Every OTHER interactive SVG element (resize handles,
+  // level-drag lines) already calls event.stopPropagation() itself inside
+  // its own @mousedown handler, so mousedown never reaches this far for
+  // those — but these click-only ones had nothing stopping mousedown from
+  // bubbling up and starting a pan/tool-draft here first, which is what
+  // produced the "fight between click and grab" on nearly every button.
+  // Element.closest() works on SVG elements the same as HTML ones.
   return !!el.closest(
-    "button, input, select, textarea, a, .preview-panel, .drawing-toolbar, .notes-toolbar, .notes-panel, .text-annotation-editor, .load-older-wrap"
+    "button, input, select, textarea, a, .preview-panel, .drawing-toolbar, .notes-toolbar, .notes-panel, .text-annotation-editor, .load-older-wrap, .drawing-remove, .predict-button"
   );
 }
 
@@ -2644,6 +2658,35 @@ function loadStoredPropRows(): PropRow[] {
 const propRows = ref<PropRow[]>(loadStoredPropRows());
 const openPropMenuRowId = ref<string | null>(null);
 const propSearch = ref("");
+
+// Small SVG polygon-points helpers, shared by any marker that needs a
+// simple triangle (LH Anchors' START/END markers use this).
+function trianglePoints(cx: number, cy: number, size: number, dir: "up" | "down"): string {
+  if (dir === "up") {
+    return `${cx},${cy - size} ${cx + size},${cy + size} ${cx - size},${cy + size}`;
+  }
+  return `${cx},${cy + size} ${cx + size},${cy - size} ${cx - size},${cy - size}`;
+}
+
+// Y-offset of the Nth stacked subplot row (propRows and any other
+// dynamic subplot lane share this same vertical layout).
+function propRowY(index: number): number {
+  return index * (PROP_HEIGHT + SUBPLOT_GAP);
+}
+
+// Bar heights for one propRow's chosen numeric property, scaled to the
+// currently DISPLAYED candles' own max magnitude — same "auto-scale to
+// what's on screen" convention as the main price axis itself, so a
+// scrolled-in view doesn't render a barely-visible sliver just because
+// some far-off candle had an outsized value.
+function propBarsForRow(prop: string): Array<{ gi: number; h: number }> {
+  const rows = displayCandles.value.map(c => {
+    const v = getByPath(c.candle, prop);
+    return { gi: c.gi, v: typeof v === "number" && Number.isFinite(v) ? Math.abs(v) : 0 };
+  });
+  const maxV = Math.max(1e-9, ...rows.map(r => r.v));
+  return rows.map(r => ({ gi: r.gi, h: (r.v / maxV) * (PROP_HEIGHT - 4) }));
+}
 const propSelectRefs: Record<string, HTMLElement | null> = {};
 function setPropSelectRef(id: string, el: Element | null) {
   propSelectRefs[id] = el as HTMLElement | null;
@@ -2713,339 +2756,91 @@ function onDocumentClickForPropSelect(e: MouseEvent) {
   if (el && !el.contains(e.target as Node)) openPropMenuRowId.value = null;
 }
 
-// ── Positioning marker (price x OI quadrant) ───────────────────────────
-// Pure display mapping from PositioningState -> color/opacity/tooltip.
-// No thresholds or scoring introduced here: color is a 1:1 map of the
-// `behavior` enum, opacity is a linear map of the already-computed
-// `strength` (0-100), and the tooltip just surfaces the causal `reasons`
-// the analysis module already produced.
-const POSITIONING_COLORS: Record<string, string> = {
-  LONG_BUILDUP: "#22c55e",   // green — price + OI rising together
-  SHORT_COVERING: "#60a5fa", // blue — price rising, OI falling
-  SHORT_BUILDUP: "#ef4444",  // red — price falling, OI rising
-  LONG_UNWINDING: "#f59e0b", // amber — price + OI falling together
-  NEUTRAL: "#6b7280",        // gray — price or OI flat, not classified
-};
-
-// Plain-language labels for the legend, in the order the legend is shown.
-// Derived from the same color map above — never a second, independent
-// color list that could drift out of sync with the actual markers.
-const POSITIONING_LABELS: Record<string, string> = {
-  LONG_BUILDUP: "Long buildup — price + OI rising",
-  SHORT_COVERING: "Short covering — price up, OI down",
-  SHORT_BUILDUP: "Short buildup — price down, OI up",
-  LONG_UNWINDING: "Long unwinding — price + OI falling",
-  NEUTRAL: "Neutral — price or OI flat",
-};
-const POSITIONING_LEGEND = (Object.keys(POSITIONING_COLORS) as Array<keyof typeof POSITIONING_COLORS>).map(
-  (behavior) => ({
-    behavior,
-    color: POSITIONING_COLORS[behavior],
-    label: POSITIONING_LABELS[behavior],
-  })
-);
-
-function positioningMarkerFill(candle: CandleInfo): string | null {
-  const behavior = candle.openInterest?.positioningState?.behavior;
-  if (!behavior || behavior === "INSUFFICIENT_DATA") return null;
-  return POSITIONING_COLORS[behavior] ?? null;
-}
-
-function positioningMarkerClass(candle: CandleInfo): string {
-  const behavior = candle.openInterest?.positioningState?.behavior ?? "INSUFFICIENT_DATA";
-  return `positioning-${behavior.toLowerCase().replace(/_/g, "-")}`;
-}
-
-function positioningMarkerOpacity(candle: CandleInfo): number {
-  const p = candle.openInterest?.positioningState;
-  if (!p) return 0;
-  if (p.behavior === "NEUTRAL" || p.behavior === "INSUFFICIENT_DATA") return 0.35;
-  // Strength is already 0-100 (min of priceMagnitude/oiMagnitude) — just
-  // rescale to a visible opacity range, never inventing a new number.
-  return 0.25 + (Math.max(0, Math.min(100, p.strength)) / 100) * 0.75;
-}
-
-function positioningTooltip(candle: CandleInfo): string {
-  const p = candle.openInterest?.positioningState;
-  if (!p) return "No positioning data";
-  const lines = [
-    `${p.behavior} (strength ${Math.round(p.strength)})`,
-    `price: ${p.priceDirection} ${p.priceChangePercent.toFixed(2)}% (${p.priceChangeAtr.toFixed(2)}x ATR)`,
-    `OI: ${p.oiDirection} ${p.oiChangePercent.toFixed(2)}%`,
-    `volume: ${p.volumeDirection} ${p.volumeChangePercent.toFixed(2)}% (${p.volumeConfirmation})`,
-    `long/short accounts: ${p.accountShareDirection} ${p.accountShareChangePercent.toFixed(2)}pp (${p.accountAgreement})`,
-    "",
-    ...p.reasons,
-  ];
-  return lines.join("\n");
-}
-
-// ── Liquidity anchor markers (lifecycle + sweep) ────────────────────────
-// Pure display mapping from LiquidationHeatmapStamp / LiquiditySweepInfo.
-// Deliberately different shapes/positions/colors from the Positioning tick
-// (triangles above/below the candle, not a strip under the low) so both
-// toggles can be on at once without overlapping visually. Long = teal
-// (pool sits below price), short = violet (pool sits above price) — a
-// different palette from Positioning's green/blue/red/amber on purpose,
-// since the two concepts can be visible together and shouldn't be
-// confused for the same color language.
-
-interface LiquiditySideMarker {
-  filled: boolean;    // true = ACTIVE (solid triangle), false = BUILDING (hollow)
-  ended: boolean;     // true = also draw the "ended" ring on top
-  opacity: number;
-  statusClass: string;
-}
-
-function liquiditySideMarker(candle: CandleInfo, side: "long" | "short"): LiquiditySideMarker | null {
-  const stamp = candle.liquidationHeatmapStamp?.[side];
-  if (!stamp || stamp.status === "NONE") return null;
-
-  if (stamp.status === "BUILDING") {
-    return { filled: false, ended: false, opacity: 0.55, statusClass: "liquidity-building" };
-  }
-  if (stamp.status === "ACTIVE") {
-    return { filled: true, ended: false, opacity: 0.9, statusClass: "liquidity-active" };
-  }
-  // ENDED — solid fill (it was active up until this candle) plus a ring
-  // drawn separately to mark "resolved here".
-  return { filled: true, ended: true, opacity: 0.9, statusClass: "liquidity-ended" };
-}
-
-/** Upward or downward equilateral-ish triangle, centered at (cx, cy). */
-function trianglePoints(cx: number, cy: number, size: number, dir: "up" | "down"): string {
-  const half = size / 2;
-  if (dir === "up") {
-    return `${cx},${cy - half} ${cx + half},${cy + half} ${cx - half},${cy + half}`;
-  }
-  return `${cx},${cy + half} ${cx + half},${cy - half} ${cx - half},${cy - half}`;
-}
-
-/** 8-point star, centered at (cx, cy), for the sweep marker. */
-function starPoints(cx: number, cy: number, r: number): string {
-  const inner = r * 0.45;
-  const pts: string[] = [];
-  for (let i = 0; i < 8; i++) {
-    const radius = i % 2 === 0 ? r : inner;
-    const angle = (Math.PI / 4) * i - Math.PI / 2;
-    pts.push(`${cx + radius * Math.cos(angle)},${cy + radius * Math.sin(angle)}`);
-  }
-  return pts.join(" ");
-}
-
-function sweepStarOpacity(candle: CandleInfo): number {
-  const ratio = candle.liquiditySweepInfo?.sweptRatio ?? 0;
-  return 0.4 + Math.max(0, Math.min(1, ratio)) * 0.6;
-}
-
-function sweepStarBoost(candle: CandleInfo): number {
-  const ratio = candle.liquiditySweepInfo?.sweptRatio ?? 0;
-  return Math.max(0, Math.min(1, ratio)) * 4; // up to +4px radius for a big sweep
-}
-
-function liquidityStampTooltip(candle: CandleInfo, side: "long" | "short"): string {
-  const stamp = candle.liquidationHeatmapStamp?.[side];
-  if (!stamp) return "No liquidity data";
-  const lines: string[] = [`${side.toUpperCase()} side: ${stamp.status}`];
-  if (stamp.eventOpenTime) lines.push(`started: ${formatDateTime(stamp.eventOpenTime)}`);
-  if (stamp.confirmedOpenTime) lines.push(`confirmed: ${formatDateTime(stamp.confirmedOpenTime)}`);
-  if (stamp.endOpenTime) lines.push(`ended: ${formatDateTime(stamp.endOpenTime)}`);
-  if (stamp.clusterId) lines.push(`cluster: ${stamp.clusterId}`);
-  lines.push(`run length: ${stamp.runLength}`);
-  lines.push("");
-  lines.push(...(candle.liquidationHeatmapStamp?.reasons ?? []));
-  return lines.join("\n");
-}
-
-function sweepTooltip(candle: CandleInfo): string {
-  const s = candle.liquiditySweepInfo;
-  if (!s) return "No sweep data";
-  const lines = [
-    `${s.behavior} (${(s.sweptRatio * 100).toFixed(1)}% of anchor's peak pool)`,
-    `measured against: ${s.measuredSides.join(" + ") || "none"}`,
-    `swept range: [${s.sweptPriceLow?.toFixed(2) ?? "?"}, ${s.sweptPriceHigh?.toFixed(2) ?? "?"}]`,
-    "",
-    ...s.reasons,
-  ];
-  return lines.join("\n");
-}
-
-// ── Price action: tracked level segments (sweep -> reject -> reclaim -> displace -> confirm) ──
-// The level line is the one visual that directly answers "where's the
-// candidate anchor and how is it holding" — the actual point of this
-// whole pipeline. Segments are derived by grouping consecutive visible
-// candles that share the same (direction, level) pair; `reclaim.level` is
-// carried forward unchanged for the sequence's whole life (see
-// priceAction.ts), so exact equality is a safe grouping key here — it's
-// never recomputed mid-sequence, only copied.
-
-interface PriceActionSegment {
-  id: string;
+// ── Liquidity heatmap anchors (see liquidityHeatmapAnchor.ts) ──────────
+// Groups every confirmed START/END onto candles by pairId, computes an
+// auto-anchored heatmap for each pair (reusing computeLiquidityRange,
+// the same function the manual Liquidity drawing tool uses), and covers
+// segments that haven't confirmed an END yet by running the heatmap to
+// the most recent candle instead.
+interface LHAnchorPairInfo {
+  pairId: string;
+  direction: SIGNAL_DIRECTION;
   startGi: number;
   endGi: number;
-  level: number;
-  direction: "LONG" | "SHORT";
-  stage: string;
-  confirmed: boolean;
+  ongoing: boolean;
 }
 
-function priceActionStageLabel(candle: CandleInfo | undefined): string {
-  const seq = candle?.priceAction?.sequence;
-  if (!seq) return "";
-  if (seq.closeConfirmation) return "CONFIRMED";
-  if (seq.displacement) return "DISPLACED";
-  if (seq.reclaim) return "RECLAIMED";
-  if (seq.rejection) return "REJECTED";
-  if (seq.liquiditySweep) return "PENDING";
-  return "";
-}
+const lhAnchorPairs = computed<LHAnchorPairInfo[]>(() => {
+  const starts = new Map<string, number>();
+  const ends = new Map<string, number>();
+  const directions = new Map<string, SIGNAL_DIRECTION>();
 
-const priceActionSegments = computed<PriceActionSegment[]>(() => {
-  const segments: PriceActionSegment[] = [];
-  let current: { startGi: number; level: number; direction: "LONG" | "SHORT" } | null = null;
+  primaryCandles.value.forEach((c, gi) => {
+    for (const a of c.liquidityAnchor ?? []) {
+      if (a.type === "START") starts.set(a.pairId, gi);
+      else ends.set(a.pairId, gi);
+      directions.set(a.pairId, a.direction);
+    }
+  });
 
-  const closeSegment = (endGi: number) => {
-    if (!current) return;
-    const lastCandle = primaryCandles.value[endGi];
-    const seq = lastCandle?.priceAction?.sequence;
-    segments.push({
-      id: `pa-${current.startGi}-${current.direction}-${current.level}`,
-      startGi: current.startGi,
-      endGi,
-      level: current.level,
-      direction: current.direction,
-      stage: priceActionStageLabel(lastCandle),
-      confirmed: (seq?.completion ?? 0) >= 1,
+  const pairs: LHAnchorPairInfo[] = [];
+  for (const [pairId, startGi] of starts) {
+    const endGi = ends.get(pairId);
+    pairs.push({
+      pairId,
+      direction: directions.get(pairId)!,
+      startGi,
+      endGi: endGi ?? primaryCandles.value.length - 1,
+      ongoing: endGi === undefined,
     });
-    current = null;
-  };
-
-  for (const { gi, candle } of displayCandles.value) {
-    const seq = candle.priceAction?.sequence;
-    const direction = seq?.direction;
-    const level = candle.priceAction?.reclaim.level;
-    const isActive = (direction === "LONG" || direction === "SHORT") && level !== undefined;
-
-    if (isActive && current && current.direction === direction && current.level === level) {
-      continue; // segment continues
-    }
-
-    if (current) closeSegment(gi - 1);
-
-    if (isActive) {
-      current = { startGi: gi, level: level as number, direction: direction as "LONG" | "SHORT" };
-    }
   }
-
-  if (current) {
-    closeSegment(displayCandles.value[displayCandles.value.length - 1]?.gi ?? current.startGi);
-  }
-
-  return segments;
+  // Old candle to current, explicitly — don't rely on Map insertion order
+  // being obviously correct to a future reader.
+  return pairs.sort((a, b) => a.startGi - b.startGi);
 });
 
-function priceActionSegmentTooltip(seg: PriceActionSegment): string {
-  const lastCandle = primaryCandles.value[seg.endGi];
-  const lines = [
-    `${seg.direction} price-action level: ${seg.level.toFixed(2)}`,
-    `stage: ${seg.stage}`,
-    "",
-    ...(lastCandle?.priceAction?.reasons ?? []),
-  ];
-  return lines.join("\n");
+// Which segments are actually selected to render. Computing a heatmap for
+// EVERY confirmed segment at once was too heavy — this is the real fix,
+// not just a UI convenience: computeLiquidityRange (the expensive part)
+// only ever runs for what's selected, never for the full list.
+const selectedLhAnchorPairIds = ref<Set<string>>(new Set());
+
+function toggleLhAnchorPairSelection(pairId: string) {
+  const next = new Set(selectedLhAnchorPairIds.value);
+  if (next.has(pairId)) next.delete(pairId);
+  else next.add(pairId);
+  selectedLhAnchorPairIds.value = next;
 }
 
-function priceActionDotTooltip(candle: CandleInfo, stage: "rejection" | "displacement"): string {
-  const event = candle.priceAction?.[stage];
-  if (!event) return "No price action data";
-  const lines = [
-    `${stage.toUpperCase()}: ${event.direction} (strength ${Math.round(event.strength)})`,
-    "",
-    ...event.reasons,
-  ];
-  return lines.join("\n");
+function lhAnchorPairLabel(p: LHAnchorPairInfo): string {
+  const span = p.ongoing ? `${p.startGi} → now` : `${p.startGi}–${p.endGi}`;
+  return `#${lhAnchorPairs.value.indexOf(p) + 1} · ${p.direction} · candles ${span}`;
 }
 
-function propBarsForRow(prop: string) {
-  const matched = displayCandles.value.map((c) => ({
-    gi: c.gi,
-    v: Number(getByPath(c.candle, prop)),
-  }));
-  const max = Math.max(1, ...matched.map((m) => (Number.isFinite(m.v) ? Math.abs(m.v) : 0)));
-  return matched
-    .filter((m) => Number.isFinite(m.v))
-    .map((m) => ({ gi: m.gi, h: (Math.abs(m.v) / max) * (PROP_HEIGHT - 12) }));
-}
+const lhAnchorRanges = computed(() => {
+  return lhAnchorPairs.value
+    .filter(p => selectedLhAnchorPairIds.value.has(p.pairId))
+    .map(p => {
+      const range = computeLiquidityRange(p.startGi, p.endGi);
+      if (!range) return null;
+      return { ...range, pairId: p.pairId, direction: p.direction, ongoing: p.ongoing };
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null);
+});
 
-function propRowY(index: number): number {
-  return index * (PROP_HEIGHT + SUBPLOT_GAP);
-}
-
-// ── Price action strength subplot (confirmation vs divergence) ─────────
-// Separate question from the level-line's stage label: that shows WHICH
-// stage a sequence reached; this shows whether the underlying strength
-// currently AGREES with the candle's own price direction right now,
-// candle by candle — the same "does momentum confirm or diverge from
-// price" read you'd get from comparing price against RSI/MACD, just built
-// from data this pipeline already computes rather than a new indicator.
-
-// Signed so it can render as a zero-centered oscillator: positive when
-// LONG is dominant, negative when SHORT is dominant, zero otherwise.
-function priceActionSignedStrength(candle: CandleInfo): number {
-  const pa = candle.priceAction;
-  if (!pa || pa.dominant === "NEUTRAL") return 0;
-  return pa.dominant === "LONG" ? pa.strength : -pa.strength;
-}
-
-// Confirm = strength's dominant side agrees with this candle's own
-// bullish/bearish close. Diverge = they disagree (price moved one way,
-// the tracked sequence's strength points the other way) — this is
-// candle-by-candle agreement, not a full swing-high/swing-low divergence
-// pattern match; that would need its own dedicated detection later if
-// this simpler version turns out to be useful.
-function priceActionDivergenceClass(candle: CandleInfo): string {
-  const pa = candle.priceAction;
-  if (!pa || pa.dominant === "NEUTRAL" || pa.strength === 0) return "pa-strength-neutral";
-  const bull = candle.candleStructure?.isBullish;
-  const bear = candle.candleStructure?.isBearish;
-  if (pa.dominant === "LONG" && bull) return "pa-strength-confirm-bull";
-  if (pa.dominant === "SHORT" && bear) return "pa-strength-confirm-bear";
-  if (pa.dominant === "LONG" && bear) return "pa-strength-diverge";
-  if (pa.dominant === "SHORT" && bull) return "pa-strength-diverge";
-  return "pa-strength-neutral";
-}
-
-function priceActionStrengthBars() {
-  return displayCandles.value.map(c => ({
-    gi: c.gi,
-    candle: c.candle,
-    signed: priceActionSignedStrength(c.candle),
-    cls: priceActionDivergenceClass(c.candle),
-  }));
-}
-
-function priceActionStrengthBarY(signed: number): number {
-  const half = (PROP_HEIGHT - 12) / 2;
-  const center = PROP_HEIGHT / 2;
-  if (signed >= 0) return center - Math.min(half, (signed / 100) * half);
-  return center;
-}
-function priceActionStrengthBarHeight(signed: number): number {
-  const half = (PROP_HEIGHT - 12) / 2;
-  return Math.min(half, (Math.abs(signed) / 100) * half);
-}
-function priceActionStrengthTooltip(candle: CandleInfo): string {
-  const pa = candle.priceAction;
-  if (!pa) return "No price action data";
-  const cls = priceActionDivergenceClass(candle);
-  const verdict = cls === "pa-strength-diverge" ? "DIVERGES from price"
-    : cls === "pa-strength-neutral" ? "no active sequence"
-    : "CONFIRMS price direction";
+function lhAnchorEntryTooltip(a: LiquidityHeatmapAnchor): string {
   return [
-    `dominant: ${pa.dominant} (strength ${Math.round(pa.strength)})`,
-    `candle: ${candle.candleStructure?.isBullish ? "bullish" : candle.candleStructure?.isBearish ? "bearish" : "flat"}`,
-    verdict,
+    `${a.type} — segment #${a.sequenceIndex} (${a.direction})`,
+    `swing ${a.swingType} @ ${a.price}`,
+    ...a.reasons,
   ].join("\n");
+}
+
+function lhAnchorRangeTooltip(range: { direction: SIGNAL_DIRECTION; ongoing: boolean; startGi: number; endGi: number }): string {
+  const span = `${range.endGi - range.startGi + 1} candles`;
+  return range.ongoing
+    ? `${range.direction} segment, still ongoing — heatmap runs to the most recent candle (${span})`
+    : `${range.direction} segment, confirmed — heatmap over the full segment (${span})`;
 }
 
 // ── Multi-timeframe ghost candle overlays ──────────────────────────────
@@ -3163,21 +2958,19 @@ function persistedNumberRef(key: string, defaultValue: number) {
   return r;
 }
 
-// Toggles the positioningState visualization (price x OI quadrant marker
-// below each candle + positioning readout in the HUD). Off by default,
-// same pattern as showCrossTfEma. Kept separate from any "OI state" naming
-// since positioningState is a distinct derived concept (see positioningState.ts).
-// Persisted to localStorage — see persistedBooleanRef above.
-const showPositioning = persistedBooleanRef("showPositioning", false);
+// Toggles the liquidity heatmap anchor visualization: START/END markers
+// at each confirmed trend segment (see liquidityHeatmapAnchor.ts) plus an
+// auto-anchored heatmap zone over every confirmed segment. Off by
+// default. Persisted.
+const showLHAnchors = persistedBooleanRef("showLHAnchors", false);
 
-// Toggles the liquidity-anchor visualization: per-side (long/short)
-// lifecycle markers from liquidationHeatmapStamp (building/active/ended)
-// plus a sweep marker from liquiditySweepInfo. Off by default. Persisted.
-const showLiquidityInfo = persistedBooleanRef("showLiquidityInfo", false);
-
-// Toggles the price-action sequence visualization: the tracked level as a
-// horizontal ray (dashed until confirmed, solid once closeConfirmation is
-// reached) plus rejection/displacement stage dots. Off by default. Persisted.
+// Toggles the (deliberately minimal) price-action marker: a single dot at
+// candle close, shown whenever candle.priceAction.strongAction is true —
+// the filter itself is computed once in priceAction.ts, not here. No
+// level-line, no separate per-stage dots, no strength subplot — those
+// were the old design; this one is intentionally a single simple
+// identifier so the chart isn't cluttered with every minor sweep/reject
+// along the way.
 const showPriceAction = persistedBooleanRef("showPriceAction", false);
 
 const showMovementAnalyzer = ref(false);
@@ -3222,6 +3015,71 @@ function finalizeLiquidity(d: ToolDraft) {
   if (range) liquidityRanges.value.push(range);
 }
 
+// Runs predictMovement.ts over exactly the candles this heatmap range
+// covers — the same slice the range's own heatmap was computed from.
+// User-triggered only (the "Predict" button), never automatic.
+function runPrediction(range: LiquidityRange) {
+  const slice = primaryCandles.value.slice(range.startGi, range.endGi + 1);
+  range.prediction = predictMovement(slice);
+}
+
+// Drags a predicted level to an arbitrary price, live-recomputing its
+// poolValue/probability at every step via recomputeLevelAtPrice — same
+// signal weights as the original prediction, only "what pool actually
+// sits here" changes as you move. The candle slice is captured ONCE at
+// drag-start (it can't change mid-drag) rather than re-sliced on every
+// mousemove.
+function startPredictionLevelDrag(range: LiquidityRange, level: PredictedLevel, event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  const slice = primaryCandles.value.slice(range.startGi, range.endGi + 1);
+
+  const move = (e: MouseEvent) => {
+    const cur = chartPointFromClient(e.clientX, e.clientY);
+    if (!cur) return;
+    const updated = recomputeLevelAtPrice(slice, level.direction, cur.price);
+    if (!updated) return;
+    level.targetPrice = updated.targetPrice;
+    level.poolValue = updated.poolValue;
+    level.probability = updated.probability;
+  };
+  const up = () => {
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+  };
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+}
+
+// Exports exactly this range's own candles, computed heatmap cells, and
+// prediction result (if run) as one JSON file — a focused, shareable
+// snapshot of a specific liquidity heatmap range, distinct from the full
+// symbolInfo download (which dumps every candle, every timeframe).
+function downloadLiquidityRangeJson(range: LiquidityRange) {
+  const slice = primaryCandles.value.slice(range.startGi, range.endGi + 1);
+  const payload = {
+    symbol: props.symbol,
+    startGi: range.startGi,
+    endGi: range.endGi,
+    low: range.low,
+    high: range.high,
+    candles: slice,
+    heatmapCells: range.cells,
+    prediction: range.prediction ?? null,
+  };
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  a.href = url;
+  a.download = `liquidity-range-${props.symbol}-${range.startGi}-${range.endGi}-${stamp}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 // ── Rectangle / line / price-range / FRVP drawings ─────────────────────
 // x1/x2 on RectShape, LineShape and PriceRangeBox store an openTime
 // (milliseconds), not a bar index — see the time-anchored-drawings comment
@@ -3259,6 +3117,8 @@ interface FrvpZone {
 interface AvwapLine { id: string; anchorGi: number; points: { gi: number; price: number }[] }
 interface LiquidityRange {
   id: string; startGi: number; endGi: number; low: number; high: number; cells: LiquidationHeatmapCell[];
+  /** Set once the user clicks "Predict" on this range — null until then. */
+  prediction?: MovementPrediction | null;
 }
 interface PreviewPosition { side: "buy" | "sell"; entryGi: number; entryPrice: number; tp: number; sl: number }
 
@@ -4692,6 +4552,21 @@ watch(primaryCandles, () => {
 .horizontal-line-date-label { fill: #c8ccd4; font-family: var(--mono); font-size: 10px; text-anchor: middle; pointer-events: none; }
 .heatmap-range-outline { fill: none; stroke: rgba(255,255,255,.25); stroke-width: 1; pointer-events: none; }
 .heatmap-range-outline.selected { stroke: #ff8a65; stroke-width: 2; stroke-dasharray: 4 3; }
+
+.predict-button { cursor: pointer; }
+.predict-button-bg { fill: rgba(10,13,18,.9); stroke: #3a4048; stroke-width: 1; }
+.predict-button:hover .predict-button-bg { stroke: #f8fafc; }
+.predict-button-label { fill: #cdd3db; font-family: var(--mono); font-size: 9px; font-weight: 600; pointer-events: none; }
+.predict-button:hover .predict-button-label { fill: #f8fafc; }
+
+.prediction-target-line { stroke-width: 1.5; stroke-dasharray: 5,3; pointer-events: stroke; }
+.prediction-target-line.lh-anchor-long { stroke: #22c55e; }
+.prediction-target-line.lh-anchor-short { stroke: #ef4444; }
+.prediction-hit-line { stroke: transparent; stroke-width: 14; pointer-events: stroke; cursor: ns-resize; }
+.prediction-target-label { font-family: var(--mono); font-size: 10px; font-weight: 600; pointer-events: none; }
+.prediction-target-label.lh-anchor-long { fill: #22c55e; }
+.prediction-target-label.lh-anchor-short { fill: #ef4444; }
+.prediction-target-label.prediction-none { fill: #9aa4b2; font-weight: 400; }
 .preview-tp-line { stroke: var(--bull); stroke-width: 1; stroke-dasharray: 4 3; opacity: .85; pointer-events: none; }
 .preview-sl-line { stroke: var(--bear); stroke-width: 1; stroke-dasharray: 4 3; opacity: .85; pointer-events: none; }
 .preview-hit-line { stroke: transparent; stroke-width: 12; cursor: ns-resize; pointer-events: stroke; }
@@ -4892,7 +4767,7 @@ width: 30rem;
 .rail-btn.active { background: rgba(79, 195, 247, 0.15); border-color: var(--accent); color: var(--accent); }
 .rail-sep { width: 18px; height: 1px; background: rgba(255, 255, 255, 0.1); margin: 4px 0; }
 
-.chart-container { position: relative; flex: 1; min-width: 0; cursor: grab; user-select: none; }
+.chart-container { position: relative; flex: 1; min-width: 0; user-select: none; }
 .load-older-wrap { position: absolute; left: 4px; top: 50%; transform: translateY(-50%); z-index: 18; }
 .load-older-btn {
   width: 20px; height: 34px; border-radius: 4px;
@@ -4913,7 +4788,6 @@ width: 30rem;
 .load-older-menu button:disabled { opacity: .5; cursor: default; }
 .load-older-loading { color: #8b95a1; font-size: 10px; text-align: center; padding: 2px 0; }
 .load-older-error { color: var(--bear); font-size: 10px; text-align: center; padding: 2px 0; max-width: 140px; white-space: normal; }
-.chart-container:active { cursor: grabbing; }
 .chart-container.tool-rectangle, .chart-container.tool-line, .chart-container.tool-horizontal-line,
 .chart-container.tool-price-range, .chart-container.tool-frvp, .chart-container.tool-liquidity { cursor: crosshair; }
 .chart-container.tool-avwap { cursor: copy; }
@@ -4944,11 +4818,18 @@ width: 30rem;
 /* grid / axes */
 .grid-line { stroke: rgba(255, 255, 255, 0.045); }
 .price-label { fill: #6b7480; font-size: 10px; font-family: var(--mono); }
-.hover-price-label { fill: #0a0d12; }
+.hover-price-label { fill: #0a0d12; pointer-events: none; }
 .time-label { fill: #6b7480; font-size: 10px; font-family: var(--mono); text-anchor: middle; }
 .hover-time-badge-group { pointer-events: none; }
 .hover-time-badge { fill: #2a2f36; stroke: #4a5058; stroke-width: 1; }
 .hover-time-badge-text { fill: #e8eaed; font-size: 10px; font-family: var(--mono); text-anchor: middle; dominant-baseline: middle; }
+/* Purely visual overlay that tracks the mouse exactly — MUST NOT
+   intercept pointer events, or it fights every button/handle underneath
+   it for hit-testing priority (since it's always sitting right where
+   you're trying to click). Was missing this entirely; likely the actual
+   cause of "flickering pointer, need pixel precision" on buttons and
+   resize handles. */
+.crosshair { pointer-events: none; }
 .crosshair-line { stroke: rgba(255, 255, 255, 0.25); stroke-dasharray: 3 3; }
 
 /* overlay ghost candles */
@@ -5064,6 +4945,13 @@ width: 30rem;
 .avwap-line { fill: none; stroke: #b388ff; stroke-width: 1.4; }
 
 .liquidity-heatmap rect { pointer-events: none; }
+/* Override for the Predict button specifically — the rule above exists
+   for the heatmap cells and outline rect (so they don't block dragging
+   the underlying chart), but it's a broad `rect` type-selector that also
+   catches this new button's background rect since it's nested in the
+   same group. Needs >= equal specificity (two classes here vs the one
+   class + one type above) to reliably win regardless of source order. */
+.liquidity-heatmap .predict-button-bg { pointer-events: all; }
 
 /* preview position */
 .preview-zone { pointer-events: none; }
@@ -5074,11 +4962,6 @@ width: 30rem;
 /* subplots */
 .subplot-title { fill: #576172; font-size: 9px; font-family: var(--mono); letter-spacing: 0.6px; }
 .prop-bar { fill: rgba(79, 195, 247, 0.55); }
-.pa-strength-zero-line { stroke: rgba(255,255,255,.15); stroke-width: 1; }
-.prop-bar.pa-strength-confirm-bull { fill: #22c55e; }
-.prop-bar.pa-strength-confirm-bear { fill: #ef4444; }
-.prop-bar.pa-strength-diverge { fill: #f59e0b; }
-.prop-bar.pa-strength-neutral { fill: #4b5563; }
 
 /* HUD */
 .hud {
@@ -5201,48 +5084,64 @@ width: 30rem;
     fill: #ef4444;
 }
 
-/* Positioning marker: plain flat tick below the candle, color = behavior
-   quadrant, opacity = strength. Intentionally not styled like the
-   confluence chevron above — this is a labeled observation, not a score. */
-.positioning-marker {
-    pointer-events: none;
-    rx: 1;
+/* LH Anchor marker: filled triangle at the swing point, orientation
+   follows the swing (up at a high, down at a low). START is filled,
+   END is hollow (outline only) so the two are distinguishable at a
+   glance without needing the label. */
+.lh-anchor-marker {
+    stroke-width: 1.5;
+    cursor: default;
 }
+.lh-anchor-marker.lh-anchor-start { }
+.lh-anchor-marker.lh-anchor-end { fill: none !important; }
+.lh-anchor-marker.lh-anchor-long { fill: #22c55e; stroke: #22c55e; }
+.lh-anchor-marker.lh-anchor-short { fill: #ef4444; stroke: #ef4444; }
 
-.hud-item.positioning-hud {
+/* Price Action: single simple dot, strong/confirmed events only.
+   A bright white outline (not a dark one) is what actually adds contrast
+   against a dark chart background — the previous near-black stroke barely
+   showed up. The halo behind it is a soft, low-opacity glow for extra
+   pop; purely decorative, so it stays out of the way of hover/click. */
+.strong-price-action-marker {
+    stroke: #f8fafc;
+    stroke-width: 1.5;
+    cursor: default;
+}
+.strong-price-action-marker.lh-anchor-long { fill: #22c55e; }
+.strong-price-action-marker.lh-anchor-short { fill: #ef4444; }
+
+.strong-price-action-halo {
+    pointer-events: none;
+    opacity: 0.35;
+}
+.strong-price-action-halo.lh-anchor-long { fill: #22c55e; }
+.strong-price-action-halo.lh-anchor-short { fill: #ef4444; }
+
+.lh-anchor-label {
+    font-family: var(--mono); font-size: 9px; font-weight: 700;
+    pointer-events: none;
+}
+.lh-anchor-label.lh-anchor-long { fill: #22c55e; }
+.lh-anchor-label.lh-anchor-short { fill: #ef4444; }
+
+.hud-item.lh-anchor-hud {
     font-weight: 600;
     text-transform: none;
     letter-spacing: 0.2px;
 }
-.hud-item.positioning-long-buildup { color: #22c55e; }
-.hud-item.positioning-short-covering { color: #60a5fa; }
-.hud-item.positioning-short-buildup { color: #ef4444; }
-.hud-item.positioning-long-unwinding { color: #f59e0b; }
-.hud-item.positioning-neutral,
-.hud-item.positioning-insufficient-data { color: #6b7280; }
+.hud-item.lh-anchor-hud.lh-anchor-long { color: #22c55e; }
+.hud-item.lh-anchor-hud.lh-anchor-short { color: #ef4444; }
 
-.liquidity-marker { cursor: default; }
-.liquidity-marker.liquidity-building { stroke-dasharray: 2,1; }
-.liquidity-ended-ring { cursor: default; pointer-events: none; }
-.liquidity-sweep-star { cursor: default; }
-
-.price-action-line {
+/* Auto-anchored heatmap zone outline — solid once a segment's END is
+   confirmed, dashed while still ongoing (heatmap running to "now"). */
+.lh-anchor-heatmap-outline {
+    fill: none;
     stroke-width: 1.5;
-    stroke-dasharray: 4,3;
+    pointer-events: none;
 }
-.price-action-line.price-action-confirmed { stroke-dasharray: none; stroke-width: 2; }
-.price-action-line.price-action-long { stroke: #2dd4bf; }
-.price-action-line.price-action-short { stroke: #a78bfa; }
-.price-action-label {
-    font-family: var(--mono); font-size: 9px; letter-spacing: .3px;
-    dominant-baseline: middle;
-}
-.price-action-label.price-action-long { fill: #2dd4bf; }
-.price-action-label.price-action-short { fill: #a78bfa; }
-.price-action-dot { stroke: #0a0d12; stroke-width: 1; cursor: default; }
-.price-action-dot.price-action-long { fill: #2dd4bf; }
-.price-action-dot.price-action-short { fill: #a78bfa; }
-.price-action-dot.price-action-displacement { stroke-width: 1.5; }
+.lh-anchor-heatmap-outline.lh-anchor-long { stroke: #22c55e; }
+.lh-anchor-heatmap-outline.lh-anchor-short { stroke: #ef4444; }
+.lh-anchor-heatmap-outline.ongoing { stroke-dasharray: 5,3; }
 
 .hud-reasons {
     color: #9aa4b2;
@@ -5273,6 +5172,21 @@ width: 30rem;
     width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto;
 }
 .legend-shape { width: 12px; height: 12px; flex: 0 0 auto; }
+
+.lh-anchor-picker { max-width: 220px; pointer-events: auto; }
+.lh-anchor-picker-list {
+    max-height: 160px;
+    overflow-y: auto;
+    display: flex; flex-direction: column; gap: 2px;
+}
+.lh-anchor-picker-row {
+    display: flex; align-items: center; gap: 6px;
+    cursor: pointer; white-space: nowrap;
+    font-size: 9px;
+}
+.lh-anchor-picker-row input { cursor: pointer; flex: 0 0 auto; }
+.lh-anchor-picker-row .lh-anchor-long { color: #22c55e; }
+.lh-anchor-picker-row .lh-anchor-short { color: #ef4444; }
 .legend-label { color: #cdd3db; }
 .liquidity-legend-note { color: #7d8590; font-style: italic; font-size: 9px; }
 </style>

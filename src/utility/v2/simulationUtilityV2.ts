@@ -3,14 +3,15 @@ import type { Candle } from "@/core/interfaces";
 import { CandleAnalyzerV2 } from "./candleAnalyzerV2";
 import { getCandleStructure } from "./analysis/candleStructure";
 import { getAnchorDecision } from "./analysis/anchorDecisionEngine";
-import { getPriceAction } from "./analysis/priceAction";
 import { getOpenInterestState } from "./analysis/openInterestState";
 import { getLongShortRatioState } from "./analysis/longShortRatioState";
 import { getVolumeState } from "./analysis/volumeState";
 import { KlineUtility } from "../klineUtility";
 import { getMarketAlignment } from "./analysis/marketAlignment";
 import { getConfluenceScore } from "./analysis/confluenceScore";
+import { getPriceAction } from "./analysis/priceAction";
 import { getLiquidationHeatmapStamp } from "./analysis/liquidationHeatmapStamp";
+import { getLiquidityHeatmapAnchors } from "./analysis/liquidityHeatmapAnchor";
 import { getLiquiditySweepInfo } from "./analysis/liquidationSweepInfo";
 
 export class SimulationUtilityV2 {
@@ -53,21 +54,54 @@ export class SimulationUtilityV2 {
 
             candle.candleStructure = getCandleStructure(movingCandles);
 
+            // Default empty at this candle's own turn — entries may be
+            // pushed RETROACTIVELY by a later iteration once enough future
+            // bars confirm this candle was actually a trend START/END
+            // (swing confirmation always requires hindsight; see
+            // liquidityHeatmapAnchor.ts's module comment). A candle can
+            // collect more than one entry — e.g. a clean reversal point is
+            // both the END of one segment and the START of the next.
+            // Still fully causal: nothing is written before it's genuinely
+            // known.
+            candle.liquidityAnchor = [];
+
             //candle.anchors = getAnchorDecision(movingCandles);
 
             candle.openInterest = getOpenInterestState(targetSymbol,movingCandles,interval);
 
             candle.longShort = getLongShortRatioState(targetSymbol,movingCandles,interval);
 
-            candle.volumeState = getVolumeState(movingCandles);
-
-            candle.liquidationHeatmapStamp = getLiquidationHeatmapStamp(movingCandles);
-            
-            candle.liquiditySweepInfo = getLiquiditySweepInfo(movingCandles);
-
-            candle.priceAction = getPriceAction(movingCandles);
+            candle.volumeState = getVolumeState(movingCandles)
 
             //candle.marketAlignment = getMarketAlignment(movingCandles,mainMarkets,interval);
+
+            // Lifecycle stamp is driven only by candle.openInterest.positioningState,
+            // already set above — must run AFTER openInterest.
+            candle.liquidationHeatmapStamp = getLiquidationHeatmapStamp(movingCandles);
+
+            // Independent of everything above — only needs high/low/openTime.
+            // Each returned anchor targets its OWN candle index (gi), which
+            // is almost always earlier than the current one, since
+            // confirming a swing requires bars after it. Must run BEFORE
+            // liquiditySweepInfo below, which reads candle.liquidityAnchor
+            // to find the previous confirmed segment to measure against.
+            const confirmedAnchors = getLiquidityHeatmapAnchors(movingCandles);
+            for (const { gi, anchor } of confirmedAnchors) {
+                candles[gi].liquidityAnchor.push(anchor);
+            }
+
+            // Reads liquidityAnchor (just populated above, on this and
+            // earlier candles) to find the most recently CLOSED segment —
+            // never the one currently forming — and measures this candle's
+            // sweep against that segment's hot (yellow/red) liquidity. No
+            // longer reads liquidationHeatmapStamp at all.
+            candle.liquiditySweepInfo = getLiquiditySweepInfo(movingCandles);
+
+            // Narrates sweep -> rejection -> reclaim -> displacement using
+            // the current candle's liquiditySweepInfo (just set above) and
+            // the previous candle's priceAction (its pending sequence
+            // state) — must run AFTER liquiditySweepInfo.
+            candle.priceAction = getPriceAction(movingCandles);
 
             // if(interval == "15m"){
             //     candle.confluenceScore = getConfluenceScore(targetSymbol,movingCandles,mainMarkets)!;

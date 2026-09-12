@@ -15,13 +15,33 @@ import type {
  * Narrates the sweep -> rejection -> reclaim -> displacement ->
  * closeConfirmation sequence, reusing data this pipeline has already
  * computed rather than re-detecting anything:
- *   - trigger:      liquiditySweepInfo.behavior === 'SWEPT'
- *   - direction:    liquiditySweepInfo.measuredSides (which side's anchor
- *                    got swept), NOT guessed from price shape
- *   - the level:    liquiditySweepInfo.peakPrice (densest resting price
- *                    within the swept range)
+ *   - trigger:      liquiditySweepInfo.behavior is SWEPT_AND_RESPECTED or
+ *                    SWEPT_AND_CONTINUED (either counts as a sweep having
+ *                    happened; which one it was doesn't gate whether a
+ *                    sequence starts — this module tracks its OWN
+ *                    reject/reclaim path over the candles that follow)
+ *   - direction:    liquiditySweepInfo.previousAnchorDirection — the
+ *                    reference trend segment's own direction. When a
+ *                    segment's old liquidity gets defended (respected),
+ *                    that's evidence FOR that same direction resuming,
+ *                    not against it — see liquiditySweepInfo.ts's own
+ *                    reasoning for why respect on either side of a zone
+ *                    maps back to the segment's original bias.
+ *   - the level:    the hot zone's boundary on the side price approached
+ *                    from (hotZoneHigh if this was a LONG-direction
+ *                    segment, hotZoneLow if SHORT) — the old single
+ *                    peakPrice concept doesn't exist anymore now that the
+ *                    reference is a zone, not one point.
  *   - displacement: candleStructure.isExpansion / .isBullish / .isBearish
  *                    / .strength (all already computed elsewhere)
+ *
+ * NOTE ON OVERLAP: liquiditySweepInfo.behavior now already classifies
+ * respected-vs-continued on the triggering candle itself — this module's
+ * OWN rejection/reclaim tracking over SUBSEQUENT candles is a related but
+ * not identical question (multi-candle follow-through vs a single-candle
+ * read). That overlap is real and worth a closer look later; not resolved
+ * here since collapsing them wasn't asked for and risks losing whichever
+ * one turns out to be the better signal.
  *
  * This module does NOT implement breakout/failedBreakout — deferred as a
  * separate pass since it's a distinct hypothesis (a clean break with no
@@ -63,6 +83,12 @@ const CONFIG = {
     // direction without ever reclaiming, the pending sequence is
     // considered invalidated and reset. ARBITRARY, uncalibrated.
     INVALIDATION_DISTANCE_ATR: 2.0,
+
+    // A SWEPT_AND_RESPECTED sweep's own strength (see liquiditySweepInfo.ts)
+    // must clear this to count as a "strong action" on its own, without
+    // needing a full reclaim/displacement chain to have followed it.
+    // ARBITRARY, uncalibrated — same status as every other threshold here.
+    STRONG_SWEEP_STRENGTH_THRESHOLD: 30,
 };
 
 function blankEvent(): PriceActionEvent {
@@ -104,6 +130,7 @@ function blankPriceAction(reasons: string[], liquiditySweep: PriceActionEvent = 
         short: 0,
         dominant: "NEUTRAL",
         strength: 0,
+        strongAction: false,
         reasons,
     };
 }
@@ -133,16 +160,14 @@ export function getPriceAction(movingCandles: CandleInfo[]): PriceAction {
     let sweepEvent = blankEvent();
 
     // ── Does this candle's own sweep start (or override) a sequence? ──
-    if (sweepInfo?.behavior === "SWEPT") {
-        const sides = sweepInfo.measuredSides;
-        const sweepDirection: SIGNAL_DIRECTION =
-            sides.length === 1 ? (sides[0] === "LONG" ? "LONG" : "SHORT") : "NEUTRAL";
+    if (sweepInfo?.behavior === "SWEPT_AND_RESPECTED" || sweepInfo?.behavior === "SWEPT_AND_CONTINUED") {
+        const sweepDirection: SIGNAL_DIRECTION = sweepInfo.previousAnchorDirection ?? "NEUTRAL";
 
         sweepEvent = {
             detected: true,
             direction: sweepDirection,
             strength: Math.round(sweepInfo.sweptRatio * 100),
-            reasons: [`Swept ${(sweepInfo.sweptRatio * 100).toFixed(1)}% of ${sides.join("+")} anchor pool`],
+            reasons: [`Swept ${(sweepInfo.sweptRatio * 100).toFixed(1)}% of the ${sweepDirection} reference segment's hot pool (${sweepInfo.previousAnchorPairId})`],
         };
 
         if (sweepDirection !== "NEUTRAL") {
@@ -151,7 +176,12 @@ export function getPriceAction(movingCandles: CandleInfo[]): PriceAction {
                     `New ${sweepDirection} sweep overrides previous unresolved ${direction} sequence`
                 );
             }
-            const newLevel = sweepInfo.peakPrice
+            // Track the hot zone's boundary on the side price approached
+            // from — hotZoneHigh for a LONG-direction segment (price
+            // dipped in from above), hotZoneLow for SHORT (price poked up
+            // from below). Falls back to the candle's own low/high only if
+            // the zone bounds are somehow missing.
+            const newLevel = (sweepDirection === "LONG" ? sweepInfo.hotZoneHigh : sweepInfo.hotZoneLow)
                 ?? (sweepDirection === "LONG" ? currentCandle.low : currentCandle.high);
 
             level = newLevel;
@@ -167,7 +197,7 @@ export function getPriceAction(movingCandles: CandleInfo[]): PriceAction {
             };
             reasons.push(`${sweepDirection} liquidity sweep detected at level ${newLevel.toFixed(2)}`);
         } else {
-            reasons.push("Sweep detected but both sides were hit — ambiguous, not starting a directional sequence");
+            reasons.push("Sweep detected but the reference segment had no clear direction — not starting a directional sequence");
         }
     }
 
@@ -295,6 +325,15 @@ export function getPriceAction(movingCandles: CandleInfo[]): PriceAction {
         reclaimEvent.detected ? reclaimEvent.strength :
         sweepEvent.strength;
 
+    // A confirmed displacement is inherently the strongest signal this
+    // pipeline produces (only reachable after the full sweep->reject
+    // ->reclaim chain already played out) — always strong on its own. A
+    // SWEPT_AND_RESPECTED sweep counts too if it clears the threshold on
+    // its own, even without a reclaim/displacement chain following it.
+    const strongAction =
+        displacementEvent.detected ||
+        (sweepInfo?.behavior === "SWEPT_AND_RESPECTED" && sweepInfo.strength >= CONFIG.STRONG_SWEEP_STRENGTH_THRESHOLD);
+
     return {
         displacement: displacementEvent,
         rejection: rejectionEvent,
@@ -307,6 +346,7 @@ export function getPriceAction(movingCandles: CandleInfo[]): PriceAction {
         short: trackedDirection === "SHORT" ? strength : 0,
         dominant: trackedDirection,
         strength,
+        strongAction,
         reasons: reasons.length ? reasons : ["Sequence pending, no new stage reached this candle"],
     };
 }
