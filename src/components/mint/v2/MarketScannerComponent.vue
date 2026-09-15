@@ -126,7 +126,7 @@ async function runInitialScan() {
             const futureSymbol = props.futureSymbols[i];
 
             //TARGET SYMBOL ANALYSIS
-            //if (futureSymbol.symbol != "LTCUSDT") continue;
+            //if (futureSymbol.symbol != "HYPERUSDT") continue;
 
             futureSymbol.status = "constructing info";
             var symbolInfo = await SimulationUtilityV2.constructSymbolInfo(futureSymbol.symbol,props.maxInitCandles)
@@ -140,6 +140,8 @@ async function runInitialScan() {
             await SimulationUtilityV2.runMarketAnalysis(symbolInfo,[]);
 
             klineDbUtilityV2.storeSymbolInfo(symbolInfo);
+
+            setRecentFutureCandleData(symbolInfo.candle_15m);
 
             await new Promise(resolve => setTimeout(resolve, 400));
 
@@ -169,7 +171,12 @@ async function runInitialScan() {
 async function onNewCandleSpawned() {
 }
 
-
+function setRecentFutureCandleData(candles: CandleInfo[]){
+    var currentCandle = candles[candles.length - 1];
+    if(currentCandle.conditions_met.length > 0){
+        currentFutureSumbol.value!.conditionMet = currentCandle.conditions_met[0]
+    }
+}
 
 async function showEntryHistoryModal(futureSymbol: FuturesSymbol) {
     showEntryHistory.value = true;

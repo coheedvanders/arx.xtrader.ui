@@ -265,6 +265,8 @@ export interface CandleInfo {
     atr: number
     ema200: number
 
+    conditions_met: string[]
+
     candleStructure: CandleStructure
 
     anchors: AnchorState

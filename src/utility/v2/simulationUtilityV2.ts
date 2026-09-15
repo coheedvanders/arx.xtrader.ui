@@ -64,6 +64,7 @@ export class SimulationUtilityV2 {
             // Still fully causal: nothing is written before it's genuinely
             // known.
             candle.liquidityAnchor = [];
+            candle.conditions_met = [];
 
             //candle.anchors = getAnchorDecision(movingCandles);
 
@@ -106,6 +107,51 @@ export class SimulationUtilityV2 {
             // if(interval == "15m"){
             //     candle.confluenceScore = getConfluenceScore(targetSymbol,movingCandles,mainMarkets)!;
             // }
+
+            //CONDITIONS
+            var pastMovingCandles = movingCandles.slice(-8);
+            var pastOpenTimes = new Set(pastMovingCandles.map(c => c.openTime));
+
+            //var hasRecentEndHeatmapAnchor = pastMovingCandles.filter(c => c.liquidityAnchor && c.liquidityAnchor.length >= 1 && c.liquidityAnchor.filter(l => l.type == "END").length >= 1).length >= 1
+            // if(hasRecentEndHeatmapAnchor){
+            //     candle.conditions_met.push("RECENT_LIQUIDITY_END");
+            //     console.log(movingCandles.length);
+            // }
+
+            // Distinct from the check above: that one only catches an anchor
+            // whose EVENT candle (anchorOpenTime) falls in the last 8 bars.
+            // But an anchor is written onto its event candle, which can sit
+            // well BEFORE the last 8 bars even when it was only just
+            // CONFIRMED now — confirmation lag is exactly the gap the LH
+            // Anchors staple connector visualizes, and it isn't bounded by
+            // this 8-candle window. This checks confirmedOpenTime instead,
+            // searching every candle's own liquidityAnchor entries (not just
+            // the recent ones, since the anchor data itself can live far
+            // earlier) for any anchor confirmed within the recent window.
+            var hasRecentLiquidityAnchorConfirmation = movingCandles.some(c =>
+                c.liquidityAnchor && c.liquidityAnchor.some(l => pastOpenTimes.has(l.confirmedOpenTime))
+            );
+            // if (hasRecentLiquidityAnchorConfirmation) {
+            //     candle.conditions_met.push("RECENT_LIQUIDITY_ANCHOR_CONFIRMATION");
+            // }
+
+            // The LAST liquidity heatmap anchor (highest sequenceIndex seen
+            // so far — segments are numbered in the order their START
+            // confirms) having BOTH a START and an END means that segment
+            // is fully closed, not still ongoing — a stronger signal than
+            // a segment that's only been opened. START and END anchors can
+            // sit on completely different candles (sometimes far apart),
+            // so this scans every candle's liquidityAnchor entries, not
+            // just the recent window, to find every anchor belonging to
+            // that one specific segment.
+            var allAnchorCandles = movingCandles.filter(c => c.liquidityAnchor && c.liquidityAnchor.length >= 1);
+            if(allAnchorCandles.length >= 1){
+                var lastAnchorCandle = allAnchorCandles[allAnchorCandles.length - 1]
+                var latestAnchorIsStrong = lastAnchorCandle.liquidityAnchor.length == 2
+                if (latestAnchorIsStrong && hasRecentLiquidityAnchorConfirmation) {
+                    candle.conditions_met.push("STRONG_LIQUIDITY_ANCHOR");
+                }
+            }
         }
     }
 

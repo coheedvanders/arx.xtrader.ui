@@ -144,6 +144,14 @@
       </div>
 
       <div class="topbar-group topbar-group-right">
+        <div class="symbol-nav" title="Navigate future symbols">
+          <button class="icon-btn symbol-nav-btn" title="Previous symbol" @click="goToPrevSymbol">‹</button>
+          <select class="symbol-nav-select" :value="symbol" @change="onSymbolDropdownChange">
+            <option v-for="s in futureSymbolList" :key="s" :value="s">{{ s }}</option>
+          </select>
+          <button class="icon-btn symbol-nav-btn" title="Next symbol" @click="goToNextSymbol">›</button>
+        </div>
+
         <label class="bars-control" title="Candles visible in view">
           <span class="bars-control-label">Bars</span>
           <select v-model.number="visibleBars" class="bars-select">
@@ -162,6 +170,8 @@
         <button class="icon-btn" title="Reset view (E)" @click="scrollToLatest">⇥</button>
         <button class="icon-btn" title="Refresh from IndexedDB" @click="loadSymbolInfo">⟳</button>
         <button class="icon-btn" title="Download the full symbolInfo as JSON" @click="downloadSymbolInfoJson">⬇</button>
+        <button class="icon-btn" title="Test positions" @click="showTestPositionModal = true">Test</button>
+        <button class="icon-btn" title="Captured research data" @click="showCapturedDataModal = true">📷</button>
         <button
           class="icon-btn notes-toolbar"
           :class="{ active: notesOpen }"
@@ -425,6 +435,44 @@
                 -->
                 <template v-if="showLHAnchors">
                   <template v-for="(anchor, aidx) in c.candle.liquidityAnchor" :key="'lha-' + c.gi + '-' + aidx">
+                    <!--
+                      Confirmation lag, made visible: this anchor's marker
+                      sits at the actual swing candle (anchorOpenTime), but
+                      swing confirmation always requires hindsight — it
+                      wasn't KNOWN to be a real anchor until confirmedOpenTime,
+                      sometimes many candles later. Without this the gap is
+                      invisible, which is exactly what looked like a bug
+                      before ("why does the END show up so late") when the
+                      anchor was actually placed correctly all along.
+                      Flowchart-style staple, not a straight/diagonal line:
+                      drop down from the anchor marker, bridge across at a
+                      shared rail, drop back up to the confirming candle —
+                      the two endpoints are commonly at very different
+                      prices, so a direct line between them would cut
+                      across unrelated candles in a confusing way.
+                    -->
+                    <template v-if="anchor.confirmedOpenTime !== anchor.anchorOpenTime">
+                      <line
+                        class="lh-anchor-confirm-line"
+                        :class="anchor.direction === 'LONG' ? 'lh-anchor-long' : 'lh-anchor-short'"
+                        :x1="candleXAtTime(anchor.anchorOpenTime)" :x2="candleXAtTime(anchor.anchorOpenTime)"
+                        :y1="anchor.swingType === 'high' ? priceToY(anchor.price) - 10 : priceToY(anchor.price) + 10"
+                        :y2="lhAnchorConfirmRailY(anchor)"
+                      ><title>{{ lhAnchorEntryTooltip(anchor) }}</title></line>
+                      <line
+                        class="lh-anchor-confirm-line"
+                        :class="anchor.direction === 'LONG' ? 'lh-anchor-long' : 'lh-anchor-short'"
+                        :x1="candleXAtTime(anchor.anchorOpenTime)" :x2="candleXAtTime(anchor.confirmedOpenTime)"
+                        :y1="lhAnchorConfirmRailY(anchor)" :y2="lhAnchorConfirmRailY(anchor)"
+                      ><title>{{ lhAnchorEntryTooltip(anchor) }}</title></line>
+                      <line
+                        class="lh-anchor-confirm-line"
+                        :class="anchor.direction === 'LONG' ? 'lh-anchor-long' : 'lh-anchor-short'"
+                        :x1="candleXAtTime(anchor.confirmedOpenTime)" :x2="candleXAtTime(anchor.confirmedOpenTime)"
+                        :y1="lhAnchorConfirmRailY(anchor)"
+                        :y2="lhAnchorConfirmCandleY(anchor)"
+                      ><title>{{ lhAnchorEntryTooltip(anchor) }}</title></line>
+                    </template>
                     <polygon
                       class="lh-anchor-marker"
                       :class="[anchor.direction === 'LONG' ? 'lh-anchor-long' : 'lh-anchor-short', anchor.type === 'START' ? 'lh-anchor-start' : 'lh-anchor-end']"
@@ -612,6 +660,35 @@
                 >
                   <title>{{ lhAnchorRangeTooltip(range) }}</title>
                 </rect>
+
+                <!-- Prediction: auto-run the moment this segment gets
+                     checked (see toggleLhAnchorPairSelection) — read-only
+                     here, not draggable like the manual tool's own
+                     prediction lines, since this range is recomputed
+                     fresh on every selection change rather than being a
+                     persistent, mutable drawing. -->
+                <template v-if="range.prediction && range.prediction.levels.length">
+                  <g v-for="(lvl, lvlIdx) in range.prediction.levels" :key="'lh-lvl-' + range.pairId + '-' + lvlIdx">
+                    <line
+                      class="prediction-target-line"
+                      :class="lvl.direction === 'up' ? 'lh-anchor-long' : 'lh-anchor-short'"
+                      :style="{ opacity: Math.max(0.25, lvl.probability / 100) }"
+                      :x1="candleX(range.startGi) - candleWidth / 2"
+                      :x2="candleX(range.endGi) + candleWidth / 2"
+                      :y1="priceToY(lvl.targetPrice)"
+                      :y2="priceToY(lvl.targetPrice)"
+                    >
+                      <title>{{ range.prediction!.reasons.join('\n') }}</title>
+                    </line>
+                    <text
+                      class="prediction-target-label"
+                      :class="lvl.direction === 'up' ? 'lh-anchor-long' : 'lh-anchor-short'"
+                      :style="{ opacity: Math.max(0.4, lvl.probability / 100) }"
+                      :x="candleX(range.endGi) + candleWidth / 2 + 4"
+                      :y="priceToY(lvl.targetPrice) + 3"
+                    >{{ lvl.probability }}% -> {{ formatPrice(lvl.targetPrice) }}</text>
+                  </g>
+                </template>
               </g>
             </template>
 
@@ -666,9 +743,14 @@
               <line
                 class="frvp-poc"
                 :x1="candleX(Math.min(zone.startGi, zone.endGi)) - candleWidth / 2"
-                :x2="candleX(Math.min(zone.startGi, zone.endGi)) - candleWidth / 2 + frvpProfileWidth(zone)"
+                :x2="candleX(Math.max(zone.startGi, zone.endGi) + 5) + candleWidth / 2"
                 :y1="priceToY(zone.poc)" :y2="priceToY(zone.poc)"
               />
+              <text
+                class="frvp-poc-label"
+                :x="candleX(Math.max(zone.startGi, zone.endGi) + 5) + candleWidth / 2 + 4"
+                :y="priceToY(zone.poc) + 3"
+              >POC</text>
               <line
                 class="drawing-edge-handle frvp-left-handle"
                 :x1="candleX(Math.min(zone.startGi, zone.endGi)) - candleWidth / 2"
@@ -773,9 +855,9 @@
               <rect
                 class="position-zone position-profit"
                 :class="{ selected: isDrawingSelected('position', p.id) }"
-                :x="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2))"
+                :x="Math.min(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p)))"
                 :y="Math.min(priceToY(p.entry), priceToY(p.tp))"
-                :width="Math.max(2, Math.abs(candleXAtTime(p.x2) - candleXAtTime(p.x1)))"
+                :width="Math.max(2, Math.abs(candleXAtTime(positionRenderX2(p)) - candleXAtTime(p.x1)))"
                 :height="Math.max(1, Math.abs(priceToY(p.entry) - priceToY(p.tp)))"
                 @mousedown="startDrawingMove('position', p.id, $event)"
               />
@@ -783,55 +865,55 @@
               <rect
                 class="position-zone position-loss"
                 :class="{ selected: isDrawingSelected('position', p.id) }"
-                :x="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2))"
+                :x="Math.min(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p)))"
                 :y="Math.min(priceToY(p.entry), priceToY(p.sl))"
-                :width="Math.max(2, Math.abs(candleXAtTime(p.x2) - candleXAtTime(p.x1)))"
+                :width="Math.max(2, Math.abs(candleXAtTime(positionRenderX2(p)) - candleXAtTime(p.x1)))"
                 :height="Math.max(1, Math.abs(priceToY(p.entry) - priceToY(p.sl)))"
                 @mousedown="startDrawingMove('position', p.id, $event)"
               />
 
               <!-- entry line -->
-              <line class="position-entry-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2))" :y1="priceToY(p.entry)" :y2="priceToY(p.entry)" />
-              <line class="position-hit-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2))" :y1="priceToY(p.entry)" :y2="priceToY(p.entry)" @mousedown.stop="startPositionLevelDrag(p.id, 'entry', $event)" />
-              <text class="position-level-label position-entry-label" :x="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2)) + 4" :y="priceToY(p.entry) + 3">Entry {{ formatPrice(p.entry) }}</text>
+              <line class="position-entry-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p)))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p)))" :y1="priceToY(p.entry)" :y2="priceToY(p.entry)" />
+              <line class="position-hit-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p)))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p)))" :y1="priceToY(p.entry)" :y2="priceToY(p.entry)" @mousedown.stop="startPositionLevelDrag(p.id, 'entry', $event)" />
+              <text class="position-level-label position-entry-label" :x="Math.max(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p))) + 4" :y="priceToY(p.entry) + 3">Entry {{ formatPrice(p.entry) }}</text>
 
               <!-- take-profit line -->
-              <line class="position-tp-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2))" :y1="priceToY(p.tp)" :y2="priceToY(p.tp)" />
-              <line class="position-hit-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2))" :y1="priceToY(p.tp)" :y2="priceToY(p.tp)" @mousedown.stop="startPositionLevelDrag(p.id, 'tp', $event)" />
-              <text class="position-level-label position-tp-label" :x="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2)) + 4" :y="priceToY(p.tp) + 3">TP {{ formatPrice(p.tp) }}</text>
+              <line class="position-tp-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p)))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p)))" :y1="priceToY(p.tp)" :y2="priceToY(p.tp)" />
+              <line class="position-hit-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p)))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p)))" :y1="priceToY(p.tp)" :y2="priceToY(p.tp)" @mousedown.stop="startPositionLevelDrag(p.id, 'tp', $event)" />
+              <text class="position-level-label position-tp-label" :x="Math.max(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p))) + 4" :y="priceToY(p.tp) + 3">TP {{ formatPrice(p.tp) }}</text>
 
               <!-- stop-loss line -->
-              <line class="position-sl-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2))" :y1="priceToY(p.sl)" :y2="priceToY(p.sl)" />
-              <line class="position-hit-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2))" :y1="priceToY(p.sl)" :y2="priceToY(p.sl)" @mousedown.stop="startPositionLevelDrag(p.id, 'sl', $event)" />
-              <text class="position-level-label position-sl-label" :x="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2)) + 4" :y="priceToY(p.sl) + 3">SL {{ formatPrice(p.sl) }}</text>
+              <line class="position-sl-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p)))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p)))" :y1="priceToY(p.sl)" :y2="priceToY(p.sl)" />
+              <line class="position-hit-line" :x1="Math.min(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p)))" :x2="Math.max(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p)))" :y1="priceToY(p.sl)" :y2="priceToY(p.sl)" @mousedown.stop="startPositionLevelDrag(p.id, 'sl', $event)" />
+              <text class="position-level-label position-sl-label" :x="Math.max(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p))) + 4" :y="priceToY(p.sl) + 3">SL {{ formatPrice(p.sl) }}</text>
 
               <!-- info readout -->
-              <text class="position-info-label" :x="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2)) + 4" :y="Math.min(priceToY(p.tp), priceToY(p.sl)) - 6">
-                {{ p.kind.toUpperCase() }} · R:R {{ positionRR(p).toFixed(2) }} · +{{ positionProfitPct(p).toFixed(1) }}% / -{{ positionLossPct(p).toFixed(1) }}%
+              <text class="position-info-label" :x="Math.min(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p))) + 4" :y="Math.min(priceToY(p.tp), priceToY(p.sl)) - 6">
+                {{ p.kind.toUpperCase() }}<template v-if="p.tag"> · {{ p.tag.toUpperCase() }}</template> · <tspan :class="positionRR(p) >= MIN_RR_RATIO ? 'rr-healthy' : 'rr-unhealthy'">{{ positionRR(p) >= MIN_RR_RATIO ? "✓" : "⚠" }} R:R {{ positionRR(p).toFixed(2) }}</tspan> · +{{ positionProfitPct(p).toFixed(1) }}% / -{{ positionLossPct(p).toFixed(1) }}%
               </text>
 
               <!-- right-edge width handle -->
               <rect
                 class="position-edge-handle"
-                :x="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2)) - 2"
+                :x="Math.max(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p))) - 2"
                 :y="Math.min(priceToY(p.tp), priceToY(p.sl))"
                 width="4"
                 :height="Math.max(1, Math.abs(priceToY(p.tp) - priceToY(p.sl)))"
-                @mousedown.stop="startPositionEdgeDrag(p.id, candleXAtTime(p.x1) > candleXAtTime(p.x2) ? 'x1' : 'x2', $event)"
+                @mousedown.stop="startPositionEdgeDrag(p.id, candleXAtTime(p.x1) > candleXAtTime(positionRenderX2(p)) ? 'x1' : 'x2', $event)"
               />
               <!-- left-edge width handle -->
               <rect
                 class="position-edge-handle"
-                :x="Math.min(candleXAtTime(p.x1), candleXAtTime(p.x2)) - 2"
+                :x="Math.min(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p))) - 2"
                 :y="Math.min(priceToY(p.tp), priceToY(p.sl))"
                 width="4"
                 :height="Math.max(1, Math.abs(priceToY(p.tp) - priceToY(p.sl)))"
-                @mousedown.stop="startPositionEdgeDrag(p.id, candleXAtTime(p.x1) > candleXAtTime(p.x2) ? 'x2' : 'x1', $event)"
+                @mousedown.stop="startPositionEdgeDrag(p.id, candleXAtTime(p.x1) > candleXAtTime(positionRenderX2(p)) ? 'x2' : 'x1', $event)"
               />
 
               <text
                 class="drawing-remove"
-                :x="Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2)) - 4"
+                :x="Math.max(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p))) - 4"
                 :y="Math.min(priceToY(p.tp), priceToY(p.sl)) - 6"
                 text-anchor="end"
                 @click.stop="removeDrawing('position', p.id)"
@@ -985,7 +1067,7 @@
             <!-- live tool draft preview -->
             <g v-if="toolDraft" class="tool-draft">
               <rect
-                v-if="activeTool === 'rectangle' || activeTool === 'price-range' || activeTool === 'frvp' || activeTool === 'liquidity'"
+                v-if="activeTool === 'rectangle' || activeTool === 'price-range' || activeTool === 'frvp' || activeTool === 'liquidity' || activeTool === 'liquidity-frvp' || activeTool === 'capture'"
                 class="draft-rect"
                 :x="Math.min(candleX(toolDraft.startGi), candleX(toolDraft.curGi))"
                 :y="Math.min(priceToY(toolDraft.startPrice), priceToY(toolDraft.curPrice))"
@@ -998,6 +1080,30 @@
                 :x1="candleX(toolDraft.startGi)" :y1="priceToY(toolDraft.startPrice)"
                 :x2="candleX(toolDraft.curGi)" :y2="priceToY(toolDraft.curPrice)"
               />
+
+              <!-- live long/short draft preview: TP/SL zones + R:R health,
+                   updating as the drag moves — previously nothing showed
+                   at all until the drag was released. -->
+              <g v-if="draftPositionPreview">
+                <rect class="preview-zone preview-tp"
+                  :x="Math.min(candleX(toolDraft.startGi), candleX(toolDraft.curGi))"
+                  :y="priceToY(Math.max(draftPositionPreview.entry, draftPositionPreview.tp))"
+                  :width="Math.max(1, Math.abs(candleX(toolDraft.curGi) - candleX(toolDraft.startGi)))"
+                  :height="Math.max(1, Math.abs(priceToY(draftPositionPreview.entry) - priceToY(draftPositionPreview.tp)))" />
+                <rect class="preview-zone preview-sl"
+                  :x="Math.min(candleX(toolDraft.startGi), candleX(toolDraft.curGi))"
+                  :y="priceToY(Math.max(draftPositionPreview.entry, draftPositionPreview.sl))"
+                  :width="Math.max(1, Math.abs(candleX(toolDraft.curGi) - candleX(toolDraft.startGi)))"
+                  :height="Math.max(1, Math.abs(priceToY(draftPositionPreview.entry) - priceToY(draftPositionPreview.sl)))" />
+                <line class="preview-entry-line"
+                  :x1="Math.min(candleX(toolDraft.startGi), candleX(toolDraft.curGi))" :x2="plotWidth"
+                  :y1="priceToY(draftPositionPreview.entry)" :y2="priceToY(draftPositionPreview.entry)" />
+                <text class="position-info-label"
+                  :x="Math.min(candleX(toolDraft.startGi), candleX(toolDraft.curGi)) + 4"
+                  :y="Math.min(priceToY(draftPositionPreview.tp), priceToY(draftPositionPreview.sl)) - 6">
+                  {{ draftPositionPreview.kind.toUpperCase() }} · <tspan :class="draftPositionRR >= MIN_RR_RATIO ? 'rr-healthy' : 'rr-unhealthy'">{{ draftPositionRR >= MIN_RR_RATIO ? "✓" : "⚠" }} R:R {{ draftPositionRR.toFixed(2) }}</tspan>
+                </text>
+              </g>
             </g>
 
             <!-- preview buy/sell position -->
@@ -1029,6 +1135,20 @@
                 :x1="candleX(previewPosition.entryGi) - candleWidth / 2" :x2="plotWidth"
                 :y1="priceToY(previewPosition.sl)" :y2="priceToY(previewPosition.sl)"
                 @mousedown="startPreviewPriceDrag('sl', $event)" />
+              <!-- Live, real-time estimate of where this order would
+                   actually fill against the current order book — updates
+                   on every depth20@100ms frame, same as the panel figures.
+                   Amber and a finer dash pattern than the TP/SL lines
+                   above (which are also dashed) so it reads as distinct: a
+                   live-moving estimate, not another fixed level. -->
+              <line v-if="previewDepthFillEstimate" class="preview-fill-estimate-line"
+                :x1="candleX(previewPosition.entryGi) - candleWidth / 2" :x2="plotWidth"
+                :y1="priceToY(previewDepthFillEstimate.worstPrice)" :y2="priceToY(previewDepthFillEstimate.worstPrice)" />
+              <text v-if="previewDepthFillEstimate" class="preview-fill-estimate-label"
+                :x="candleX(previewPosition.entryGi) - candleWidth / 2 + 4"
+                :y="priceToY(previewDepthFillEstimate.worstPrice) - 4">
+                Est. fill {{ formatPrice(previewDepthFillEstimate.worstPrice) }}<template v-if="previewEstimatedSlippage"> ({{ previewEstimatedSlippage.pct >= 0 ? "+" : "" }}{{ previewEstimatedSlippage.pct.toFixed(3) }}%)</template>
+              </text>
             </g>
 
             <!-- crosshair -->
@@ -1295,7 +1415,7 @@
              column wrapper (rather than each legend absolutely positioning
              itself) so adding more legends later doesn't require guessing
              pixel offsets to avoid overlap. -->
-        <div class="chart-legends">
+        <div class="chart-legends" ref="legendsEl">
           <div v-if="showLHAnchors" class="legend-box">
             <div class="legend-title">LH Anchors</div>
             <div class="legend-row">
@@ -1316,6 +1436,10 @@
                current, top to bottom. -->
           <div v-if="showLHAnchors && lhAnchorPairs.length" class="legend-box lh-anchor-picker">
             <div class="legend-title">Heatmaps</div>
+            <label class="lh-anchor-picker-row lh-anchor-auto-toggle">
+              <input type="checkbox" v-model="autoShowLatestLhAnchors" />
+              <span>Default to latest 2 (all symbols)</span>
+            </label>
             <div class="lh-anchor-picker-list">
               <label v-for="p in lhAnchorPairs" :key="p.pairId" class="lh-anchor-picker-row">
                 <input
@@ -1363,7 +1487,7 @@
           </div>
           <div class="preview-panel-row">
             <label>TP</label>
-            <input type="number" v-model.number="previewPosition.tp" :step="priceStep" />
+            <input type="number" v-model.number="previewTpClamped" :step="priceStep" />
           </div>
           <div class="preview-panel-row">
             <label>SL</label>
@@ -1373,9 +1497,56 @@
             <label>R:R</label>
             <span>{{ previewRR }}</span>
           </div>
+          <div v-if="previewEstimate" class="preview-panel-row preview-panel-estimate">
+            <label>Est. TP</label>
+            <span class="pnl-positive">+{{ previewEstimate.tpPnl.toFixed(2) }} USDT ({{ previewEstimate.tpPercent >= 0 ? "+" : "" }}{{ previewEstimate.tpPercent.toFixed(1) }}%)</span>
+          </div>
+          <div v-if="previewEstimate" class="preview-panel-row preview-panel-estimate">
+            <label>Est. SL</label>
+            <span class="pnl-negative">{{ previewEstimate.slPnl.toFixed(2) }} USDT ({{ previewEstimate.slPercent.toFixed(1) }}%)</span>
+          </div>
+          <div class="preview-book-ticker">
+            <div v-if="!previewBookTicker" class="preview-book-ticker-loading">Loading bid/ask…</div>
+            <template v-else>
+              <div class="preview-panel-row">
+                <label>Bid / Ask</label>
+                <span>{{ formatPrice(previewBookTicker.bid) }} / {{ formatPrice(previewBookTicker.ask) }}</span>
+              </div>
+              <div class="preview-panel-row">
+                <label>Spread</label>
+                <span>{{ previewSpread !== null ? formatPrice(previewSpread) : "—" }}</span>
+              </div>
+              <div class="preview-panel-row">
+                <label>Order size</label>
+                <span>{{ previewNotional.toFixed(2) }} USDT</span>
+              </div>
+              <template v-if="previewDepthFillEstimate">
+                <div class="preview-panel-row">
+                  <label>Est. avg fill</label>
+                  <span>{{ formatPrice(previewDepthFillEstimate.avgPrice) }}</span>
+                </div>
+                <div class="preview-panel-row">
+                  <label>Est. worst-case fill</label>
+                  <span :class="previewEstimatedSlippage && previewEstimatedSlippage.pct !== 0 ? 'preview-book-ticker-warning' : ''">
+                    {{ formatPrice(previewDepthFillEstimate.worstPrice) }}
+                    <template v-if="previewEstimatedSlippage">({{ previewEstimatedSlippage.pct >= 0 ? "+" : "" }}{{ previewEstimatedSlippage.pct.toFixed(3) }}%)</template>
+                  </span>
+                </div>
+                <div v-if="!previewDepthFillEstimate.fullyFilled" class="preview-book-ticker-warning">
+                  ⚠ Order size exceeds the visible 20 levels of depth — actual slippage could be worse than shown above.
+                </div>
+              </template>
+              <div v-else class="preview-book-ticker-loading">Loading depth…</div>
+            </template>
+          </div>
+          <label class="preview-rr-toggle" :title="`Applies globally — every symbol, not just this one`">
+            <input type="checkbox" v-model="enforceRRClamp" />
+            Require min {{ MIN_RR_RATIO }}:1 R:R (all symbols)
+          </label>
           <button class="preview-order-btn" :disabled="placingOrder" @click="placeOrder">
             {{ placingOrder ? "Placing…" : "Place Order" }}
           </button>
+          <button class="preview-order-btn preview-add-test-btn" @click="addTestPosition">Add Test</button>
         </div>
       </div>
     </div>
@@ -1453,11 +1624,41 @@
         </div>
       </div>
     </div>
+
+    <!-- Test position modal: lists every test position, lets you check
+         TP/SL status manually, and clicking one switches this viewer to
+         that symbol (emits update:symbol — the parent must be listening,
+         e.g. v-model:symbol or @update:symbol). -->
+    <div v-if="showTestPositionModal" class="modal-overlay" @click.self="showTestPositionModal = false">
+      <div class="modal-content test-position-modal">
+        <div class="modal-header">
+          <h2>Test positions</h2>
+          <button class="close-btn" @click="showTestPositionModal = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <TestPositionViewComponent @select-symbol="onSelectTestSymbol" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Captured data modal: research snapshots taken by pressing 8 and
+         dragging a range on the chart — see captureDataForRange. -->
+    <div v-if="showCapturedDataModal" class="modal-overlay" @click.self="showCapturedDataModal = false">
+      <div class="modal-content captured-data-modal">
+        <div class="modal-header">
+          <h2>Captured data</h2>
+          <button class="close-btn" @click="showCapturedDataModal = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <CapturedDataViewComponent />
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, shallowRef, triggerRef, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch, defineComponent, h } from "vue";
+import { ref, shallowRef, triggerRef, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch, defineComponent, h, type Ref } from "vue";
 import type {
   SymbolInfo,
   CandleInfo,
@@ -1478,6 +1679,13 @@ import DialogHeaderComponent from '../../shared/dialog/DialogHeaderComponent.vue
 import MovementAnalyzerComponent from './MovementAnalyzerComponent.vue';
 import { listAllNotes, saveNote, deleteNote, type StickyNote } from "@/utility/notesDb";
 import { listScoreEntries, saveScoreEntry, deleteScoreEntry, clearAllScoreEntries, type ScoreEntry } from "@/utility/ScoreDb";
+import { saveTestPosition, listAllTestPositions, type TestPosition } from "@/utility/testPositionDb";
+import { saveCapturedData, type CapturedDataEntry } from "@/utility/captureDataDb";
+import { fetchLiveCandles, checkOneTestPosition } from "@/utility/v2/analysis/testPositionLiveCheck";
+import { PnlUtility } from "@/utility/PnlUtility";
+import { useChocoMintoStore } from "@/stores/chocoMintoStore";
+import TestPositionViewComponent from "./TestPositionViewComponent.vue";
+import CapturedDataViewComponent from "./CaptureDataViewComponent.vue";
 
 // ── Dynamic candle detail renderer ─────────────────────────────────────
 // Intentionally driven by the runtime object rather than CandleInfo's type
@@ -1618,8 +1826,67 @@ const props = withDefaults(defineProps<{
 }>(), {
   overlayMode: false,
 });
-const symbol = computed(() => props.symbol);
+// activeSymbol is the SINGLE internal source of truth for which symbol
+// this viewer shows — initialized from the prop, but from here on owned
+// internally so the </>/dropdown/hotkey navigation actually works on its
+// own, without depending on a parent that may or may not be listening
+// for update:symbol. Still emits that event on every internal change
+// (so a parent that DOES listen stays in sync), and still follows the
+// prop if a parent changes it externally — two-way, not a one-time copy.
+const emit = defineEmits<{
+  (e: "update:symbol", value: string): void;
+}>();
+const activeSymbol = ref(props.symbol);
+watch(() => props.symbol, (newVal) => {
+  if (newVal !== activeSymbol.value) activeSymbol.value = newVal;
+});
+const symbol = computed(() => activeSymbol.value);
 const overlayMode = computed(() => props.overlayMode);
+
+const chocoMintoStore = useChocoMintoStore();
+
+// Symbol nav: [<][dropdown][>] in the top-right controls, letting you
+// scan through every future symbol without leaving this component. Wraps
+// around at both ends (prev from the first symbol goes to the last, and
+// vice versa) — a dead stop at either end would be more annoying than
+// useful for "scan through the list" browsing.
+const futureSymbolList = computed(() => chocoMintoStore.futureSymbols.map(f => f.symbol));
+const currentSymbolIndex = computed(() => futureSymbolList.value.indexOf(activeSymbol.value));
+
+// This symbol's own max leverage from chocoMintoStore — not a global
+// assumption. Shared by the preview PnL estimate below and by
+// addTestPosition, rather than each doing its own lookup.
+const activeSymbolMaxLeverage = computed(() => {
+  const meta = chocoMintoStore.futureSymbols.find(f => f.symbol === activeSymbol.value);
+  return meta?.maxLeverage ?? 1;
+});
+
+function setActiveSymbol(newSymbol: string) {
+  if (!newSymbol || newSymbol === activeSymbol.value) return;
+  activeSymbol.value = newSymbol;
+  emit("update:symbol", newSymbol);
+}
+
+function goToPrevSymbol() {
+  const list = futureSymbolList.value;
+  if (!list.length) return;
+  const idx = currentSymbolIndex.value;
+  const prevIdx = idx <= 0 ? list.length - 1 : idx - 1;
+  setActiveSymbol(list[prevIdx]);
+}
+
+function goToNextSymbol() {
+  const list = futureSymbolList.value;
+  if (!list.length) return;
+  const idx = currentSymbolIndex.value;
+  const nextIdx = idx < 0 || idx >= list.length - 1 ? 0 : idx + 1;
+  setActiveSymbol(list[nextIdx]);
+}
+
+function onSymbolDropdownChange(e: Event) {
+  const value = (e.target as HTMLSelectElement).value;
+  setActiveSymbol(value);
+}
 
 // ── Data load ──────────────────────────────────────────────────────────
 // shallowRef (not ref): SymbolInfo holds thousands of candles across four
@@ -1666,6 +1933,41 @@ function closeBinanceWs() {
     binanceWs.close();
     binanceWs = null;
   }
+}
+
+// Sometimes the websocket takes a noticeable moment to actually connect
+// (or drops and needs to reconnect) — this fills that gap by polling
+// Binance's lightweight futures ticker endpoint once a second, so the
+// live price display keeps moving instead of sitting frozen. Stops the
+// instant the socket actually opens; queueWsFrame is reused so a polled
+// price updates the display through the exact same path a websocket tick
+// would, rather than a second, parallel update mechanism.
+let priceFallbackInterval: number | null = null;
+
+function stopPriceFallbackPolling() {
+  if (priceFallbackInterval !== null) {
+    window.clearInterval(priceFallbackInterval);
+    priceFallbackInterval = null;
+  }
+}
+
+function startPriceFallbackPolling(symbol: string) {
+  stopPriceFallbackPolling();
+  const sym = encodeURIComponent(symbol.trim().toUpperCase());
+  if (!sym) return;
+  const poll = async () => {
+    try {
+      const res = await fetch(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${sym}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const price = Number(data?.price);
+      if (Number.isFinite(price)) queueWsFrame(price);
+    } catch {
+      // Transient network hiccup — just try again on the next tick.
+    }
+  };
+  poll(); // fire immediately rather than waiting a full second for the first price
+  priceFallbackInterval = window.setInterval(poll, 1000);
 }
 
 // ── Cross-timeframe candle syncing ──────────────────────────────────────
@@ -1738,11 +2040,21 @@ function syncCrossTimeframeCandles(info: SymbolInfo, primaryOpenTime: number, pr
 
 function connectBinanceWs() {
   closeBinanceWs();
-  const streamSymbol = props.symbol.trim().toLowerCase();
+  const streamSymbol = activeSymbol.value.trim().toLowerCase();
   if (!streamSymbol) return;
+
+  // Start polling right away — if the socket connects quickly, onopen
+  // below stops it almost immediately; if it's slow (sometimes takes a
+  // noticeable moment), this keeps the live price moving in the meantime
+  // instead of it sitting frozen.
+  startPriceFallbackPolling(activeSymbol.value);
 
   const ws = new WebSocket(`wss://fstream.binance.com/market/ws/${streamSymbol}@kline_${primaryTf.value}`);
   binanceWs = ws;
+
+  ws.onopen = () => {
+    if (binanceWs === ws) stopPriceFallbackPolling();
+  };
 
   ws.onmessage = (event) => {
     try {
@@ -1818,6 +2130,9 @@ function connectBinanceWs() {
 
   ws.onclose = () => {
     if (binanceWs === ws && !loading.value) {
+      // Socket dropped — same stale-price gap as the initial connect,
+      // so resume polling until the reconnect attempt below succeeds.
+      startPriceFallbackPolling(activeSymbol.value);
       window.setTimeout(() => {
         if (binanceWs === ws) connectBinanceWs();
       }, 2000);
@@ -1829,9 +2144,9 @@ async function loadSymbolInfo() {
   loading.value = true;
   loadError.value = null;
   try {
-    const info = await klineDbUtilityV2.getSymbolInfo(props.symbol);
+    const info = await klineDbUtilityV2.getSymbolInfo(activeSymbol.value);
     if (!info) {
-      loadError.value = `No cached SymbolInfo for "${props.symbol}" in IndexedDB.`;
+      loadError.value = `No cached SymbolInfo for "${activeSymbol.value}" in IndexedDB.`;
       symbolInfo.value = null;
     } else {
       symbolInfo.value = info;
@@ -1856,7 +2171,7 @@ function downloadSymbolInfoJson() {
   const a = document.createElement("a");
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   a.href = url;
-  a.download = `symbolInfo-${props.symbol}-${stamp}.json`;
+  a.download = `symbolInfo-${activeSymbol.value}-${stamp}.json`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -1897,7 +2212,7 @@ async function loadOlderCandles(count: number) {
   olderCandlesLoading.value = true;
   try {
     const endTime = oldest.openTime - 1;
-    const sym = encodeURIComponent(props.symbol.trim().toUpperCase());
+    const sym = encodeURIComponent(activeSymbol.value.trim().toUpperCase());
     const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${primaryTf.value}&endTime=${endTime}&limit=${count}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`Binance klines request failed (${res.status})`);
@@ -1937,12 +2252,23 @@ async function loadOlderCandles(count: number) {
   }
 }
 
-watch(() => props.symbol, () => {
+watch(() => activeSymbol.value, async () => {
   livePrice.value = null;
   resetView();
-  loadSymbolInfo();
+  // Awaited — loadToolCacheForSymbol's restore logic (including the
+  // FRVP/liquidity/AVWAP recompute added later, which needs
+  // primaryCandles.value to already reflect the NEW symbol) was
+  // previously racing ahead of this while it was still fire-and-forget,
+  // computing zones against the OLD symbol's stale candle data. Matches
+  // onMounted's ordering below, which already awaited this correctly —
+  // this watcher was the one path that didn't.
+  await loadSymbolInfo();
   connectBinanceWs();
-  loadToolCacheForSymbol();
+  // Awaited (this watcher is now async) specifically so anything that
+  // needs positions.value to have settled first — like restoring a test
+  // position's drawing below — can run right after, instead of racing
+  // loadToolCacheForSymbol's wholesale replacement of positions.value.
+  await loadToolCacheForSymbol();
   // Training mode stays on across a symbol switch — just restart the
   // replay from the configured start index for whatever loads in, rather
   // than leaving it pointed at an index that belonged to the old symbol's
@@ -1950,6 +2276,13 @@ watch(() => props.symbol, () => {
   // so this is safe to call even before the new symbol's candles have
   // actually finished loading — it'll just re-clamp correctly once they do.
   if (trainingMode.value) initTrainingMode();
+
+  if (pendingTestPositionRestore.value) {
+    ensureTestPositionDrawing(pendingTestPositionRestore.value);
+    pendingTestPositionRestore.value = null;
+  }
+
+  autoCheckAndDisplayTestPositions(activeSymbol.value);
 });
 
 // ── Timeframe selection ───────────────────────────────────────────────
@@ -2000,13 +2333,35 @@ const viewStartIndex = ref(0);
 const yPanOffset = ref(0);
 const maxVisibleBars = computed(() => Math.max(20, primaryCandles.value.length || 320));
 
+// Small buffer added ON TOP of the legend's own measured width, so the
+// candle doesn't sit with its edge exactly touching the legend's
+// boundary — just breathing room, not another guess at the legend's size.
+const LEGEND_MARGIN_BUFFER_PX = 16;
+
+function defaultRightMarginBars(): number {
+  // Measure the ACTUAL rendered legend width instead of guessing a fixed
+  // pixel value — the legend stack (.chart-legends) is auto-width and
+  // varies with which legends are currently toggled on, so a hardcoded
+  // number can only ever be a guess tuned against whatever combination
+  // happened to be showing at the time. This also means when NO legends
+  // are toggled on at all, offsetWidth is naturally ~0 and no artificial
+  // margin gets reserved — which is correct, since there'd be nothing to
+  // avoid overlapping. legendsEl is guaranteed populated by the time this
+  // runs: resetView() is called from onMounted after an explicit
+  // `await nextTick()`, well after the template's refs are bound.
+  const measuredWidth = legendsEl.value?.offsetWidth ?? 0;
+  const margin = measuredWidth > 0 ? measuredWidth + LEGEND_MARGIN_BUFFER_PX : 0;
+  const raw = Math.ceil(margin / candleWidth.value);
+  return Math.min(raw, Math.floor(visibleBars.value / 2));
+}
+
 function resetView() {
-  viewStartIndex.value = Math.max(0, primaryCandles.value.length - visibleBars.value);
+  viewStartIndex.value = Math.max(0, primaryCandles.value.length - visibleBars.value + defaultRightMarginBars());
   yPanOffset.value = 0;
 }
 
 function scrollToLatest() {
-  viewStartIndex.value = Math.max(0, primaryCandles.value.length - visibleBars.value);
+  viewStartIndex.value = Math.max(0, primaryCandles.value.length - visibleBars.value + defaultRightMarginBars());
   yPanOffset.value = 0;
 }
 
@@ -2088,6 +2443,7 @@ const displayCandles = computed(() => {
 
 // ── Layout / sizing ────────────────────────────────────────────────────
 const chartContainer = ref<HTMLElement | null>(null);
+const legendsEl = ref<HTMLElement | null>(null);
 const chartWidth = ref(900);
 const chartHeight = ref(560);
 let resizeObserver: ResizeObserver | null = null;
@@ -2177,6 +2533,33 @@ function giFromTime(t: number): number {
 // Convenience: candleX for a shape field that stores time rather than gi.
 function candleXAtTime(t: number): number {
   return candleX(giFromTime(t));
+}
+
+/**
+ * The TIME to actually render a position box's right edge at. When
+ * autoExtend is off (or unset, e.g. any position drawn before this
+ * feature existed), this is just p.x2 — the old fixed-span behavior,
+ * unchanged. When autoExtend is on, this scans forward from the
+ * position's own entry candle for the first candle whose high/low
+ * crosses TP or SL (same high-vs-tp/low-vs-sl scan checkTestPosition.ts
+ * uses, just against this chart's own live primaryCandles rather than a
+ * fetched TestPosition's candles, and generalized for kind: "long"/
+ * "short" instead of side: "LONG"/"SHORT") — if found, the box freezes
+ * there; if not, it extends to the LATEST loaded candle, growing on its
+ * own as new candles arrive.
+ */
+function positionRenderX2(p: PositionShape): number {
+  if (!p.autoExtend) return p.x2;
+  const candles = primaryCandles.value;
+  if (!candles.length) return p.x2;
+  const startGi = Math.max(0, giFromTime(p.x1));
+  for (let i = startGi; i < candles.length; i++) {
+    const c = candles[i];
+    const hitTp = p.kind === "long" ? c.high >= p.tp : c.low <= p.tp;
+    const hitSl = p.kind === "long" ? c.low <= p.sl : c.high >= p.sl;
+    if (hitTp || hitSl) return c.openTime;
+  }
+  return candles[candles.length - 1].openTime;
 }
 
 const priceRange = computed(() => {
@@ -2298,7 +2681,7 @@ function measureContainer() {
 }
 
 // ── Pan / zoom interaction ─────────────────────────────────────────────
-type Tool = "none" | "rectangle" | "line" | "horizontal-line" | "vertical-line" | "text" | "price-range" | "frvp" | "avwap" | "liquidity" | "long-position" | "short-position";
+type Tool = "none" | "rectangle" | "line" | "horizontal-line" | "vertical-line" | "text" | "price-range" | "frvp" | "avwap" | "liquidity" | "liquidity-frvp" | "long-position" | "short-position" | "capture";
 const activeTool = ref<Tool>("none");
 
 const TOOL_DEFS: { id: Tool; icon: string; label: string; key: string }[] = [
@@ -2311,6 +2694,8 @@ const TOOL_DEFS: { id: Tool; icon: string; label: string; key: string }[] = [
   { id: "frvp", icon: "▤", label: "Fixed-range volume profile", key: "v" },
   { id: "avwap", icon: "◇", label: "Anchored VWAP (click a candle)", key: "a" },
   { id: "liquidity", icon: "▦", label: "Liquidity heatmap (drag a range)", key: "h" },
+  { id: "liquidity-frvp", icon: "▦▤", label: "Liquidity heatmap + FRVP together (drag a range)", key: "b" },
+  { id: "capture", icon: "📷", label: "Capture range for research data export (drag a range)", key: "8" },
   { id: "long-position", icon: "▲$", label: "Long position (drag: entry -> risk)", key: "u" },
   { id: "short-position", icon: "▼$", label: "Short position (drag: entry -> risk)", key: "d" },
 ];
@@ -2322,6 +2707,37 @@ function setActiveTool(t: Tool) {
 
 interface ToolDraft { startGi: number; startPrice: number; curGi: number; curPrice: number }
 const toolDraft = ref<ToolDraft | null>(null);
+
+// Entry/TP/SL for an in-progress long/short drag — shared by the live
+// preview (rendered while still dragging, below) and finalizeToolDraft
+// (which used to compute this same thing separately; extracted here so
+// there's exactly one place this math lives, not two that could quietly
+// drift apart from each other).
+const draftPositionPreview = computed(() => {
+  const d = toolDraft.value;
+  if (!d) return null;
+  if (activeTool.value !== "long-position" && activeTool.value !== "short-position") return null;
+  const kind: "long" | "short" = activeTool.value === "long-position" ? "long" : "short";
+  const entry = d.startPrice;
+  // The drag's vertical distance defines the RISK (stop-loss) side —
+  // dragging toward the natural risk direction for that position type
+  // sets the stop; take-profit defaults to a 2:1 reward:risk box,
+  // freely adjustable afterward by dragging the TP/SL lines themselves.
+  const dragDistance = Math.abs(d.curPrice - d.startPrice);
+  const riskDistance = dragDistance > 0 ? dragDistance : Math.max(Math.abs(entry) * 0.01, 0.0001);
+  const sl = kind === "long" ? entry - riskDistance : entry + riskDistance;
+  const tp = kind === "long" ? entry + riskDistance * 2 : entry - riskDistance * 2;
+  return { kind, entry, tp, sl };
+});
+// Same ratio math as positionRR, just against the draft's plain
+// {entry,tp,sl} shape rather than a full PositionShape.
+const draftPositionRR = computed(() => {
+  const p = draftPositionPreview.value;
+  if (!p) return 0;
+  const risk = Math.abs(p.entry - p.sl);
+  const reward = Math.abs(p.tp - p.entry);
+  return risk > 0 ? reward / risk : 0;
+});
 
 let isPanning = false;
 let panStart = { x: 0, y: 0, viewStartIndex: 0, yPanOffset: 0 };
@@ -2377,7 +2793,7 @@ function onChartMouseDown(e: MouseEvent) {
   if (activeTool.value === "none") {
     isPanning = true;
     panStart = { x, y, viewStartIndex: viewStartIndex.value, yPanOffset: yPanOffset.value };
-  } else if (["rectangle", "line", "price-range", "frvp", "liquidity", "long-position", "short-position"].includes(activeTool.value)) {
+  } else if (["rectangle", "line", "price-range", "frvp", "liquidity", "liquidity-frvp", "long-position", "short-position", "capture"].includes(activeTool.value)) {
     toolDraft.value = { startGi: gi, startPrice: price, curGi: gi, curPrice: price };
   }
   // Horizontal price lines, AVWAP and preview buy/sell are click-to-place tools.
@@ -2405,7 +2821,7 @@ function onChartMouseMove(e: MouseEvent) {
   } else if (toolDraft.value) {
     toolDraft.value.curGi = gi;
     toolDraft.value.curPrice = yToPrice(y);
-    if (activeTool.value === "liquidity") recomputeLiquidityPreview();
+    if (activeTool.value === "liquidity" || activeTool.value === "liquidity-frvp") recomputeLiquidityPreview();
   }
 }
 
@@ -2805,10 +3221,87 @@ const lhAnchorPairs = computed<LHAnchorPairInfo[]>(() => {
 // only ever runs for what's selected, never for the full list.
 const selectedLhAnchorPairIds = ref<Set<string>>(new Set());
 
+// lhAnchorRanges (below) is a computed — it gets recreated fresh every
+// time the selection changes, so a prediction can't be mutated directly
+// onto one of its objects the way runPrediction does for the manual
+// heatmap tool's persistent liquidityRanges array (that mutation would
+// just be thrown away on the next recompute). Predictions live here
+// instead, keyed by pairId, and lhAnchorRanges looks them up. Declared
+// here (before the default-selection watcher below) rather than nearer
+// where it's read in lhAnchorRanges — that watcher uses
+// { immediate: true }, which runs its callback synchronously right when
+// watch() is called, so anything it references must already be
+// initialized at that exact point, not just declared later in the file.
+const lhAnchorPredictions = ref<Record<string, MovementPrediction>>({});
+
+// Global, not per-symbol — persisted so the preference survives reloads.
+// Declared here (before the immediate watcher below that reads it), not
+// grouped with the other persistedBooleanRef toggles further down the
+// file — that watcher uses { immediate: true }, which runs synchronously
+// right when watch() is called, so anything it references must already
+// be initialized at that exact point, not just declared later in the
+// file (the same TDZ issue hit earlier with lhAnchorPredictions itself).
+const autoShowLatestLhAnchors = persistedBooleanRef("autoShowLatestLhAnchors", true);
+
+// On showing a symbol's chart, default to the 2 MOST RECENT confirmed
+// segments (lhAnchorPairs is sorted old->current, so that's simply the
+// last 2 entries) — auto-selected and auto-predicted, matching the same
+// "must have the prediction shown" behavior a manual checkbox click gets.
+// Guarded with a one-shot flag per symbol load rather than a plain watch
+// on lhAnchorPairs directly: that computed can also update later as new
+// anchors confirm live, and re-applying "select the latest 2" on every
+// one of those updates would keep undoing whatever the user manually
+// checked/unchecked afterward.
+let pendingDefaultLhSelection = true;
+watch(activeSymbol, () => {
+  selectedLhAnchorPairIds.value = new Set();
+  lhAnchorPredictions.value = {};
+  pendingDefaultLhSelection = true;
+});
+function applyDefaultLhSelection(pairs: LHAnchorPairInfo[]) {
+  pendingDefaultLhSelection = false;
+  const latestTwo = pairs.slice(-2);
+  selectedLhAnchorPairIds.value = new Set(latestTwo.map(p => p.pairId));
+  const predictions: Record<string, MovementPrediction> = {};
+  for (const p of latestTwo) {
+    const slice = primaryCandles.value.slice(p.startGi, p.endGi + 1);
+    predictions[p.pairId] = predictMovement(slice);
+  }
+  lhAnchorPredictions.value = { ...lhAnchorPredictions.value, ...predictions };
+}
+
+watch(
+  lhAnchorPairs,
+  (pairs) => {
+    if (!autoShowLatestLhAnchors.value || !pendingDefaultLhSelection || !pairs.length) return;
+    applyDefaultLhSelection(pairs);
+  },
+  { immediate: true }
+);
+
+// If the toggle gets switched ON mid-session while a selection is still
+// pending (rather than at the moment lhAnchorPairs happens to update),
+// apply it right away instead of waiting for the next anchor to confirm.
+watch(autoShowLatestLhAnchors, (enabled) => {
+  if (enabled && pendingDefaultLhSelection && lhAnchorPairs.value.length) {
+    applyDefaultLhSelection(lhAnchorPairs.value);
+  }
+});
+
 function toggleLhAnchorPairSelection(pairId: string) {
   const next = new Set(selectedLhAnchorPairIds.value);
-  if (next.has(pairId)) next.delete(pairId);
-  else next.add(pairId);
+  if (next.has(pairId)) {
+    next.delete(pairId);
+  } else {
+    next.add(pairId);
+    // Auto-run the prediction the moment this segment gets checked —
+    // must show a prediction immediately, not just the heatmap cells.
+    const pair = lhAnchorPairs.value.find(p => p.pairId === pairId);
+    if (pair) {
+      const slice = primaryCandles.value.slice(pair.startGi, pair.endGi + 1);
+      lhAnchorPredictions.value = { ...lhAnchorPredictions.value, [pairId]: predictMovement(slice) };
+    }
+  }
   selectedLhAnchorPairIds.value = next;
 }
 
@@ -2823,7 +3316,13 @@ const lhAnchorRanges = computed(() => {
     .map(p => {
       const range = computeLiquidityRange(p.startGi, p.endGi);
       if (!range) return null;
-      return { ...range, pairId: p.pairId, direction: p.direction, ongoing: p.ongoing };
+      return {
+        ...range,
+        pairId: p.pairId,
+        direction: p.direction,
+        ongoing: p.ongoing,
+        prediction: lhAnchorPredictions.value[p.pairId] ?? null,
+      };
     })
     .filter((r): r is NonNullable<typeof r> => r !== null);
 });
@@ -2834,6 +3333,36 @@ function lhAnchorEntryTooltip(a: LiquidityHeatmapAnchor): string {
     `swing ${a.swingType} @ ${a.price}`,
     ...a.reasons,
   ].join("\n");
+}
+
+// Where the confirmation-side vertical actually needs to END: the
+// CONFIRMING candle's own high or low, not the anchor's price level —
+// those two candles are almost always at very different prices (that's
+// the whole point of the lag), so reusing the anchor's Y here left the
+// line stopping short of where the confirming candle actually renders,
+// instead of reaching it. Falls back to the anchor's own marker Y (not
+// the rail — that would create a circular dependency with the function
+// below) if candle data isn't available at that gi.
+function lhAnchorConfirmCandleY(a: LiquidityHeatmapAnchor): number {
+  const gi = giFromTime(a.confirmedOpenTime);
+  const candle = primaryCandles.value[gi];
+  const anchorMarkerY = a.swingType === "high" ? priceToY(a.price) - 10 : priceToY(a.price) + 10;
+  if (!candle) return anchorMarkerY;
+  return a.swingType === "high" ? priceToY(candle.high) - 10 : priceToY(candle.low) + 10;
+}
+
+// The shared horizontal rail for the confirmation-lag staple connector
+// (see the template comment where it's used). Positioned beyond WHICHEVER
+// of the two endpoints sits further out — not just the anchor's own Y —
+// so the horizontal bridge never has to cut back through candles sitting
+// between the anchor and confirmation points, which can be at very
+// different prices.
+function lhAnchorConfirmRailY(a: LiquidityHeatmapAnchor): number {
+  const anchorMarkerY = a.swingType === "high" ? priceToY(a.price) - 10 : priceToY(a.price) + 10;
+  const confirmY = lhAnchorConfirmCandleY(a);
+  return a.swingType === "high"
+    ? Math.min(anchorMarkerY, confirmY) - 15
+    : Math.max(anchorMarkerY, confirmY) + 15;
 }
 
 function lhAnchorRangeTooltip(range: { direction: SIGNAL_DIRECTION; ongoing: boolean; startGi: number; endGi: number }): string {
@@ -2989,13 +3518,13 @@ function getRangeHighLow(start: number, end: number) {
   return { low, high };
 }
 
-function computeLiquidityRange(start: number, end: number): LiquidityRange | null {
+function computeLiquidityRange(start: number, end: number, existingId?: string): LiquidityRange | null {
   const slice = primaryCandles.value.slice(start, end + 1);
   if (!slice.length) return null;
   const result = getLiqudationHeatmap(slice);
   const { low, high } = getRangeHighLow(start, end);
   return {
-    id: nextId(),
+    id: existingId ?? nextId(),
     startGi: start,
     endGi: end,
     low,
@@ -3012,7 +3541,10 @@ function finalizeLiquidity(d: ToolDraft) {
   const start = Math.min(d.startGi, d.curGi);
   const end = Math.max(d.startGi, d.curGi);
   const range = computeLiquidityRange(start, end);
-  if (range) liquidityRanges.value.push(range);
+  if (range) {
+    liquidityRanges.value.push(range);
+    runPrediction(range);
+  }
 }
 
 // Runs predictMovement.ts over exactly the candles this heatmap range
@@ -3058,7 +3590,7 @@ function startPredictionLevelDrag(range: LiquidityRange, level: PredictedLevel, 
 function downloadLiquidityRangeJson(range: LiquidityRange) {
   const slice = primaryCandles.value.slice(range.startGi, range.endGi + 1);
   const payload = {
-    symbol: props.symbol,
+    symbol: activeSymbol.value,
     startGi: range.startGi,
     endGi: range.endGi,
     low: range.low,
@@ -3073,7 +3605,7 @@ function downloadLiquidityRangeJson(range: LiquidityRange) {
   const a = document.createElement("a");
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   a.href = url;
-  a.download = `liquidity-range-${props.symbol}-${range.startGi}-${range.endGi}-${stamp}.json`;
+  a.download = `liquidity-range-${activeSymbol.value}-${range.startGi}-${range.endGi}-${stamp}.json`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -3091,7 +3623,15 @@ interface RectShape { id: string; x1: number; x2: number; y1: number; y2: number
 // every other drawing here) span the box width; entry/tp/sl are prices,
 // each independently draggable. kind decides which side of entry the
 // profit zone sits on (above for long, below for short).
-interface PositionShape { id: string; kind: "long" | "short"; x1: number; x2: number; entry: number; tp: number; sl: number }
+interface PositionShape {
+  id: string; kind: "long" | "short"; x1: number; x2: number; entry: number; tp: number; sl: number;
+  /** Set only for positions created via "Add Test" (test) or a placed order (live) — undefined for a regular hand-drawn position box. */
+  tag?: "test" | "live";
+  /** Set only when tag is "test" — links this drawing back to its testPositionDb record. */
+  testPositionId?: string;
+  /** When true, the box's right edge is computed dynamically (positionRenderX2) instead of using x2 directly — follows the latest candle until TP/SL actually hits, then freezes there. Defaults to true for newly-created positions; dragging the right-edge handle explicitly turns it off, since a manual drag is a deliberate choice to fix the span. Undefined on positions saved before this feature existed, treated the same as false (old fixed-span behavior, unchanged for anything already drawn). */
+  autoExtend?: boolean;
+}
 interface LineShape { id: string; x1: number; x2: number; y1: number; y2: number }
 // `time` on a horizontal line and `price` on a vertical line are the point
 // where the line was originally PLACED (captured once at creation) — used
@@ -3135,9 +3675,175 @@ const frvpZones = ref<FrvpZone[]>([]);
 const avwapLines = ref<AvwapLine[]>([]);
 const liquidityRanges = ref<LiquidityRange[]>([]);
 const previewPosition = ref<PreviewPosition | null>(null);
+
+// Live bid/ask for the preview panel — a MARKET order fills against the
+// opposite side of the book (a BUY fills at the ask, a SELL at the bid),
+// so this gives a real sense of where the order would actually execute
+// and whether the order's own size exceeds what's visibly available at
+// that price. Separate, dedicated websocket from the main candle-data
+// one (connectBinanceWs) — different stream, different purpose, and its
+// own lifecycle tied to whether the preview panel is even open, not to
+// symbol switches.
+interface PreviewBookTicker { bid: number; bidQty: number; ask: number; askQty: number }
+interface PreviewDepthLevel { price: number; qty: number }
+interface PreviewDepth { bids: PreviewDepthLevel[]; asks: PreviewDepthLevel[] }
+const previewBookTicker = ref<PreviewBookTicker | null>(null);
+const previewDepth = ref<PreviewDepth | null>(null);
+let previewBookTickerWs: WebSocket | null = null;
+
+function closePreviewBookTickerWs() {
+  if (previewBookTickerWs) {
+    previewBookTickerWs.onopen = null;
+    previewBookTickerWs.onmessage = null;
+    previewBookTickerWs.onerror = null;
+    previewBookTickerWs.onclose = null;
+    previewBookTickerWs.close();
+    previewBookTickerWs = null;
+  }
+  previewBookTicker.value = null;
+  previewDepth.value = null;
+}
+
+function parseDepthLevels(raw: unknown): PreviewDepthLevel[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((l): PreviewDepthLevel => ({ price: Number((l as string[])?.[0]), qty: Number((l as string[])?.[1]) }))
+    .filter((l) => Number.isFinite(l.price) && Number.isFinite(l.qty));
+}
+
+// Combined stream (bookTicker + partial depth) over ONE connection,
+// rather than two separate sockets — Binance's multiplexed endpoint
+// wraps each message as { stream, data }, dispatched below by which
+// stream it came from. depth20@100ms gives the top 20 levels on each
+// side, refreshed every 100ms — enough to walk through for a realistic
+// fill estimate without subscribing to the full diff-depth stream this
+// app has no other use for.
+function connectPreviewBookTickerWs(symbol: string) {
+  closePreviewBookTickerWs();
+  const streamSymbol = symbol.trim().toLowerCase();
+  if (!streamSymbol) return;
+  const ws = new WebSocket(
+    `wss://fstream.binance.com/stream?streams=${streamSymbol}@bookTicker/${streamSymbol}@depth20@100ms`
+  );
+  previewBookTickerWs = ws;
+  ws.onmessage = (event) => {
+    if (previewBookTickerWs !== ws) return;
+    try {
+      const msg = JSON.parse(event.data);
+      const stream = msg?.stream as string | undefined;
+      const data = msg?.data;
+      if (!stream || !data) return;
+      if (stream.endsWith("@bookTicker")) {
+        const bid = Number(data.b);
+        const bidQty = Number(data.B);
+        const ask = Number(data.a);
+        const askQty = Number(data.A);
+        if ([bid, bidQty, ask, askQty].every(Number.isFinite)) {
+          previewBookTicker.value = { bid, bidQty, ask, askQty };
+        }
+      } else if (stream.includes("@depth")) {
+        previewDepth.value = {
+          bids: parseDepthLevels(data.bids ?? data.b),
+          asks: parseDepthLevels(data.asks ?? data.a),
+        };
+      }
+    } catch {
+      // malformed frame — ignore, next tick will likely be fine
+    }
+  };
+}
+
+// Starts the moment the preview panel actually opens, stops the moment
+// it closes — regardless of WHICH of the several places in this file
+// sets previewPosition to a value or back to null, so the socket
+// lifecycle can't drift out of sync with the panel just because a future
+// edit adds another close path this watcher doesn't know about.
+watch(previewPosition, (pos) => {
+  if (pos) connectPreviewBookTickerWs(activeSymbol.value);
+  else closePreviewBookTickerWs();
+});
+
+// notional = margin * leverage — the actual position size a market order
+// needs to fill, regardless of direction.
+const previewNotional = computed(() => previewMargin.value * activeSymbolMaxLeverage.value);
+
+const previewSpread = computed(() => {
+  if (!previewBookTicker.value) return null;
+  return previewBookTicker.value.ask - previewBookTicker.value.bid;
+});
+
+// Liquidity visible at the price the order would fill against — NOT full
+// order-book depth (this only has bookTicker's top-of-book, not a depth
+// stream), so this can only warn "your size exceeds what's visible right
+// at the best price," not calculate actual expected slippage across
+// multiple price levels. A real depth-based slippage estimate would need
+// a separate @depth stream, which this doesn't subscribe to.
+interface DepthFillEstimate { avgPrice: number; worstPrice: number; filledNotional: number; fullyFilled: boolean }
+
+/**
+ * Walks real order-book levels (best price first) consuming however much
+ * of each is needed until targetNotional is filled, or the levels run
+ * out. Returns the volume-weighted AVERAGE price across everything
+ * consumed, and the WORST (last-level) price reached — the actual
+ * mechanics of how a market order fills against a real book, not a
+ * single top-of-book price treated as if the whole order fills there.
+ */
+function estimateFillFromLevels(levels: PreviewDepthLevel[], targetNotional: number): DepthFillEstimate | null {
+  if (!levels.length || targetNotional <= 0) return null;
+  let remaining = targetNotional;
+  let totalBaseQty = 0;
+  let totalNotionalFilled = 0;
+  let worstPrice = levels[0].price;
+  for (const level of levels) {
+    if (remaining <= 0) break;
+    const levelNotional = level.price * level.qty;
+    const notionalToTake = Math.min(levelNotional, remaining);
+    totalBaseQty += notionalToTake / level.price;
+    totalNotionalFilled += notionalToTake;
+    worstPrice = level.price;
+    remaining -= notionalToTake;
+  }
+  if (totalBaseQty === 0) return null;
+  return {
+    avgPrice: totalNotionalFilled / totalBaseQty,
+    worstPrice,
+    filledNotional: totalNotionalFilled,
+    fullyFilled: remaining <= 0.0000001,
+  };
+}
+
+// Live, real-time estimate of where a market order of THIS size would
+// actually fill — asks for a buy, bids for a sell — recalculated
+// automatically every time a new depth20@100ms frame arrives (previewDepth
+// is a ref, so this computed re-runs on every update) or the order size
+// itself changes (margin, leverage). Only reaches as far as the 20 levels
+// subscribed to; an order large enough to exceed all 20 will show
+// fullyFilled: false rather than silently understate the impact.
+const previewDepthFillEstimate = computed<DepthFillEstimate | null>(() => {
+  if (!previewPosition.value || !previewDepth.value) return null;
+  const levels = previewPosition.value.side === "buy" ? previewDepth.value.asks : previewDepth.value.bids;
+  return estimateFillFromLevels(levels, previewNotional.value);
+});
+
+// How far the worst-case fill price sits from the current best price —
+// the actual expected slippage, in price terms and percent, not just a
+// binary "you might see some slippage" flag.
+const previewEstimatedSlippage = computed(() => {
+  const estimate = previewDepthFillEstimate.value;
+  const bt = previewBookTicker.value;
+  if (!estimate || !bt || !previewPosition.value) return null;
+  const bestPrice = previewPosition.value.side === "buy" ? bt.ask : bt.bid;
+  const priceDiff = estimate.worstPrice - bestPrice;
+  return { priceDiff, pct: bestPrice !== 0 ? (priceDiff / bestPrice) * 100 : 0 };
+});
+
 const selectedDrawing = ref<{ type: DrawingType; id: string } | null>(null);
 
-const previewMargin = ref(5);
+// Remembered across sessions, globally — same persistedNumberRef pattern
+// already used for the Training Mode start index, so you don't have to
+// re-enter your usual margin every time you open the order confirmation
+// panel. One shared value across every symbol, not per-symbol.
+const previewMargin = persistedNumberRef("previewMargin", 5);
 const targetTpRoi = ref(2);
 const targetSlRoi = ref(2);
 const previewLoading = ref(false);
@@ -3189,10 +3895,19 @@ function startPreviewPanelDrag(event: MouseEvent) {
   document.addEventListener("mouseup", up);
 }
 
-let idCounter = 0;
+// Was a simple session-scoped counter (idCounter, starting from 0 every
+// page load) — fine for ids that only ever need to be unique WITHIN one
+// running session, but several things generated here get PERSISTED
+// across sessions (toolCacheDb for drawings, testPositionDb for test
+// positions). A counter that resets on every reload means two different
+// sessions can generate the exact same "id-1", and since saveTestPosition
+// (and the drawing-cache save) upsert by id, the second one silently
+// overwrote the first instead of creating a new record — this was the
+// actual cause of test positions capping out at a couple of entries.
+// crypto.randomUUID() is unique across sessions/reloads by construction,
+// with the same call signature so nothing else needs to change.
 function nextId(): string {
-  idCounter += 1;
-  return `id-${idCounter}`;
+  return crypto.randomUUID();
 }
 
 function finalizeToolDraft(d: ToolDraft) {
@@ -3215,25 +3930,25 @@ function finalizeToolDraft(d: ToolDraft) {
     case "liquidity":
       finalizeLiquidity(d);
       break;
+    case "liquidity-frvp":
+      finalizeLiquidity(d);
+      addFrvpZone(Math.min(d.startGi, d.curGi), Math.max(d.startGi, d.curGi));
+      break;
+    case "capture":
+      captureDataForRange(Math.min(d.startGi, d.curGi), Math.max(d.startGi, d.curGi));
+      break;
     case "long-position":
     case "short-position": {
+      const preview = draftPositionPreview.value;
+      if (!preview) break;
       pushUndoSnapshot();
-      const kind = activeTool.value === "long-position" ? "long" : "short";
-      const entry = d.startPrice;
-      // The drag's vertical distance defines the RISK (stop-loss) side —
-      // dragging toward the natural risk direction for that position type
-      // sets the stop; take-profit defaults to a 2:1 reward:risk box,
-      // freely adjustable afterward by dragging the TP/SL lines themselves.
-      const dragDistance = Math.abs(d.curPrice - d.startPrice);
-      const riskDistance = dragDistance > 0 ? dragDistance : Math.max(Math.abs(entry) * 0.01, 0.0001);
-      const sl = kind === "long" ? entry - riskDistance : entry + riskDistance;
-      const tp = kind === "long" ? entry + riskDistance * 2 : entry - riskDistance * 2;
       positions.value.push({
         id: nextId(),
-        kind,
+        kind: preview.kind,
         x1: timeFromGi(d.startGi),
         x2: timeFromGi(d.curGi),
-        entry, tp, sl,
+        entry: preview.entry, tp: preview.tp, sl: preview.sl,
+        autoExtend: true,
       });
       break;
     }
@@ -3313,6 +4028,89 @@ function addFrvpZone(startGi: number, endGi: number, existingId?: string) {
   if (idx >= 0) frvpZones.value[idx] = zone;
   else frvpZones.value.push(zone);
 }
+
+/**
+ * Captures a research snapshot of the selected range: its own candles
+ * (with whatever analysis fields — liquidityAnchor, conditions_met,
+ * candleStructure, etc — were already present on them), plus every
+ * FRVP zone, liquidity heatmap range, and long/short position drawing
+ * that overlaps it. Positions matter most here — any linked test
+ * position gets its FULL outcome record pulled in too (win/loss/pnl),
+ * not just the drawn entry/TP/SL, since studying entries after the fact
+ * needs to know what actually happened, not just what was planned.
+ * Saved to captureDataDb; does not create any visual drawing on the
+ * chart, unlike the other range-drag tools — this is a data export
+ * action, not an annotation.
+ */
+async function captureDataForRange(startGi: number, endGi: number) {
+  const candles = primaryCandles.value.slice(startGi, endGi + 1);
+  if (!candles.length) return;
+
+  const overlapsRange = (aStart: number, aEnd: number) => {
+    const s = Math.min(aStart, aEnd);
+    const e = Math.max(aStart, aEnd);
+    return s <= endGi && e >= startGi;
+  };
+
+  const overlappingFrvp = frvpZones.value.filter(z => overlapsRange(z.startGi, z.endGi));
+  const overlappingLiquidity = liquidityRanges.value.filter(z => overlapsRange(z.startGi, z.endGi));
+  // Position x1/x2 are TIMES, not gi — unlike FrvpZone/LiquidityRange,
+  // which are already gi-based — so these need converting before the
+  // same overlap check applies.
+  const overlappingPositions = positions.value.filter(p => overlapsRange(giFromTime(p.x1), giFromTime(p.x2)));
+
+  const linkedTestPositionIds = new Set(
+    overlappingPositions.map(p => p.testPositionId).filter((id): id is string => !!id)
+  );
+  let linkedTestPositions: TestPosition[] = [];
+  if (linkedTestPositionIds.size) {
+    try {
+      const all = await listAllTestPositions();
+      linkedTestPositions = all.filter(tp => linkedTestPositionIds.has(tp.id));
+    } catch (err) {
+      console.error("Failed to look up linked test positions for capture:", err);
+    }
+  }
+
+  const entry: CapturedDataEntry = {
+    id: nextId(),
+    symbol: activeSymbol.value,
+    capturedAt: Date.now(),
+    startGi,
+    endGi,
+    startOpenTime: candles[0].openTime,
+    endOpenTime: candles[candles.length - 1].openTime,
+    candles,
+    frvpZones: overlappingFrvp.map(z => ({
+      id: z.id, startGi: z.startGi, endGi: z.endGi,
+      rangeLow: z.rangeLow, rangeHigh: z.rangeHigh,
+      poc: z.poc, maxVol: z.maxVol, rows: z.rows,
+    })),
+    liquidityRanges: overlappingLiquidity.map(z => ({
+      id: z.id, startGi: z.startGi, endGi: z.endGi, low: z.low, high: z.high,
+      prediction: z.prediction ?? undefined,
+    })),
+    positions: overlappingPositions.map(p => ({
+      id: p.id, kind: p.kind, x1: p.x1, x2: p.x2, entry: p.entry, tp: p.tp, sl: p.sl,
+      tag: p.tag, testPositionId: p.testPositionId,
+    })),
+    testPositions: linkedTestPositions,
+  };
+
+  try {
+    await saveCapturedData(entry);
+    useNotificationStore().showNotification(
+      "success",
+      "top-right",
+      "Captured",
+      `${candles.length} candles, ${overlappingPositions.length} position(s)`
+    );
+  } catch (err) {
+    console.error("Failed to save captured data:", err);
+    useNotificationStore().showNotification("danger", "top-right", "Capture failed", "See console for details");
+  }
+}
+
 function addAvwapAnchor(anchorGi: number, existingId?: string) {
   const all = primaryCandles.value;
   if (!all[anchorGi]) return;
@@ -3407,7 +4205,7 @@ let toolCacheSaveTimer: ReturnType<typeof setTimeout> | null = null;
 async function loadToolCacheForSymbol() {
   toolCacheLoading = true;
   try {
-    const cached = await loadToolCache(props.symbol);
+    const cached = await loadToolCache(activeSymbol.value);
     rectangles.value = (cached?.rectangles as RectShape[]) ?? [];
     trendLines.value = (cached?.trendLines as LineShape[]) ?? [];
     horizontalLines.value = (cached?.horizontalLines as HorizontalLineShape[]) ?? [];
@@ -3415,6 +4213,28 @@ async function loadToolCacheForSymbol() {
     priceRangeBoxes.value = (cached?.priceRangeBoxes as PriceRangeBox[]) ?? [];
     textAnnotations.value = (cached?.textAnnotations as TextAnnotation[]) ?? [];
     positions.value = (cached?.positions as PositionShape[]) ?? [];
+
+    // These three are recomputed from their saved ANCHOR TIMES, not
+    // restored directly — see the toolCacheDb.ts module comment for why
+    // a stored gi can't be trusted to still mean the same candle.
+    frvpZones.value = [];
+    for (const a of cached?.frvpAnchors ?? []) {
+      addFrvpZone(giFromTime(a.startOpenTime), giFromTime(a.endOpenTime), a.id);
+    }
+
+    liquidityRanges.value = [];
+    for (const a of cached?.liquidityAnchors ?? []) {
+      const range = computeLiquidityRange(giFromTime(a.startOpenTime), giFromTime(a.endOpenTime), a.id);
+      if (range) {
+        range.prediction = (a.prediction as MovementPrediction | null | undefined) ?? null;
+        liquidityRanges.value.push(range);
+      }
+    }
+
+    avwapLines.value = [];
+    for (const a of cached?.avwapAnchors ?? []) {
+      addAvwapAnchor(giFromTime(a.anchorOpenTime), a.id);
+    }
   } catch (err) {
     console.error("Failed to load tool cache:", err);
   } finally {
@@ -3431,7 +4251,7 @@ function scheduleToolCacheSave() {
     // saveToolCache() does its own JSON-clone before the IndexedDB put, so
     // it's safe to pass the reactive refs' values directly here.
     saveToolCache({
-      symbol: props.symbol,
+      symbol: activeSymbol.value,
       rectangles: rectangles.value,
       trendLines: trendLines.value,
       horizontalLines: horizontalLines.value,
@@ -3439,13 +4259,37 @@ function scheduleToolCacheSave() {
       priceRangeBoxes: priceRangeBoxes.value,
       textAnnotations: textAnnotations.value,
       positions: positions.value,
+      // Saved as ANCHOR TIMES (see toolCacheDb.ts's module comment), not
+      // the raw gi these zones actually use internally — a candle's own
+      // openTime is stable across sessions, its gi index isn't. Entries
+      // whose gi no longer resolves to a real candle (shouldn't normally
+      // happen, but data can theoretically be trimmed) are skipped
+      // rather than saved with a garbage time.
+      frvpAnchors: frvpZones.value
+        .map((z) => ({
+          id: z.id,
+          startOpenTime: primaryCandles.value[z.startGi]?.openTime,
+          endOpenTime: primaryCandles.value[z.endGi]?.openTime,
+        }))
+        .filter((a): a is { id: string; startOpenTime: number; endOpenTime: number } => a.startOpenTime != null && a.endOpenTime != null),
+      liquidityAnchors: liquidityRanges.value
+        .map((z) => ({
+          id: z.id,
+          startOpenTime: primaryCandles.value[z.startGi]?.openTime,
+          endOpenTime: primaryCandles.value[z.endGi]?.openTime,
+          prediction: z.prediction ?? null,
+        }))
+        .filter((a): a is { id: string; startOpenTime: number; endOpenTime: number; prediction: MovementPrediction | null } => a.startOpenTime != null && a.endOpenTime != null),
+      avwapAnchors: avwapLines.value
+        .map((l) => ({ id: l.id, anchorOpenTime: primaryCandles.value[l.anchorGi]?.openTime }))
+        .filter((a): a is { id: string; anchorOpenTime: number } => a.anchorOpenTime != null),
       updatedAt: Date.now(),
     }).catch((err) => console.error("Failed to save tool cache:", err));
   }, 400);
 }
 
 watch(
-  [rectangles, trendLines, horizontalLines, verticalLines, priceRangeBoxes, textAnnotations, positions],
+  [rectangles, trendLines, horizontalLines, verticalLines, priceRangeBoxes, textAnnotations, positions, frvpZones, liquidityRanges, avwapLines],
   scheduleToolCacheSave,
   { deep: true }
 );
@@ -3469,7 +4313,7 @@ async function addNote() {
   const text = newNoteDraft.value.trim();
   if (!text) return;
   const now = Date.now();
-  const note: StickyNote = { id: nextId(), symbol: props.symbol, text, createdAt: now, updatedAt: now };
+  const note: StickyNote = { id: nextId(), symbol: activeSymbol.value, text, createdAt: now, updatedAt: now };
   notes.value = [note, ...notes.value];
   newNoteDraft.value = "";
   try {
@@ -3535,7 +4379,7 @@ async function addScoreEntry() {
   const rParsed = newScoreR.value.trim() === "" ? null : Number(newScoreR.value);
   const entry: ScoreEntry = {
     id: nextId(),
-    symbol: props.symbol,
+    symbol: activeSymbol.value,
     result: newScoreResult.value,
     rMultiple: rParsed !== null && Number.isFinite(rParsed) ? rParsed : null,
     note: newScoreNote.value.trim(),
@@ -3761,7 +4605,28 @@ function startPositionLevelDrag(id: string, level: "entry" | "tp" | "sl", event:
   const move = (e: MouseEvent) => {
     const cur = chartPointFromClient(e.clientX, e.clientY);
     if (!cur) return;
-    p[level] = cur.price;
+    if (level === "tp") {
+      // Hard clamp, not just a visual warning: TP can't be dragged to
+      // less than MIN_RR_RATIO times the CURRENT SL-side risk. Dragging
+      // further/more favorable than that is unrestricted — this only
+      // stops it from going below the minimum, exactly like a physical
+      // stop on a slider. Recalculated against p.sl live, so if the risk
+      // side has already been resized, the floor reflects that.
+      // Gated behind enforceRRClamp — the global toggle in the preview
+      // panel — so turning it off means TP follows the cursor with no
+      // floor at all, not just a wider or looser one.
+      if (enforceRRClamp.value) {
+        const risk = Math.abs(p.entry - p.sl);
+        const minReward = risk * MIN_RR_RATIO;
+        p.tp = p.kind === "long"
+          ? Math.max(cur.price, p.entry + minReward)
+          : Math.min(cur.price, p.entry - minReward);
+      } else {
+        p.tp = cur.price;
+      }
+    } else {
+      p[level] = cur.price;
+    }
   };
   const up = () => {
     document.removeEventListener("mousemove", move);
@@ -3784,6 +4649,11 @@ function startPositionEdgeDrag(id: string, edge: "x1" | "x2", event: MouseEvent)
     const cur = chartPointFromClient(e.clientX, e.clientY);
     if (!cur) return;
     p[edge] = timeFromGi(cur.gi);
+    // Dragging x2 specifically is a deliberate choice to fix the span at
+    // wherever it's dragged to — overrides the dynamic follow-the-
+    // candles behavior from here on. Dragging x1 (the entry side) never
+    // touches autoExtend; only x2 is ever computed dynamically.
+    if (edge === "x2") p.autoExtend = false;
   };
   const up = () => {
     document.removeEventListener("mousemove", move);
@@ -3793,6 +4663,14 @@ function startPositionEdgeDrag(id: string, edge: "x1" | "x2", event: MouseEvent)
   document.addEventListener("mouseup", up);
   selectDrawing("position", id);
 }
+
+// Hard floor on TP (drag, typed edit, and the preview panel all enforce
+// this) — TP must be at least MIN_RR_RATIO times the SL side's risk. The
+// R:R checkmark/warning shown near the long/short tool reflects this same
+// threshold. Global, not per-symbol — enforceRRClamp toggles it on/off
+// for every symbol at once, from a checkbox in the preview panel.
+const MIN_RR_RATIO = 2;
+const enforceRRClamp = persistedBooleanRef("enforceRRClamp", true);
 
 function positionRR(p: PositionShape): number {
   const risk = Math.abs(p.entry - p.sl);
@@ -3830,9 +4708,18 @@ function commitPositionEdit() {
   if (!id) return;
   const p = positions.value.find(x => x.id === id);
   const entry = Number(positionEditDraftEntry.value);
-  const tp = Number(positionEditDraftTp.value);
+  const rawTp = Number(positionEditDraftTp.value);
   const sl = Number(positionEditDraftSl.value);
-  if (p && Number.isFinite(entry) && Number.isFinite(tp) && Number.isFinite(sl)) {
+  if (p && Number.isFinite(entry) && Number.isFinite(rawTp) && Number.isFinite(sl)) {
+    // Same hard floor as the TP drag handler — typing a value directly
+    // shouldn't be a way to bypass the same 2x-risk minimum. Gated
+    // behind the same enforceRRClamp toggle.
+    let tp = rawTp;
+    if (enforceRRClamp.value) {
+      const risk = Math.abs(entry - sl);
+      const minReward = risk * MIN_RR_RATIO;
+      tp = p.kind === "long" ? Math.max(rawTp, entry + minReward) : Math.min(rawTp, entry - minReward);
+    }
     if (p.entry !== entry || p.tp !== tp || p.sl !== sl) pushUndoSnapshot();
     p.entry = entry;
     p.tp = tp;
@@ -3850,7 +4737,7 @@ const positionEditorStyle = computed(() => {
   const p = positions.value.find(x => x.id === editingPositionId.value);
   if (!p) return { display: "none" };
   return {
-    left: `${Math.max(candleXAtTime(p.x1), candleXAtTime(p.x2)) + 10}px`,
+    left: `${Math.max(candleXAtTime(p.x1), candleXAtTime(positionRenderX2(p))) + 10}px`,
     top: `${priceToY(p.entry)}px`,
   };
 });
@@ -4238,7 +5125,7 @@ async function runPreview(side: "LONG" | "SHORT", apiSide: "BUY" | "SELL") {
   try {
     const tpSl = await OrderMakerUtility.calculateTpSl(
       previewMargin.value,
-      props.symbol,
+      activeSymbol.value,
       apiSide,
       String(reference.candle.close),
       targetTpRoi.value,
@@ -4265,6 +5152,131 @@ async function runPreview(side: "LONG" | "SHORT", apiSide: "BUY" | "SELL") {
 const previewBuy = () => runPreview("LONG", "BUY");
 const previewSell = () => runPreview("SHORT", "SELL");
 
+// Records a test position (testPositionDb) and drops a labeled long/short
+// position box on the chart at the same entry/tp/sl, anchored at the
+// preview's own reference candle. Does NOT place a real order — this is
+// purely a "remind me I called this" tracker, separate from placeOrder
+// below (which now also drops a "live"-tagged box on success).
+// Set by onSelectTestSymbol when the symbol needs to actually CHANGE
+// (the reload watcher only fires on real changes, so there's a real
+// switch to wait for) — consumed by that watcher right after
+// loadToolCacheForSymbol settles positions.value, since restoring the
+// drawing any earlier would just get wiped out by that wholesale replace.
+const pendingTestPositionRestore = ref<TestPosition | null>(null);
+
+/**
+ * Re-adds a test position's long/short drawing to the chart if it's
+ * missing — the position tool sometimes gets removed (tool cache
+ * overwritten, cleared, etc.), and this is how clicking that position's
+ * symbol in the Test Position modal brings it back rather than just
+ * switching the view and leaving you without a visual reminder.
+ * No-ops if a drawing for this exact test position is already present,
+ * so this is always safe to call speculatively.
+ */
+function ensureTestPositionDrawing(position: TestPosition) {
+  const alreadyExists = positions.value.some(p => p.testPositionId === position.id);
+  if (alreadyExists) return;
+  const FIFTEEN_MIN_MS = 15 * 60 * 1000;
+  positions.value.push({
+    id: nextId(),
+    kind: position.side === "LONG" ? "long" : "short",
+    x1: position.entryOpenTime,
+    x2: position.entryOpenTime + FIFTEEN_MIN_MS * 15, // same arbitrary default width as addTestPosition (15 candles) — freely resizable afterward
+    entry: position.entry,
+    tp: position.tp,
+    sl: position.sl,
+    tag: "test",
+    testPositionId: position.id,
+    autoExtend: true,
+  });
+}
+
+/**
+ * On loading a symbol's chart, finds any ACTIVE test positions for THAT
+ * symbol, ensures each has its drawing on the chart right away (the
+ * visual reminder shouldn't wait on a network round trip), then runs a
+ * fresh check against live Binance candles so the status/PnL shown
+ * reflects right now, not whatever it was the last time someone happened
+ * to open the Test Position modal and click Check. Resolved positions
+ * (WIN/LOSS/AMBIGUOUS) are left alone — same "don't re-check what's
+ * already final" rule Run All and Close All already follow.
+ */
+async function autoCheckAndDisplayTestPositions(symbol: string) {
+  let all: TestPosition[];
+  try {
+    all = await listAllTestPositions();
+  } catch (err) {
+    console.error("Failed to load test positions for auto-check:", err);
+    return;
+  }
+  const forSymbol = all.filter(p => p.symbol === symbol && p.status === "ACTIVE");
+  if (!forSymbol.length) return;
+
+  for (const p of forSymbol) ensureTestPositionDrawing(p);
+
+  const earliestEntry = Math.min(...forSymbol.map(p => p.entryOpenTime));
+  const candles = await fetchLiveCandles(symbol, earliestEntry);
+  if (!candles || !candles.length) return;
+  for (const p of forSymbol) {
+    try {
+      await checkOneTestPosition(p, candles);
+    } catch (err) {
+      console.error(`Failed to auto-check test position for ${symbol}:`, err);
+    }
+  }
+}
+
+function addTestPosition() {
+  const pos = previewPosition.value;
+  if (!pos) return;
+  const anchorCandle = primaryCandles.value[pos.entryGi];
+  if (!anchorCandle) return;
+
+  const direction: "LONG" | "SHORT" = pos.side === "buy" ? "LONG" : "SHORT";
+  const testPositionId = nextId();
+
+  // This symbol's OWN max leverage, not a global assumption — matches
+  // how the live-order preview elsewhere already treats leverage as
+  // per-symbol, not a fixed constant.
+  const maxLeverage = activeSymbolMaxLeverage.value;
+
+  const record: TestPosition = {
+    id: testPositionId,
+    symbol: activeSymbol.value,
+    side: direction,
+    entry: pos.entryPrice,
+    tp: pos.tp,
+    sl: pos.sl,
+    entryOpenTime: anchorCandle.openTime,
+    createdAt: Date.now(),
+    status: "ACTIVE",
+    lastCheckedAt: null,
+    resolvedAt: null,
+    resolvedPrice: null,
+    forceClosed: false,
+    margin: previewMargin.value,
+    maxLeverage,
+    pnlPercent: null,
+    pnl: null,
+  };
+
+  positions.value.push({
+    id: nextId(),
+    kind: pos.side === "buy" ? "long" : "short",
+    x1: timeFromGi(pos.entryGi),
+    x2: timeFromGi(pos.entryGi + 15), // arbitrary default width — freely resizable afterward like any position box
+    entry: pos.entryPrice,
+    tp: pos.tp,
+    sl: pos.sl,
+    tag: "test",
+    testPositionId,
+    autoExtend: true,
+  });
+
+  saveTestPosition(record).catch((err) => console.error("Failed to save test position:", err));
+  previewPosition.value = null;
+}
+
 async function placeOrder() {
   const pos = previewPosition.value;
   if (!pos || placingOrder.value) return;
@@ -4278,18 +5290,30 @@ async function placeOrder() {
   previewError.value = null;
   try {
     await OrderMakerUtility.openOrder(
-      props.symbol,
+      activeSymbol.value,
       previewMargin.value,
       pos.side === "buy" ? "BUY" : "SELL",
       pos.tp,
       pos.sl
     );
+    positions.value.push({
+      id: nextId(),
+      kind: pos.side === "buy" ? "long" : "short",
+      x1: timeFromGi(pos.entryGi),
+      x2: timeFromGi(pos.entryGi + 15),
+      entry: pos.entryPrice,
+      tp: pos.tp,
+      sl: pos.sl,
+      tag: "live",
+      autoExtend: true,
+    });
     useNotificationStore().showNotification(
       "success",
       "top-right",
       "Order",
       `${pos.side === "buy" ? "LONG" : "SHORT"} Order Created`
     );
+    previewPosition.value = null;
   } catch (error) {
     console.error("Failed to place order:", error);
     previewError.value = "Failed to place order. Please try again.";
@@ -4306,6 +5330,45 @@ const previewRR = computed(() => {
   return risk > 0 ? `${(reward / risk).toFixed(2)} : 1` : "—";
 });
 
+// Estimated PnL at TP and SL, right in the preview panel — so you know
+// what a win/loss would actually look like in USDT before ever placing
+// the order or adding a test position. Same PnlUtility functions and
+// same BUY/SELL side mapping the test-position checker already uses —
+// not a separate estimate formula.
+// The TP number input (below) uses this instead of previewPosition.tp
+// directly — v-model on a plain field has no hook to intercept a typed
+// value, so the input was a full bypass of the drag handler's same
+// clamp. A writable computed gives v-model somewhere to write through
+// that actually enforces the floor.
+const previewTpClamped = computed<number>({
+  get: () => previewPosition.value?.tp ?? 0,
+  set: (val: number) => {
+    if (!previewPosition.value) return;
+    const pos = previewPosition.value;
+    if (!enforceRRClamp.value) {
+      pos.tp = val;
+      return;
+    }
+    const risk = Math.abs(pos.entryPrice - pos.sl);
+    const minReward = risk * MIN_RR_RATIO;
+    pos.tp = pos.side === "buy"
+      ? Math.max(val, pos.entryPrice + minReward)
+      : Math.min(val, pos.entryPrice - minReward);
+  },
+});
+
+const previewEstimate = computed(() => {
+  if (!previewPosition.value) return null;
+  const p = previewPosition.value;
+  const apiSide = p.side === "buy" ? "BUY" : "SELL";
+  const leverage = activeSymbolMaxLeverage.value;
+  const tpPercent = PnlUtility.calculatePNLPercent(p.entryPrice, p.tp, apiSide, leverage);
+  const tpPnl = PnlUtility.calculateEstimatedPnl(previewMargin.value, tpPercent, leverage);
+  const slPercent = PnlUtility.calculatePNLPercent(p.entryPrice, p.sl, apiSide, leverage);
+  const slPnl = PnlUtility.calculateEstimatedPnl(previewMargin.value, slPercent, leverage);
+  return { tpPercent, tpPnl, slPercent, slPnl };
+});
+
 function startPreviewPriceDrag(which: "tp" | "sl", event: MouseEvent) {
   event.preventDefault();
   event.stopPropagation();
@@ -4313,7 +5376,26 @@ function startPreviewPriceDrag(which: "tp" | "sl", event: MouseEvent) {
   const move = (e: MouseEvent) => {
     const cur = chartPointFromClient(e.clientX, e.clientY);
     if (!cur || !previewPosition.value) return;
-    previewPosition.value[which] = cur.price;
+    const pos = previewPosition.value;
+    if (which === "tp") {
+      // Same hard floor as the drawable position tool's TP drag/edit —
+      // this preview panel has its own entirely separate TP/SL state
+      // (previewPosition, not PositionShape), so it needed its own copy
+      // of the same clamp rather than inheriting the other one. Gated
+      // behind the same enforceRRClamp toggle as every other enforcement
+      // point.
+      if (enforceRRClamp.value) {
+        const risk = Math.abs(pos.entryPrice - pos.sl);
+        const minReward = risk * MIN_RR_RATIO;
+        pos.tp = pos.side === "buy"
+          ? Math.max(cur.price, pos.entryPrice + minReward)
+          : Math.min(cur.price, pos.entryPrice - minReward);
+      } else {
+        pos.tp = cur.price;
+      }
+    } else {
+      pos.sl = cur.price;
+    }
   };
   const up = () => {
     document.removeEventListener("mousemove", move);
@@ -4376,8 +5458,32 @@ function formatPriceRangeLabel(pr: PriceRangeBox): string {
 
 // ── Hotkeys ─────────────────────────────────────────────────────────────
 const showHotkeysModal = ref(false);
+const showTestPositionModal = ref(false);
+const showCapturedDataModal = ref(false);
+
+// Clicking a test position in the modal switches this viewer to that
+// symbol. This component doesn't own its own symbol — it's a prop — so
+// this emits an update:symbol event; whatever parent renders this
+// component needs to be listening (e.g. v-model:symbol="..." or
+// @update:symbol="mySymbolRef = $event") for this to actually switch
+// what's displayed.
+function onSelectTestSymbol(position: TestPosition) {
+  if (position.symbol === activeSymbol.value) {
+    // Already on this symbol — the reload watcher only fires on an
+    // ACTUAL change, so there's nothing to wait for here; restore now.
+    ensureTestPositionDrawing(position);
+  } else {
+    pendingTestPositionRestore.value = position;
+    setActiveSymbol(position.symbol);
+  }
+  showTestPositionModal.value = false;
+}
 const HOTKEY_HELP = [
+  { key: "←/→", desc: "Previous/next symbol" },
+  { key: "0", desc: "Open test positions" },
+  { key: "8", desc: "Capture range for research data export (drag a range)" },
   { key: "R", desc: "Rectangle tool" },
+  { key: "B", desc: "Liquidity heatmap + FRVP together (drag a range) — steps training backward instead while Training Mode is on" },
   { key: "L", desc: "Trend line tool (click-drag)" },
   { key: "P", desc: "Horizontal price line (click to place)" },
   { key: "I", desc: "Vertical time line (click to place)" },
@@ -4422,10 +5528,14 @@ function onKeydown(e: KeyboardEvent) {
     case "v": setActiveTool("frvp"); break;
     case "a": setActiveTool("avwap"); break;
     case "h": setActiveTool("liquidity"); break;
+    case "arrowleft": goToPrevSymbol(); break;
+    case "arrowright": goToNextSymbol(); break;
+    case "0": showTestPositionModal.value = true; break;
     case "u": setActiveTool("long-position"); break;
     case "d": setActiveTool("short-position"); break;
     case "n": if (trainingMode.value) advanceTraining(1); break;
-    case "b": if (trainingMode.value) advanceTraining(-1); break;
+    case "b": if (trainingMode.value) advanceTraining(-1); else setActiveTool("liquidity-frvp"); break;
+    case "8": setActiveTool("capture"); break;
     case "5": if (trainingMode.value) advanceTraining(5); break;
     case "1": overlayFlags["1h"] = !overlayFlags["1h"]; break;
     case "2": overlayFlags["4h"] = !overlayFlags["4h"]; break;
@@ -4461,9 +5571,10 @@ onMounted(async () => {
   document.addEventListener("mousedown", onDocumentClickForLoadOlderMenu);
   connectBinanceWs();
   nowTickInterval = window.setInterval(() => { nowTick.value = Date.now(); }, 1000);
-  loadToolCacheForSymbol();
+  await loadToolCacheForSymbol();
   loadAllNotes();
   loadAllScoreEntries();
+  autoCheckAndDisplayTestPositions(activeSymbol.value);
 });
 
 onBeforeUnmount(() => {
@@ -4472,6 +5583,8 @@ onBeforeUnmount(() => {
   document.removeEventListener("mousedown", onDocumentClickForLoadOlderMenu);
   resizeObserver?.disconnect();
   closeBinanceWs();
+  closePreviewBookTickerWs();
+  stopPriceFallbackPolling();
   if (nowTickInterval != null) window.clearInterval(nowTickInterval);
 });
 
@@ -4545,6 +5658,8 @@ watch(primaryCandles, () => {
 .position-tp-label { fill: #22c55e; }
 .position-sl-label { fill: #ef4444; }
 .position-info-label { fill: #9aa4b2; font-family: var(--mono); font-size: 10px; pointer-events: none; }
+.rr-healthy { fill: #22c55e; font-weight: 700; }
+.rr-unhealthy { fill: #f59e0b; font-weight: 700; }
 .position-edge-handle { fill: transparent; stroke: transparent; pointer-events: all; cursor: ew-resize; }
 .drawing-remove { fill: #ef5350; font-family: var(--mono); font-size: 12px; font-weight: 800; cursor: pointer; pointer-events: all; }
 .drawing-remove:hover { fill: #fff; }
@@ -4569,6 +5684,8 @@ watch(primaryCandles, () => {
 .prediction-target-label.prediction-none { fill: #9aa4b2; font-weight: 400; }
 .preview-tp-line { stroke: var(--bull); stroke-width: 1; stroke-dasharray: 4 3; opacity: .85; pointer-events: none; }
 .preview-sl-line { stroke: var(--bear); stroke-width: 1; stroke-dasharray: 4 3; opacity: .85; pointer-events: none; }
+.preview-fill-estimate-line { stroke: #f59e0b; stroke-width: 1.5; stroke-dasharray: 2 2; opacity: .85; pointer-events: none; }
+.preview-fill-estimate-label { fill: #f59e0b; font-family: var(--mono); font-size: 10px; font-weight: 700; pointer-events: none; }
 .preview-hit-line { stroke: transparent; stroke-width: 12; cursor: ns-resize; pointer-events: stroke; }
 .drawing-toolbar {
   position: absolute; top: 44px; left: 6px; z-index: 20;
@@ -4658,6 +5775,10 @@ watch(primaryCandles, () => {
 }
 .preview-order-btn:hover:not(:disabled) { background: rgba(79,195,247,.18); }
 .preview-order-btn:disabled { opacity: .45; cursor: not-allowed; }
+.preview-add-test-btn {
+  border-color: #3a4048; background: transparent; color: #9aa4b2; margin-top: 4px;
+}
+.preview-add-test-btn:hover { background: rgba(255,255,255,.06); color: #f8fafc; }
 .preview-error {
   position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
   z-index: 30; color: var(--bear); background: rgba(10,13,18,.92);
@@ -4745,6 +5866,13 @@ width: 30rem;
   font-family: var(--mono); font-size: 11px; border-radius: 4px; padding: 3px 4px;
 }
 .bars-input { width: 56px; }
+
+.symbol-nav { display: flex; align-items: center; gap: 4px; }
+.symbol-nav-btn { padding: 2px 8px; font-weight: 700; }
+.symbol-nav-select {
+  background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.1); color: #d7dde3;
+  font-family: var(--mono); font-size: 11px; border-radius: 4px; padding: 3px 4px; max-width: 130px;
+}
 
 .icon-btn {
   border: 1px solid rgba(255, 255, 255, 0.1); background: transparent; color: #8b95a1;
@@ -4940,7 +6068,8 @@ width: 30rem;
 .price-range-label { fill: #d7dde3; font-family: var(--mono); font-size: 10px; text-anchor: middle; }
 
 .frvp-row { opacity: .58; }
-.frvp-poc { stroke: #ffd54f; stroke-width: 1; stroke-dasharray: 2 2; }
+.frvp-poc { stroke: #ffd54f; stroke-width: 2; }
+.frvp-poc-label { fill: #ffd54f; font-family: var(--mono); font-size: 10px; font-weight: 700; pointer-events: none; }
 
 .avwap-line { fill: none; stroke: #b388ff; stroke-width: 1.4; }
 
@@ -4990,6 +6119,31 @@ width: 30rem;
 .preview-panel-row label { color: #667; }
 .preview-panel-row input { width: 78px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); color: #d7dde3; font-family: var(--mono); border-radius: 4px; padding: 2px 4px; }
 .preview-panel-rr span { color: var(--accent); font-weight: 700; }
+.preview-panel-estimate span { font-size: 10.5px; font-weight: 600; }
+.preview-book-ticker {
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin-top: 6px;
+  padding-top: 6px;
+}
+.preview-book-ticker-loading {
+  font-size: 10.5px;
+  color: #667;
+  text-align: center;
+  padding: 4px 0;
+}
+.preview-book-ticker-warning {
+  font-size: 10px;
+  color: #f59e0b;
+  line-height: 1.4;
+  margin-top: 4px;
+}
+.preview-rr-toggle {
+  display: flex; align-items: center; gap: 6px; margin: 6px 0;
+  font-size: 10.5px; color: #9aa4b2; cursor: pointer;
+}
+.preview-rr-toggle input { margin: 0; cursor: pointer; }
+.pnl-positive { color: #22c55e; }
+.pnl-negative { color: #ef4444; }
 
 /* ── modals ── */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.7); display: flex; align-items: center; justify-content: center; z-index: 1000; }
@@ -5046,6 +6200,8 @@ width: 30rem;
 .status-badge { background: rgba(79, 195, 247, 0.16); color: var(--accent); }
 
 .hotkeys-modal .modal-body { display: flex; flex-direction: column; gap: 6px; }
+.test-position-modal { max-width: 860px; width: 92vw; }
+.captured-data-modal { max-width: 640px; width: 90vw; }
 .hotkey-row { display: flex; align-items: center; gap: 12px; font-size: 12px; }
 .hotkey-row kbd { min-width: 42px; text-align: center; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 4px; padding: 2px 6px; font-family: var(--mono); font-size: 11px; color: var(--accent); }
 
@@ -5096,6 +6252,13 @@ width: 30rem;
 .lh-anchor-marker.lh-anchor-end { fill: none !important; }
 .lh-anchor-marker.lh-anchor-long { fill: #22c55e; stroke: #22c55e; }
 .lh-anchor-marker.lh-anchor-short { fill: #ef4444; stroke: #ef4444; }
+.lh-anchor-confirm-line {
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  pointer-events: stroke;
+}
+.lh-anchor-confirm-line.lh-anchor-long { stroke: #22c55e; opacity: 0.55; }
+.lh-anchor-confirm-line.lh-anchor-short { stroke: #ef4444; opacity: 0.55; }
 
 /* Price Action: single simple dot, strong/confirmed events only.
    A bright white outline (not a dark one) is what actually adds contrast
@@ -5187,6 +6350,13 @@ width: 30rem;
 .lh-anchor-picker-row input { cursor: pointer; flex: 0 0 auto; }
 .lh-anchor-picker-row .lh-anchor-long { color: #22c55e; }
 .lh-anchor-picker-row .lh-anchor-short { color: #ef4444; }
+.lh-anchor-auto-toggle {
+  padding-bottom: 6px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 10.5px;
+  color: #9aa4b2;
+}
 .legend-label { color: #cdd3db; }
 .liquidity-legend-note { color: #7d8590; font-style: italic; font-size: 9px; }
 </style>

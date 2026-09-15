@@ -2,17 +2,22 @@
 //
 // Persists the drawing-tool objects placed on the chart in
 // CandleVisualizerV2Component.vue — rectangles, trend lines, horizontal
-// lines, vertical lines, price-range boxes, and text annotations — keyed by
-// symbol. Previously none of this survived a reload; now reopening the same
-// symbol restores exactly what was drawn on it.
+// lines, vertical lines, price-range boxes, text annotations, and
+// long/short positions — keyed by symbol. Previously none of this
+// survived a reload; now reopening the same symbol restores exactly
+// what was drawn on it.
 //
-// FRVP zones, AVWAP anchors, and liquidity ranges are intentionally NOT
-// included here yet — their anchoring is still index-based (see the
-// time-anchored-drawings comment in the component), so persisting them
-// across sessions/timeframes would currently reproduce the same
-// "drawing points at the wrong place" bug this cache is meant to avoid.
-// Once those are converted to time-based anchoring too, extend
-// ToolCachePayload and the component's load/save wiring accordingly.
+// FRVP zones, AVWAP anchors, and liquidity ranges are stored differently
+// from everything else above: those are computed FROM a startGi/endGi
+// (or anchorGi) slice of candle data, not just positioned by one. Saving
+// the raw gi directly would reproduce the exact "drawing points at the
+// wrong place" bug this cache exists to prevent — the same numeric index
+// can point at a completely different candle once the underlying data
+// has shifted between sessions. So these three save the ANCHOR TIMES
+// (frvpAnchors / liquidityAnchors / avwapAnchors) instead of the gi
+// itself; the component converts time back to whatever gi is current at
+// load time (giFromTime) and recomputes the zone/line from there, rather
+// than trusting a stored gi to still mean the same thing.
 //
 // No external dependency — plain native IndexedDB, wrapped in a small
 // promise-based API so callers don't have to deal with
@@ -21,6 +26,19 @@
 const DB_NAME = "cev2-tool-cache-db";
 const DB_VERSION = 1;
 const STORE = "toolCache";
+
+export interface ToolCacheTimeAnchor {
+  id: string;
+  startOpenTime: number;
+  endOpenTime: number;
+  /** Only meaningful for liquidityAnchors — a manually-run prediction is restored as-is, not recomputed, since it's a snapshot of a judgment made at that time, not a derived value that needs to stay current. */
+  prediction?: unknown;
+}
+
+export interface ToolCachePointAnchor {
+  id: string;
+  anchorOpenTime: number;
+}
 
 export interface ToolCachePayload {
   symbol: string;
@@ -31,6 +49,10 @@ export interface ToolCachePayload {
   priceRangeBoxes: unknown[];
   textAnnotations: unknown[];
   positions: unknown[];
+  /** Optional — absent on any record saved before this field existed; the component treats a missing array the same as an empty one. */
+  frvpAnchors?: ToolCacheTimeAnchor[];
+  liquidityAnchors?: ToolCacheTimeAnchor[];
+  avwapAnchors?: ToolCachePointAnchor[];
   updatedAt: number;
 }
 
