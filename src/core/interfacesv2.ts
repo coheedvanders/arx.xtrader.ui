@@ -12,6 +12,24 @@ export type MARKET_ALIGNMENT =
     | 'DIVERGING_BEARISH'
     | 'NEUTRAL';
 
+export type MarketStructureLabel = 'HH' | 'HL' | 'LH' | 'LL';
+
+export interface MarketStructureSwing {
+    label: MarketStructureLabel;
+    /** openTime of the candle whose close made this swing knowable — always later than (or equal to, if fractalWidth were 0) the swing candle's own openTime. Same confirmation-lag concept as LiquidityHeatmapAnchor's confirmedOpenTime. */
+    confirmedOpenTime: number;
+}
+
+export interface TrendSegmentInfo {
+    direction: 'UP' | 'DOWN';
+    /** Index of the confirming swing candle (the HH for an uptrend, the LL for a downtrend) — same gi space as everything else in this candle array. */
+    startGi: number;
+    /** Inclusive. If the segment is still the current, active trend, this is the most recent candle's gi (may still extend as more data arrives). */
+    endGi: number;
+    /** openTime at which this segment could first be said to be real — when the confirming swing (HL after HH, LH after LL) itself confirmed AND price cleared the minimum significance bar in its favor. Every candle within [startGi, endGi] carries the SAME TrendSegmentInfo object (by value), so any one of them tells you the whole segment's bounds. */
+    confirmedOpenTime: number;
+}
+
 export type VOLUME_STATE =
     | 'EXPANDING'
     | 'CONTRACTING'
@@ -267,7 +285,13 @@ export interface CandleInfo {
 
     conditions_met: string[]
 
+    extras: string[]
+
     candleStructure: CandleStructure
+
+    marketStructure: MarketStructureSwing | null
+
+    trendState: TrendSegmentInfo | null
 
     anchors: AnchorState
 

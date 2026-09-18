@@ -126,7 +126,7 @@ async function runInitialScan() {
             const futureSymbol = props.futureSymbols[i];
 
             //TARGET SYMBOL ANALYSIS
-            //if (futureSymbol.symbol != "HYPERUSDT") continue;
+            //if (futureSymbol.symbol != "LTCUSDT") continue;
 
             futureSymbol.status = "constructing info";
             var symbolInfo = await SimulationUtilityV2.constructSymbolInfo(futureSymbol.symbol,props.maxInitCandles)
@@ -173,8 +173,8 @@ async function onNewCandleSpawned() {
 
 function setRecentFutureCandleData(candles: CandleInfo[]){
     var currentCandle = candles[candles.length - 1];
-    if(currentCandle.conditions_met.length > 0){
-        currentFutureSumbol.value!.conditionMet = currentCandle.conditions_met[0]
+    if (currentCandle.conditions_met.length > 0) {
+        currentFutureSumbol.value!.conditionMet = currentCandle.conditions_met.join(", ")
     }
 }
 

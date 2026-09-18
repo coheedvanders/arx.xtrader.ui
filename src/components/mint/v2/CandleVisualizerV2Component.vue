@@ -50,6 +50,20 @@
 
         <button
           class="chip"
+          :class="{ active: showMarketStructureLabels }"
+          title="HH/HL/LH/LL swing structure labels on the chart"
+          @click="showMarketStructureLabels = !showMarketStructureLabels"
+        >Market Structure</button>
+
+        <button
+          class="chip"
+          :class="{ active: showTrendPanels }"
+          title="Trend clouds (see trendState.ts) — hover a cloud to see its start/end confirmation lines"
+          @click="showTrendPanels = !showTrendPanels"
+        >Trend</button>
+
+        <button
+          class="chip"
           :class="{ active: trainingMode }"
           title="Training Mode: backtest replay. N = next candle, B = back 1, 5 = jump 5"
           @click="trainingMode = !trainingMode"
@@ -136,6 +150,12 @@
           @click="previewSell"
         >{{ previewLoading && pendingSide === "SHORT" ? "…" : "Preview Sell" }}</button>
         <button
+          class="preview-top-btn ask-wisp"
+          :disabled="previewLoading || wispScanning"
+          title="Auto-detects side from the current combo, opens the preview, and auto-applies the suggested TP/SL once the scan finishes (` hotkey)"
+          @click="askWisp"
+        >{{ wispScanning ? "…" : "Ask Wisp" }}</button>
+        <button
           class="preview-top-btn place"
           :disabled="!previewPosition || placingOrder"
           title="Place the currently previewed order"
@@ -150,6 +170,24 @@
             <option v-for="s in futureSymbolList" :key="s" :value="s">{{ s }}</option>
           </select>
           <button class="icon-btn symbol-nav-btn" title="Next symbol" @click="goToNextSymbol">›</button>
+        </div>
+        <label class="condition-met-toggle" title="When checked, ‹ › and the dropdown only cycle through symbols where conditionMet is true">
+          <input type="checkbox" v-model="navigateOnlyConditionMet" />
+          <span>Condition met only</span>
+        </label>
+
+        <div class="opentime-search" title="Jump to the exact candle by its raw openTime integer">
+          <input
+            type="text"
+            v-model="openTimeSearchQuery"
+            placeholder="openTime…"
+            class="opentime-search-input"
+            :class="{ 'not-found': openTimeSearchNotFound }"
+            @keydown.enter.prevent="searchByOpenTime"
+            @keydown.escape.prevent="clearOpenTimeSearch"
+          />
+          <button class="icon-btn opentime-search-btn" title="Jump to candle" @click="searchByOpenTime">→</button>
+          <button v-if="highlightedSearchGi !== null || openTimeSearchQuery" class="icon-btn opentime-search-clear" title="Clear" @click="clearOpenTimeSearch">✕</button>
         </div>
 
         <label class="bars-control" title="Candles visible in view">
@@ -169,8 +207,14 @@
 
         <button class="icon-btn" title="Reset view (E)" @click="scrollToLatest">⇥</button>
         <button class="icon-btn" title="Refresh from IndexedDB" @click="loadSymbolInfo">⟳</button>
+        <label class="icon-btn auto-combo-toggle" title="Auto-plot the FRVP+AVWAP+heatmap combo at the last liquidityAnchor.length===2 candle on symbol load">
+          <input type="checkbox" v-model="autoPlotDefaultCombo" />
+          <span>Auto-combo</span>
+        </label>
         <button class="icon-btn" title="Download the full symbolInfo as JSON" @click="downloadSymbolInfoJson">⬇</button>
+        <button class="icon-btn" title="Batch download symbolInfo for multiple symbols as a zip" @click="showBatchDownloadModal = true">⬇⬇</button>
         <button class="icon-btn" title="Test positions" @click="showTestPositionModal = true">Test</button>
+        <button class="icon-btn" title="Wisp — captured learning" @click="showWispMonitorModal = true">Wisp</button>
         <button class="icon-btn" title="Captured research data" @click="showCapturedDataModal = true">📷</button>
         <button
           class="icon-btn notes-toolbar"
@@ -342,6 +386,51 @@
               />
             </g>
 
+            <!-- Trend clouds (see trendState.ts) — drawn BEFORE the
+                 candles group so they render behind it. Padded a little
+                 beyond the segment's own high/low so the shape visually
+                 contains the candles rather than exactly hugging their
+                 wicks. Green for a confirmed uptrend, red for a
+                 confirmed downtrend; nothing renders for ranging
+                 stretches (no segment covers them). Hovering a cloud
+                 reveals dotted "staple" connectors (same pattern as the
+                 liquidity anchor / market structure confirmation lines)
+                 to its actual start/end confirmation candles — hidden
+                 by default so the chart doesn't stay cluttered with
+                 every segment's confirmation lag at once. -->
+            <g class="trend-clouds">
+              <template v-for="cloud in visibleTrendClouds" :key="`trend-${cloud.startGi}`">
+                <rect
+                  class="trend-cloud"
+                  :class="cloud.direction === 'UP' ? 'trend-cloud-up' : 'trend-cloud-down'"
+                  :x="candleX(cloud.startGi) - candleWidth / 2"
+                  :y="priceToY(cloud.maxHigh) - 10"
+                  :width="candleX(cloud.endGi) - candleX(cloud.startGi) + candleWidth"
+                  :height="priceToY(cloud.minLow) - priceToY(cloud.maxHigh) + 20"
+                  rx="12" ry="12"
+                  @mouseenter="hoveredTrendStartGi = cloud.startGi"
+                  @mouseleave="hoveredTrendStartGi = null"
+                />
+              </template>
+              <template v-for="staple in hoveredTrendStaples" :key="staple.key">
+                <line
+                  class="trend-confirm-line" :class="staple.lineClass"
+                  :x1="candleX(staple.markerGi)" :x2="candleX(staple.markerGi)"
+                  :y1="staple.markerY" :y2="staple.railY"
+                />
+                <line
+                  class="trend-confirm-line" :class="staple.lineClass"
+                  :x1="candleX(staple.markerGi)" :x2="candleX(staple.confirmGi)"
+                  :y1="staple.railY" :y2="staple.railY"
+                />
+                <line
+                  class="trend-confirm-line" :class="staple.lineClass"
+                  :x1="candleX(staple.confirmGi)" :x2="candleX(staple.confirmGi)"
+                  :y1="staple.railY" :y2="staple.confirmY"
+                />
+              </template>
+            </g>
+
             <!-- candles (drawn beneath drawing tools so drawings/handles stay clickable) -->
             <g class="candles">
               <g
@@ -362,6 +451,57 @@
                   :width="candleWidth * 0.62"
                   :height="Math.max(1, Math.abs(priceToY(c.candle.open) - priceToY(c.candle.close)))"
                 />
+
+                <!--
+                  Market structure (HH/HL/LH/LL) label — placed at the
+                  SWING candle itself (c.gi), not the candle that
+                  confirmed it. Confirmation always lags behind the
+                  event (see marketStructure.ts) — the staple connector
+                  below makes that lag visible, same pattern as the
+                  liquidity heatmap anchors' confirmation lines. Highs
+                  above the wick, lows below it, so labels never overlap
+                  the candle itself. Bullish structure (HH/HL) green,
+                  bearish (LH/LL) red — trend direction should be
+                  readable at a glance without parsing the letters.
+                -->
+                <template v-if="showMarketStructureLabels && c.candle.marketStructure">
+                  <template v-if="c.candle.marketStructure.confirmedOpenTime !== c.candle.openTime">
+                    <line
+                      class="ms-confirm-line"
+                      :class="c.candle.marketStructure.label === 'HH' || c.candle.marketStructure.label === 'HL' ? 'ms-bullish' : 'ms-bearish'"
+                      :x1="candleX(c.gi)" :x2="candleX(c.gi)"
+                      :y1="c.candle.marketStructure.label === 'HH' || c.candle.marketStructure.label === 'LH' ? priceToY(c.candle.high) - 8 : priceToY(c.candle.low) + 8"
+                      :y2="marketStructureConfirmRailY(c.candle.marketStructure, c.candle)"
+                    />
+                    <line
+                      class="ms-confirm-line"
+                      :class="c.candle.marketStructure.label === 'HH' || c.candle.marketStructure.label === 'HL' ? 'ms-bullish' : 'ms-bearish'"
+                      :x1="candleX(c.gi)" :x2="candleXAtTime(c.candle.marketStructure.confirmedOpenTime)"
+                      :y1="marketStructureConfirmRailY(c.candle.marketStructure, c.candle)" :y2="marketStructureConfirmRailY(c.candle.marketStructure, c.candle)"
+                    />
+                    <line
+                      class="ms-confirm-line"
+                      :class="c.candle.marketStructure.label === 'HH' || c.candle.marketStructure.label === 'HL' ? 'ms-bullish' : 'ms-bearish'"
+                      :x1="candleXAtTime(c.candle.marketStructure.confirmedOpenTime)" :x2="candleXAtTime(c.candle.marketStructure.confirmedOpenTime)"
+                      :y1="marketStructureConfirmRailY(c.candle.marketStructure, c.candle)"
+                      :y2="marketStructureConfirmCandleY(c.candle.marketStructure)"
+                    />
+                  </template>
+                  <text
+                    class="market-structure-label"
+                    :class="{
+                      'ms-bullish': c.candle.marketStructure.label === 'HH' || c.candle.marketStructure.label === 'HL',
+                      'ms-bearish': c.candle.marketStructure.label === 'LH' || c.candle.marketStructure.label === 'LL',
+                    }"
+                    :x="candleX(c.gi)"
+                    :y="
+                      c.candle.marketStructure.label === 'HH' || c.candle.marketStructure.label === 'LH'
+                        ? priceToY(c.candle.high) - 8
+                        : priceToY(c.candle.low) + 16
+                    "
+                    text-anchor="middle"
+                  >{{ c.candle.marketStructure.label }}</text>
+                </template>
                 <!-- <circle
                   v-if="c.candle.anchors?.avwap?.isAnchor"
                   class="anchor-dot anchor-avwap"
@@ -779,6 +919,7 @@
               <polyline
                 class="avwap-line"
                 :class="{ selected: isDrawingSelected('avwap', line.id) }"
+                :style="{ stroke: line.color }"
                 :points="line.points.map(p => `${candleX(p.gi)},${priceToY(p.price)}`).join(' ')"
               />
               <line
@@ -931,7 +1072,7 @@
 
 
             <!-- horizontal price lines -->
-            <g v-for="hl in horizontalLines" :key="hl.id" class="drawing-group" @mousedown.stop="selectDrawing('horizontal-line', hl.id)">
+            <g v-for="hl in horizontalLines" :key="hl.id" class="drawing-group" @mousedown.stop="selectDrawing('horizontal-line', hl.id)" @dblclick.stop="startHorizontalLineEdit(hl.id)">
               <line
                 class="drawn-horizontal-line"
                 :class="{ selected: isDrawingSelected('horizontal-line', hl.id) }"
@@ -944,12 +1085,12 @@
                 :y1="priceToY(hl.price)" :y2="priceToY(hl.price)"
                 @mousedown="startHorizontalLineMove(hl.id, $event)"
               />
-              <!-- date label below the line, at its original placement point -->
+              <!-- price label at the right edge, matching the line's own defining value -->
               <text
-                class="horizontal-line-date-label"
-                :x="candleXAtTime(hl.time)"
-                :y="priceToY(hl.price) + 14"
-              >{{ formatAxisTime(hl.time) }}</text>
+                class="horizontal-line-price-label"
+                :x="plotWidth + 6"
+                :y="priceToY(hl.price) + 4"
+              >{{ formatPrice(hl.price) }}</text>
               <text
                 class="drawing-remove"
                 :x="plotWidth - 4"
@@ -979,12 +1120,12 @@
                 y1="0" :y2="mainPlotHeight + subplotsHeight"
                 @mousedown="startVerticalLineMove(vl.id, $event)"
               />
-              <!-- price label at the right of the line, at its placement height -->
+              <!-- time label at the bottom, matching the line's own defining value -->
               <text
-                class="vertical-line-price-label"
-                :x="candleXAtTime(vl.time) + 6"
-                :y="priceToY(vl.price) + 4"
-              >{{ formatPrice(vl.price) }}</text>
+                class="vertical-line-time-label"
+                :x="candleXAtTime(vl.time)"
+                :y="mainPlotHeight + subplotsHeight + 14"
+              >{{ formatAxisTime(vl.time) }}</text>
               <text
                 class="drawing-remove"
                 :x="candleXAtTime(vl.time) + 6"
@@ -1088,12 +1229,12 @@
                 <rect class="preview-zone preview-tp"
                   :x="Math.min(candleX(toolDraft.startGi), candleX(toolDraft.curGi))"
                   :y="priceToY(Math.max(draftPositionPreview.entry, draftPositionPreview.tp))"
-                  :width="Math.max(1, Math.abs(candleX(toolDraft.curGi) - candleX(toolDraft.startGi)))"
+                  :width="Math.max(1, Math.abs(candleX(Math.max(toolDraft.curGi, toolDraft.startGi + MIN_POSITION_WIDTH_GI)) - candleX(toolDraft.startGi)))"
                   :height="Math.max(1, Math.abs(priceToY(draftPositionPreview.entry) - priceToY(draftPositionPreview.tp)))" />
                 <rect class="preview-zone preview-sl"
                   :x="Math.min(candleX(toolDraft.startGi), candleX(toolDraft.curGi))"
                   :y="priceToY(Math.max(draftPositionPreview.entry, draftPositionPreview.sl))"
-                  :width="Math.max(1, Math.abs(candleX(toolDraft.curGi) - candleX(toolDraft.startGi)))"
+                  :width="Math.max(1, Math.abs(candleX(Math.max(toolDraft.curGi, toolDraft.startGi + MIN_POSITION_WIDTH_GI)) - candleX(toolDraft.startGi)))"
                   :height="Math.max(1, Math.abs(priceToY(draftPositionPreview.entry) - priceToY(draftPositionPreview.sl)))" />
                 <line class="preview-entry-line"
                   :x1="Math.min(candleX(toolDraft.startGi), candleX(toolDraft.curGi))" :x2="plotWidth"
@@ -1189,6 +1330,34 @@
                 class="bar-close-countdown"
                 :x="plotWidth + 6" :y="livePriceLineY + 12"
               >{{ barCloseCountdown }}</text>
+            </g>
+
+            <!-- The wisp: a small moving marker that travels to each past
+                 range's red/POC level as the scan replays through it.
+                 CSS transition on cx/cy gives the slide-between-points
+                 feel rather than an instant jump; the pulsing ring is
+                 pure CSS animation, not driven by JS per frame. -->
+            <g v-if="wispScanning && wispPosition" class="wisp-marker">
+              <circle class="wisp-pulse-ring" :cx="wispPosition.x" :cy="wispPosition.y" r="10" />
+              <circle class="wisp-glow" :cx="wispPosition.x" :cy="wispPosition.y" r="16" />
+              <circle class="wisp-core" :cx="wispPosition.x" :cy="wispPosition.y" r="4" />
+            </g>
+
+            <g v-if="highlightedSearchVisible" class="search-highlight">
+              <rect
+                :x="candleX(highlightedSearchGi!) - candleWidth / 2 - 3"
+                y="0"
+                :width="candleWidth + 6"
+                :height="mainPlotHeight + subplotsHeight"
+                class="search-highlight-band"
+              />
+              <rect
+                :x="candleX(highlightedSearchGi!) - candleWidth / 2 - 3"
+                y="0"
+                :width="candleWidth + 6"
+                :height="mainPlotHeight + subplotsHeight"
+                class="search-highlight-outline"
+              />
             </g>
 
             <!-- price axis -->
@@ -1291,6 +1460,29 @@
             <div class="text-annotation-editor-actions">
               <button @click="commitVerticalLineEdit">Save</button>
               <button @click="cancelVerticalLineEdit">Cancel</button>
+            </div>
+          </div>
+
+          <!-- Horizontal line inline editor: double-click a horizontal line to type an exact price -->
+          <div
+            v-if="editingHorizontalLineId"
+            class="text-annotation-editor drawing-value-editor"
+            :style="horizontalLineEditorStyle"
+          >
+            <label class="drawing-value-editor-label">Price</label>
+            <div class="drawing-value-editor-row">
+              <input
+                type="number"
+                step="any"
+                v-model="horizontalLineEditDraft"
+                @keydown.enter.exact.prevent="commitHorizontalLineEdit"
+                @keydown.escape.stop.prevent="cancelHorizontalLineEdit"
+              />
+              <button class="drawing-value-editor-copy" title="Copy price" @click="copyToClipboard(horizontalLineEditDraft)">⧉</button>
+            </div>
+            <div class="text-annotation-editor-actions">
+              <button @click="commitHorizontalLineEdit">Save</button>
+              <button @click="cancelHorizontalLineEdit">Cancel</button>
             </div>
           </div>
 
@@ -1539,6 +1731,47 @@
               <div v-else class="preview-book-ticker-loading">Loading depth…</div>
             </template>
           </div>
+
+          <div v-if="wispScanning || wispResult || wispNoSuggestionReason" class="preview-wisp">
+            <div v-if="wispScanning" class="preview-wisp-scanning">
+              Scanning past setups… ({{ wispCurrentIndex + 1 }}/{{ wispIterations.length }})
+            </div>
+            <div v-else-if="wispNoSuggestionReason" class="preview-wisp-no-suggestion">
+              ⚠ {{ wispNoSuggestionReason }}
+            </div>
+            <template v-else-if="wispResult">
+              <div class="preview-panel-row">
+                <label>Source</label>
+                <span :class="wispResult.source === 'catalog' ? 'wisp-source-catalog' : 'wisp-source-same-symbol'">
+                  {{ wispResult.source === "catalog" ? "Cross-symbol match" : "Same-symbol history" }}
+                </span>
+              </div>
+              <div class="preview-panel-row">
+                <label>Past setups examined</label>
+                <span>{{ wispResult.iterationsRun }}</span>
+              </div>
+              <div class="preview-panel-row">
+                <label>Historical confidence</label>
+                <span>{{ (wispResult.confidence * 100).toFixed(0) }}%</span>
+              </div>
+              <div v-if="wispResult.iterationsRun > 0" class="preview-panel-row">
+                <label>Suggested TP / SL</label>
+                <span>{{ formatPrice(wispResult.suggestedTp) }} / {{ formatPrice(wispResult.suggestedSl) }}</span>
+              </div>
+              <div v-if="wispResult.iterationsRun > 0" class="preview-wisp-confluence">
+                <span :class="{ favorable: wispResult.medianAvwapDistance > 0 }" title="Median distance from each historical range's own end to its AVWAP — the primary driver when favorable">AVWAP {{ wispResult.medianAvwapDistance > 0 ? "+" : "" }}{{ wispResult.medianAvwapDistance.toFixed(4) }}</span>
+                <span :class="{ favorable: wispResult.medianFrvpPocDistance > 0 }" title="Median distance to the true bucketed FRVP point of control — confluence, not the primary driver">FRVP {{ wispResult.medianFrvpPocDistance > 0 ? "+" : "" }}{{ wispResult.medianFrvpPocDistance.toFixed(4) }}</span>
+                <span :class="{ favorable: wispResult.medianRedLevelDistance > 0 }" title="Median distance to the single hottest liquidation heatmap cell — confluence, not the primary driver">Heatmap {{ wispResult.medianRedLevelDistance > 0 ? "+" : "" }}{{ wispResult.medianRedLevelDistance.toFixed(4) }}</span>
+              </div>
+              <button
+                v-if="wispResult.iterationsRun > 0"
+                class="preview-order-btn preview-add-test-btn"
+                @click="previewTpClamped = wispResult.suggestedTp; if (previewPosition) previewPosition.sl = wispResult.suggestedSl;"
+              >Use Suggested TP/SL</button>
+              <div v-else class="preview-book-ticker-loading">No matching past setups found yet for this direction.</div>
+            </template>
+          </div>
+
           <label class="preview-rr-toggle" :title="`Applies globally — every symbol, not just this one`">
             <input type="checkbox" v-model="enforceRRClamp" />
             Require min {{ MIN_RR_RATIO }}:1 R:R (all symbols)
@@ -1555,7 +1788,7 @@
     <div v-if="selectedCandle" class="modal-overlay" @click.self="selectedCandle = null">
       <div class="modal-content candle-detail-modal">
         <div class="modal-header">
-          <h2>{{ symbol }} · {{ primaryTf.toUpperCase() }} · {{ formatDateTime(selectedCandle.candle.openTime) }}</h2>
+          <h2>{{ symbol }} · {{ primaryTf.toUpperCase() }} · {{ formatDateTime(selectedCandle.candle.openTime) }} <span class="candle-detail-opentime-raw">(openTime: {{ selectedCandle.candle.openTime }})</span></h2>
           <button class="close-btn" @click="selectedCandle = null">✕</button>
         </div>
         <div class="modal-body">
@@ -1641,6 +1874,20 @@
       </div>
     </div>
 
+    <!-- Wisp monitor: view/clear the stored stories that feed the wisp's
+         learning path (see wispMemoryDb.ts / runPastCandleWispScanWithMemory) -->
+    <div v-if="showWispMonitorModal" class="modal-overlay" @click.self="showWispMonitorModal = false">
+      <div class="modal-content wisp-monitor-modal">
+        <div class="modal-header">
+          <h2>Wisp — captured learning</h2>
+          <button class="close-btn" @click="showWispMonitorModal = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <WispMonitorComponent />
+        </div>
+      </div>
+    </div>
+
     <!-- Captured data modal: research snapshots taken by pressing 8 and
          dragging a range on the chart — see captureDataForRange. -->
     <div v-if="showCapturedDataModal" class="modal-overlay" @click.self="showCapturedDataModal = false">
@@ -1651,6 +1898,40 @@
         </div>
         <div class="modal-body">
           <CapturedDataViewComponent />
+        </div>
+      </div>
+    </div>
+
+    <!-- Batch download modal: symbolInfo for many symbols at once, bundled
+         into a single zip — the manual alternative (download each symbol
+         individually, then zip them by hand) is what this replaces. -->
+    <div v-if="showBatchDownloadModal" class="modal-overlay" @click.self="showBatchDownloadModal = false">
+      <div class="modal-content batch-download-modal">
+        <div class="modal-header">
+          <h2>Batch download symbolInfo</h2>
+          <button class="close-btn" @click="showBatchDownloadModal = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="batch-download-hint">Paste symbol names — comma or newline separated. Case-insensitive; "USDT" suffix optional.</p>
+          <textarea
+            v-model="batchDownloadInput"
+            class="batch-download-textarea"
+            placeholder="BTCUSDT, ETHUSDT, DASHUSDT&#10;or one per line"
+            :disabled="batchDownloadInProgress"
+          />
+          <div v-if="batchDownloadInProgress" class="wisp-train-progress">
+            Fetching {{ batchDownloadProgress?.symbol }}… ({{ batchDownloadProgress?.current }}/{{ batchDownloadProgress?.total }})
+            <div class="wisp-train-progress-bar">
+              <div class="wisp-train-progress-fill" :style="{ width: (batchDownloadProgress!.current / batchDownloadProgress!.total * 100) + '%' }" />
+            </div>
+          </div>
+          <div v-if="!batchDownloadInProgress && batchDownloadMissing.length" class="batch-download-missing">
+            ⚠ No cached data found for: {{ batchDownloadMissing.join(', ') }}
+          </div>
+          <div class="batch-download-actions">
+            <button class="preview-order-btn" :disabled="batchDownloadInProgress" @click="batchDownloadListed">Download listed</button>
+            <button class="preview-order-btn" :disabled="batchDownloadInProgress" @click="batchDownloadAll">Download ALL ({{ chocoMintoStore.futureSymbols.length }} symbols)</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1682,10 +1963,20 @@ import { listScoreEntries, saveScoreEntry, deleteScoreEntry, clearAllScoreEntrie
 import { saveTestPosition, listAllTestPositions, type TestPosition } from "@/utility/testPositionDb";
 import { saveCapturedData, type CapturedDataEntry } from "@/utility/captureDataDb";
 import { fetchLiveCandles, checkOneTestPosition } from "@/utility/v2/analysis/testPositionLiveCheck";
+import { runPastCandleWispScanWithMemory, findPointCandles, buildPointCandleRanges, measureRangeLevels, aggregateStories, type WispIterationResult, type WispFinalResult, type RangeStory, type PointCandleRange } from "@/utility/pastCandleWisp";
+import { computeProfileSignature, deriveCloseMatchThreshold, findCloseMatches } from "@/utility/pocRangeProfile";
+import { listCatalogEntries, type CatalogEntry } from "@/utility/pocRangeCatalogDb";
+// Path inferred from simulationUtilityV2.ts's own "./candleAnalyzerV2"
+// relative import — not directly confirmed, since candleAnalyzerV2.ts
+// itself hasn't been shared. Correct this if the actual path differs.
+import { CandleAnalyzerV2 } from "@/utility/v2/candleAnalyzerV2";
+import { saveWispMemories, listWispMemoriesForSymbol } from "@/utility/wispMemoryDb";
 import { PnlUtility } from "@/utility/PnlUtility";
 import { useChocoMintoStore } from "@/stores/chocoMintoStore";
 import TestPositionViewComponent from "./TestPositionViewComponent.vue";
 import CapturedDataViewComponent from "./CaptureDataViewComponent.vue";
+import WispMonitorComponent from "./WispMonitorComponent.vue";
+import JSZip from "jszip";
 
 // ── Dynamic candle detail renderer ─────────────────────────────────────
 // Intentionally driven by the runtime object rather than CandleInfo's type
@@ -1850,7 +2141,13 @@ const chocoMintoStore = useChocoMintoStore();
 // around at both ends (prev from the first symbol goes to the last, and
 // vice versa) — a dead stop at either end would be more annoying than
 // useful for "scan through the list" browsing.
-const futureSymbolList = computed(() => chocoMintoStore.futureSymbols.map(f => f.symbol));
+const navigateOnlyConditionMet = persistedBooleanRef("navigateOnlyConditionMet", false);
+const futureSymbolList = computed(() => {
+  const symbols = navigateOnlyConditionMet.value
+    ? chocoMintoStore.futureSymbols.filter(f => f.conditionMet)
+    : chocoMintoStore.futureSymbols;
+  return symbols.map(f => f.symbol);
+});
 const currentSymbolIndex = computed(() => futureSymbolList.value.indexOf(activeSymbol.value));
 
 // This symbol's own max leverage from chocoMintoStore — not a global
@@ -1865,6 +2162,12 @@ function setActiveSymbol(newSymbol: string) {
   if (!newSymbol || newSymbol === activeSymbol.value) return;
   activeSymbol.value = newSymbol;
   emit("update:symbol", newSymbol);
+  // The preview panel (entry/tp/sl, wisp result, bid/ask) is specific to
+  // whatever combo was on the PREVIOUS symbol's chart — none of it means
+  // anything once the chart underneath it has changed. Setting this to
+  // null also triggers the existing preview lifecycle watcher, which
+  // already closes the bookTicker socket and clears wisp state.
+  previewPosition.value = null;
 }
 
 function goToPrevSymbol() {
@@ -2178,6 +2481,68 @@ function downloadSymbolInfoJson() {
   URL.revokeObjectURL(url);
 }
 
+/** Splits on commas AND newlines so either paste style works, trims each entry, drops empties, uppercases, and appends USDT if missing — matches the hint text ("case-insensitive, USDT suffix optional") and the convention every symbol in this project already follows. */
+function parseSymbolList(input: string): string[] {
+  return input
+    .split(/[,\n]/)
+    .map(s => s.trim().toUpperCase())
+    .filter(s => s.length > 0)
+    .map(s => (s.endsWith("USDT") ? s : `${s}USDT`));
+}
+
+/**
+ * Fetches symbolInfo for each requested symbol from IndexedDB (the same
+ * cached-only source as everywhere else in this component — no live
+ * fetch), bundles whatever it finds into a single zip, and downloads it.
+ * Missing symbols (no cached data) are collected and surfaced rather
+ * than silently dropped, so a typo or an un-cached symbol doesn't just
+ * disappear from the result with no explanation.
+ */
+async function batchDownloadSymbols(symbols: string[]) {
+  if (!symbols.length || batchDownloadInProgress.value) return;
+  batchDownloadInProgress.value = true;
+  batchDownloadMissing.value = [];
+  const zip = new JSZip();
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+
+  try {
+    for (let i = 0; i < symbols.length; i++) {
+      const symbol = symbols[i];
+      batchDownloadProgress.value = { current: i + 1, total: symbols.length, symbol };
+      const info = await klineDbUtilityV2.getSymbolInfo(symbol);
+      if (!info) {
+        batchDownloadMissing.value.push(symbol);
+        continue;
+      }
+      zip.file(`symbolInfo-${symbol}-${stamp}.json`, JSON.stringify(info, null, 2));
+    }
+
+    const foundCount = symbols.length - batchDownloadMissing.value.length;
+    if (foundCount === 0) return; // nothing to download — leave the missing-symbols warning visible
+
+    const blob = await zip.generateAsync({ type: "blob" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `symbolInfo-batch-${stamp}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } finally {
+    batchDownloadInProgress.value = false;
+    batchDownloadProgress.value = null;
+  }
+}
+
+function batchDownloadListed() {
+  batchDownloadSymbols(parseSymbolList(batchDownloadInput.value));
+}
+
+function batchDownloadAll() {
+  batchDownloadSymbols(chocoMintoStore.futureSymbols.map(f => f.symbol));
+}
+
 // ── Load older candles ───────────────────────────────────────────────────
 // Pulls history from before the oldest candle currently loaded for the
 // active primary timeframe. klineDbUtilityV2 only exposes whatever is
@@ -2283,6 +2648,7 @@ watch(() => activeSymbol.value, async () => {
   }
 
   autoCheckAndDisplayTestPositions(activeSymbol.value);
+  addDefaultComboOnLoad();
 });
 
 // ── Timeframe selection ───────────────────────────────────────────────
@@ -2440,6 +2806,143 @@ const displayCandles = computed(() => {
   }
   return out;
 });
+
+// Trend clouds: one shape per confirmed trendState segment (see
+// trendState.ts) currently overlapping the visible range. Deduped by
+// startGi since every candle within a segment shares the SAME
+// trendState object — without dedup this would render the same cloud
+// once per candle instead of once per segment. Price range spans the
+// segment's own full high/low (not just whatever's currently visible),
+// so scrolling doesn't change the cloud's vertical extent.
+const visibleTrendClouds = computed(() => {
+  if (!showTrendPanels.value) return [];
+  const seen = new Set<number>();
+  const clouds: { startGi: number; endGi: number; direction: "UP" | "DOWN"; minLow: number; maxHigh: number; confirmedOpenTime: number }[] = [];
+  for (const { candle } of displayCandles.value) {
+    const ts = candle.trendState;
+    if (!ts || seen.has(ts.startGi)) continue;
+    seen.add(ts.startGi);
+    let minLow = Infinity, maxHigh = -Infinity;
+    for (let i = ts.startGi; i <= ts.endGi && i < primaryCandles.value.length; i++) {
+      const c = primaryCandles.value[i];
+      if (!c) continue;
+      minLow = Math.min(minLow, c.low);
+      maxHigh = Math.max(maxHigh, c.high);
+    }
+    if (minLow === Infinity) continue;
+    clouds.push({ startGi: ts.startGi, endGi: ts.endGi, direction: ts.direction, minLow, maxHigh, confirmedOpenTime: ts.confirmedOpenTime });
+  }
+  // Sorted by startGi (displayCandles is iterated in index order, so this
+  // already holds) — needed so "the next cloud" can be found by array
+  // position when rendering the end-of-segment confirmation connector.
+  return clouds;
+});
+
+/** Which trend cloud (by its startGi) is currently hovered — null means none. Drives the on-demand confirmation connectors below; nothing shows until the user actually hovers a cloud. */
+const hoveredTrendStartGi = ref<number | null>(null);
+
+/**
+ * Resolves the hovered cloud's start/end confirmation "staples" fully —
+ * marker/rail/confirm Y positions all pre-computed here rather than in
+ * the template, which would otherwise need repeated lookups of the
+ * hovered cloud on every line of every connector.
+ * Start: this segment's OWN confirmedOpenTime — when startGi was
+ * confirmed as a real pivot (by the PRIOR segment's own reversal).
+ * End: the NEXT segment's confirmedOpenTime — when THIS segment's
+ * endGi extreme was confirmed as the actual turning point (by the
+ * retracement that started the next segment). No end connector for
+ * the current, still-ongoing segment — its extreme hasn't been
+ * confirmed as a turning point yet, and may still move.
+ * Known limitation: "next segment" is looked up within visibleTrendClouds
+ * (only what's currently on screen) — if the hovered cloud is the last
+ * one visible but a real next segment exists just off-screen, the end
+ * connector won't show until that segment scrolls into view too.
+ */
+const hoveredTrendStaples = computed(() => {
+  if (hoveredTrendStartGi.value === null) return [];
+  const idx = visibleTrendClouds.value.findIndex(c => c.startGi === hoveredTrendStartGi.value);
+  if (idx === -1) return [];
+  const cloud = visibleTrendClouds.value[idx];
+  const startCandle = primaryCandles.value[cloud.startGi];
+  const endCandle = primaryCandles.value[cloud.endGi];
+  if (!startCandle || !endCandle) return [];
+
+  const lineClass = cloud.direction === "UP" ? "trend-cloud-up-line" : "trend-cloud-down-line";
+  const startIsHigh = cloud.direction === "DOWN";
+  const endIsHigh = cloud.direction === "UP";
+
+  const staples: { key: string; lineClass: string; markerGi: number; markerY: number; railY: number; confirmGi: number; confirmY: number }[] = [];
+
+  if (cloud.confirmedOpenTime !== startCandle.openTime) {
+    const markerY = startIsHigh ? priceToY(startCandle.high) - 8 : priceToY(startCandle.low) + 8;
+    const confirmY = trendConfirmCandleY(cloud.confirmedOpenTime, startIsHigh);
+    const railY = startIsHigh ? Math.min(markerY, confirmY) - 15 : Math.max(markerY, confirmY) + 15;
+    staples.push({ key: "start", lineClass, markerGi: cloud.startGi, markerY, railY, confirmGi: giFromTime(cloud.confirmedOpenTime), confirmY });
+  }
+
+  const nextCloud = visibleTrendClouds.value[idx + 1];
+  if (nextCloud && nextCloud.confirmedOpenTime !== endCandle.openTime) {
+    const markerY = endIsHigh ? priceToY(endCandle.high) - 8 : priceToY(endCandle.low) + 8;
+    const confirmY = trendConfirmCandleY(nextCloud.confirmedOpenTime, endIsHigh);
+    const railY = endIsHigh ? Math.min(markerY, confirmY) - 15 : Math.max(markerY, confirmY) + 15;
+    staples.push({ key: "end", lineClass, markerGi: cloud.endGi, markerY, railY, confirmGi: giFromTime(nextCloud.confirmedOpenTime), confirmY });
+  }
+
+  return staples;
+});
+
+function trendConfirmCandleY(confirmedOpenTime: number, isHigh: boolean): number {
+  const gi = giFromTime(confirmedOpenTime);
+  const candle = primaryCandles.value[gi];
+  if (!candle) return 0;
+  return isHigh ? priceToY(candle.high) - 8 : priceToY(candle.low) + 8;
+}
+
+// Search by raw openTime integer — jumps the view to that exact candle
+// and highlights it. Deliberately an exact match, not a nearest-time
+// lookup: the whole point of typing the raw integer (rather than a
+// formatted date) is precision, so a fuzzy match here would undercut
+// that.
+const openTimeSearchQuery = ref("");
+const highlightedSearchGi = ref<number | null>(null);
+const openTimeSearchNotFound = ref(false);
+watch(openTimeSearchQuery, () => { openTimeSearchNotFound.value = false; });
+
+function searchByOpenTime() {
+  const parsed = Number(openTimeSearchQuery.value.trim());
+  if (!Number.isFinite(parsed)) return;
+  const gi = primaryCandles.value.findIndex(c => c.openTime === parsed);
+  if (gi === -1) {
+    highlightedSearchGi.value = null;
+    openTimeSearchNotFound.value = true;
+    return;
+  }
+  openTimeSearchNotFound.value = false;
+  highlightedSearchGi.value = gi;
+  // Center the target candle in view — this is a deliberate "jump to
+  // this exact candle" action, not an incremental step, so it always
+  // re-centers rather than only nudging the view when the candle
+  // happens to already be off-screen.
+  const maxIdx = Math.max(0, primaryCandles.value.length - 1);
+  viewStartIndex.value = clamp(gi - Math.round(visibleBars.value / 2), 0, maxIdx);
+}
+
+function clearOpenTimeSearch() {
+  openTimeSearchQuery.value = "";
+  highlightedSearchGi.value = null;
+  openTimeSearchNotFound.value = false;
+}
+
+// Only render the highlight when the target candle is actually within
+// the current view window — searchByOpenTime re-centers on it, but the
+// user could pan away afterward without clearing the search, and
+// candleX() would produce a nonsense position for a gi outside the
+// currently rendered range.
+const highlightedSearchVisible = computed(() =>
+  highlightedSearchGi.value !== null &&
+  highlightedSearchGi.value >= displayStart.value &&
+  highlightedSearchGi.value < displayEnd.value
+);
 
 // ── Layout / sizing ────────────────────────────────────────────────────
 const chartContainer = ref<HTMLElement | null>(null);
@@ -3242,6 +3745,8 @@ const lhAnchorPredictions = ref<Record<string, MovementPrediction>>({});
 // be initialized at that exact point, not just declared later in the
 // file (the same TDZ issue hit earlier with lhAnchorPredictions itself).
 const autoShowLatestLhAnchors = persistedBooleanRef("autoShowLatestLhAnchors", true);
+/** Whether addDefaultComboOnLoad should auto-plot the FRVP+AVWAP+heatmap combo at the last liquidityAnchor.length===2 candle. Defaults on to match existing behavior — this is an opt-OUT toggle, not opt-in. */
+const autoPlotDefaultCombo = persistedBooleanRef("autoPlotDefaultCombo", true);
 
 // On showing a symbol's chart, default to the 2 MOST RECENT confirmed
 // segments (lhAnchorPairs is sorted old->current, so that's simply the
@@ -3363,6 +3868,23 @@ function lhAnchorConfirmRailY(a: LiquidityHeatmapAnchor): number {
   return a.swingType === "high"
     ? Math.min(anchorMarkerY, confirmY) - 15
     : Math.max(anchorMarkerY, confirmY) + 15;
+}
+
+// Same staple-connector pattern as the liquidity heatmap anchors above,
+// for market structure (HH/HL/LH/LL) confirmation lag.
+function marketStructureConfirmCandleY(swing: { label: string; confirmedOpenTime: number }): number {
+  const gi = giFromTime(swing.confirmedOpenTime);
+  const candle = primaryCandles.value[gi];
+  const isHigh = swing.label === "HH" || swing.label === "LH";
+  if (!candle) return 0;
+  return isHigh ? priceToY(candle.high) - 8 : priceToY(candle.low) + 8;
+}
+
+function marketStructureConfirmRailY(swing: { label: string; confirmedOpenTime: number }, swingCandle: { high: number; low: number }): number {
+  const isHigh = swing.label === "HH" || swing.label === "LH";
+  const markerY = isHigh ? priceToY(swingCandle.high) - 8 : priceToY(swingCandle.low) + 8;
+  const confirmY = marketStructureConfirmCandleY(swing);
+  return isHigh ? Math.min(markerY, confirmY) - 15 : Math.max(markerY, confirmY) + 15;
 }
 
 function lhAnchorRangeTooltip(range: { direction: SIGNAL_DIRECTION; ongoing: boolean; startGi: number; endGi: number }): string {
@@ -3501,6 +4023,10 @@ const showLHAnchors = persistedBooleanRef("showLHAnchors", false);
 // identifier so the chart isn't cluttered with every minor sweep/reject
 // along the way.
 const showPriceAction = persistedBooleanRef("showPriceAction", false);
+/** Gates the HH/HL/LH/LL text labels (see marketStructure.ts). Defaults on — this feature already existed and was always visible before becoming toggleable, so defaulting to true avoids a silent regression for anyone already relying on it. */
+const showMarketStructureLabels = persistedBooleanRef("showMarketStructureLabels", true);
+/** Gates the trend clouds (see trendState.ts) AND their default-visible start/end boundary lines. Same reasoning as showMarketStructureLabels — defaults on. */
+const showTrendPanels = persistedBooleanRef("showTrendPanels", true);
 
 const showMovementAnalyzer = ref(false);
 
@@ -3545,6 +4071,89 @@ function finalizeLiquidity(d: ToolDraft) {
     liquidityRanges.value.push(range);
     runPrediction(range);
   }
+}
+
+/**
+ * The actual "B combo" logic — a liquidity heatmap range plus an FRVP
+ * zone at the same [startGi, endGi] — factored out so both the manual
+ * drag ("liquidity-frvp" case below) and the auto-placed default combo
+ * on symbol load use the IDENTICAL underlying creation path, not two
+ * copies that could quietly drift apart.
+ */
+function addComboAtRange(startGi: number, endGi: number) {
+  finalizeLiquidity({ startGi, startPrice: 0, curGi: endGi, curPrice: 0 });
+  addFrvpZone(startGi, endGi);
+  addAvwapAnchor(startGi);
+}
+
+/**
+ * On showing a symbol's chart, places a combo on the LAST point candle
+ * instance — the same "reference range" pastCandleWisp.ts itself
+ * auto-detects (the most recent pair of consecutive point candles) — so
+ * a combo is already sitting there before you ever reach for the B
+ * hotkey, matching "only 1 combo should exist prior to my entry" without
+ * having to place it by hand every time. No-ops if a combo already
+ * covers that exact range — including one just restored from the tool
+ * cache — so this never creates a duplicate.
+ */
+/**
+ * The point candle is the LATEST candle carrying both a START-type and
+ * an END-type anchor. Each of those two anchors confirms independently,
+ * at whatever candle satisfied THAT anchor's own swing-confirmation
+ * lookback — the range's end is whichever confirms LATER. Verified
+ * against real uploaded data: the point candle itself is the range's
+ * START (not one point candle back), and the end is genuinely the later
+ * of the two confirmation times, not the point candle's own openTime.
+ *
+ * Factored out so the auto-placed default combo and "Ask Wisp" always
+ * agree on what "the current setup" is — they must never compute this
+ * differently, or the wisp's own suggested side could point somewhere
+ * different from what's actually drawn on the chart.
+ */
+/**
+ * Thin wrapper around pastCandleWisp.ts's own findPointCandles/
+ * buildPointCandleRanges — reusing those directly (not a separate inline
+ * copy of the same logic) so the auto-placed combo and the wisp scan's
+ * own reference range can never drift apart again. That's exactly what
+ * happened before this was factored this way: two separate
+ * implementations of "what is the current range" that quietly diverged.
+ */
+function findDefaultComboRange(): PointCandleRange | null {
+  const points = findPointCandles(primaryCandles.value);
+  if (!points.length) return null;
+  const ranges = buildPointCandleRanges(primaryCandles.value, points);
+  if (!ranges.length) return null;
+  return ranges[ranges.length - 1];
+}
+
+function addDefaultComboOnLoad() {
+  if (!autoPlotDefaultCombo.value) return;
+  const range = findDefaultComboRange();
+  if (!range) return;
+  const { startGi, endGi } = range;
+
+  // Every EXISTING combo (a liquidity range paired with a matching FRVP
+  // zone at the same startGi/endGi) — not just checking whether the
+  // reference range specifically already has one. A stale combo left at
+  // a DIFFERENT range (restored from the tool cache, or placed manually
+  // in an earlier session) would otherwise sit alongside a newly
+  // auto-placed one, breaking "only 1 combo should exist" — which is
+  // exactly the bug: the correct combo WAS being added, an old one just
+  // never got cleaned up first.
+  const existingComboRanges = liquidityRanges.value.filter(lr =>
+    frvpZones.value.some(fz => fz.startGi === lr.startGi && fz.endGi === lr.endGi)
+  );
+
+  const alreadyCorrect = existingComboRanges.some(r => r.startGi === startGi && r.endGi === endGi);
+  if (alreadyCorrect) return;
+
+  for (const stale of existingComboRanges) {
+    liquidityRanges.value = liquidityRanges.value.filter(lr => !(lr.startGi === stale.startGi && lr.endGi === stale.endGi));
+    frvpZones.value = frvpZones.value.filter(fz => !(fz.startGi === stale.startGi && fz.endGi === stale.endGi));
+    avwapLines.value = avwapLines.value.filter(av => av.anchorGi !== stale.startGi);
+  }
+
+  addComboAtRange(startGi, endGi);
 }
 
 // Runs predictMovement.ts over exactly the candles this heatmap range
@@ -3654,7 +4263,7 @@ interface FrvpZone {
   rangeLow: number; rangeHigh: number;
   rows: FrvpRow[]; poc: number; maxVol: number;
 }
-interface AvwapLine { id: string; anchorGi: number; points: { gi: number; price: number }[] }
+interface AvwapLine { id: string; anchorGi: number; points: { gi: number; price: number }[]; color: string }
 interface LiquidityRange {
   id: string; startGi: number; endGi: number; low: number; high: number; cells: LiquidationHeatmapCell[];
   /** Set once the user clicks "Predict" on this range — null until then. */
@@ -3759,13 +4368,127 @@ function connectPreviewBookTickerWs(symbol: string) {
 // lifecycle can't drift out of sync with the panel just because a future
 // edit adds another close path this watcher doesn't know about.
 watch(previewPosition, (pos) => {
-  if (pos) connectPreviewBookTickerWs(activeSymbol.value);
-  else closePreviewBookTickerWs();
+  if (pos) {
+    connectPreviewBookTickerWs(activeSymbol.value);
+  } else {
+    closePreviewBookTickerWs();
+    wispScanning.value = false;
+    wispResult.value = null;
+    wispIterations.value = [];
+    wispCurrentIndex.value = -1;
+    wispNoSuggestionReason.value = null;
+  }
+});
+
+// Keeps the preview's entryPrice following the live price while the
+// panel is open — entryPrice was previously a one-time snapshot taken
+// when runPreview() first ran, going stale for as long as the panel
+// stayed open (which can be a while: adjusting TP/SL, running the wisp
+// scan). A market order fills at whatever price actually IS when placed,
+// not whatever it was when the preview was opened, so this should track
+// it continuously. Only entryPrice moves here — tp/sl stay exactly as
+// set (by runPreview, a drag, or the wisp suggestion) and are never
+// silently re-derived just because the live price ticked.
+watch(livePrice, (price) => {
+  if (price !== null && previewPosition.value) {
+    previewPosition.value.entryPrice = price;
+  }
 });
 
 // notional = margin * leverage — the actual position size a market order
 // needs to fill, regardless of direction.
 const previewNotional = computed(() => previewMargin.value * activeSymbolMaxLeverage.value);
+
+const wispScanning = ref(false);
+const wispResult = ref<WispFinalResult | null>(null);
+/** Set when Ask Wisp ran but neither the catalog nor same-symbol path could produce a real suggestion — the preview's TP/SL are still whatever runPreview's own DEFAULT calculation set, NOT a wisp suggestion. Previously this case rendered nothing at all in the UI, silently indistinguishable from an actual applied suggestion. */
+const wispNoSuggestionReason = ref<string | null>(null);
+const wispIterations = ref<WispIterationResult[]>([]);
+const wispCurrentIndex = ref(-1); // drives the wisp's on-chart position during the animated replay
+const WISP_STEP_MS = 220;
+
+function currentLivePrice(): number | null {
+  if (livePrice.value !== null) return livePrice.value;
+  const last = primaryCandles.value[primaryCandles.value.length - 1];
+  return last ? last.close : null;
+}
+
+/**
+ * Runs the full scan synchronously (it's fast — a median over however
+ * many past ranges exist, nothing expensive per iteration), collecting
+ * every iteration into wispIterations, then drives a TIMED replay through
+ * them for the wisp animation. Separating "compute" from "animate" this
+ * way keeps the actual algorithm exactly as verified in isolation — the
+ * animation is a presentation layer on top of an already-complete result,
+ * not something the computation itself waits on.
+ */
+async function runWispScan(): Promise<WispFinalResult | null> {
+  if (wispScanning.value) return null;
+  const price = currentLivePrice();
+  if (price === null) return null;
+
+  wispResult.value = null;
+  wispIterations.value = [];
+  wispCurrentIndex.value = -1;
+
+  // The actual learning path: pull in whatever this symbol has already
+  // taught the wisp in past scans/sessions, so the training set can grow
+  // beyond just what's visible in this one candle window. Empty array on
+  // any load failure — a memory-load hiccup shouldn't block a scan from
+  // running at all, just means it runs without the remembered stories
+  // this one time.
+  let storedStories: RangeStory[] = [];
+  try {
+    const memories = await listWispMemoriesForSymbol(activeSymbol.value);
+    storedStories = memories.map(m => m.story);
+  } catch (err) {
+    console.error("Failed to load wisp memories:", err);
+  }
+
+  const collected: WispIterationResult[] = [];
+  const result = runPastCandleWispScanWithMemory(primaryCandles.value, price, storedStories, (it) => collected.push(it));
+  if (!result) return null; // not enough point-candle history yet to have a reference range at all
+
+  wispIterations.value = collected;
+  wispScanning.value = true;
+
+  return new Promise<WispFinalResult | null>((resolve) => {
+    let step = 0;
+    const advance = () => {
+      if (!wispScanning.value) { resolve(null); return; } // cancelled externally (e.g. preview panel closed) — stop the chain
+      if (step >= collected.length) {
+        wispScanning.value = false;
+        wispResult.value = result;
+        // Persist every story this scan computed — the growing reference
+        // library, so this work doesn't disappear the moment the panel
+        // closes. Fire-and-forget, matching how other DB saves in this
+        // file are already handled — not something the UI needs to block on.
+        saveWispMemories(activeSymbol.value, collected.map(it => it.story)).catch((err) =>
+          console.error("Failed to save wisp memories:", err)
+        );
+        resolve(result);
+        return;
+      }
+      wispCurrentIndex.value = step;
+      step++;
+      setTimeout(advance, WISP_STEP_MS);
+    };
+    advance();
+  });
+}
+
+// Where the wisp marker actually renders — the midpoint of whichever
+// story's range the animation is currently on, at that story's red level
+// (falling back to its POC if the heatmap had no cells) — the same two
+// levels the scan itself factors into the suggestion, so the wisp is
+// visually "looking at" the thing the numbers are actually based on.
+const wispPosition = computed(() => {
+  if (wispCurrentIndex.value < 0 || wispCurrentIndex.value >= wispIterations.value.length) return null;
+  const story = wispIterations.value[wispCurrentIndex.value].story;
+  const midGi = Math.round((story.startGi + story.endGi) / 2);
+  return { x: candleX(midGi), y: priceToY(story.redLevel ?? story.avwap) };
+});
+
 
 const previewSpread = computed(() => {
   if (!previewBookTicker.value) return null;
@@ -3931,8 +4654,7 @@ function finalizeToolDraft(d: ToolDraft) {
       finalizeLiquidity(d);
       break;
     case "liquidity-frvp":
-      finalizeLiquidity(d);
-      addFrvpZone(Math.min(d.startGi, d.curGi), Math.max(d.startGi, d.curGi));
+      addComboAtRange(Math.min(d.startGi, d.curGi), Math.max(d.startGi, d.curGi));
       break;
     case "capture":
       captureDataForRange(Math.min(d.startGi, d.curGi), Math.max(d.startGi, d.curGi));
@@ -3942,11 +4664,14 @@ function finalizeToolDraft(d: ToolDraft) {
       const preview = draftPositionPreview.value;
       if (!preview) break;
       pushUndoSnapshot();
+      // Only widens forward when the drag itself was narrower than the
+      // minimum; never shrinks a wider, deliberate drag.
+      const endGi = Math.max(d.curGi, d.startGi + MIN_POSITION_WIDTH_GI);
       positions.value.push({
         id: nextId(),
         kind: preview.kind,
         x1: timeFromGi(d.startGi),
-        x2: timeFromGi(d.curGi),
+        x2: timeFromGi(endGi),
         entry: preview.entry, tp: preview.tp, sl: preview.sl,
         autoExtend: true,
       });
@@ -4111,22 +4836,37 @@ async function captureDataForRange(startGi: number, endGi: number) {
   }
 }
 
+// Fixed saturation/lightness so every color reads clearly against the
+// dark chart background regardless of which random hue lands — only
+// the hue varies, so lines stay distinguishable from each other without
+// risking a near-invisible (too dark) or washed-out (too light) result.
+function randomAvwapColor(): string {
+  const hue = Math.floor(Math.random() * 360);
+  return `hsl(${hue}, 75%, 65%)`;
+}
+
 function addAvwapAnchor(anchorGi: number, existingId?: string) {
   const all = primaryCandles.value;
   if (!all[anchorGi]) return;
-  let cumPV = 0;
-  let cumVol = 0;
+  // Same source of truth as SimulationUtilityV2.runAnalysis's own AVWAP
+  // computation — CandleAnalyzerV2.getAnchorVwap(candlesAfterLastAnchor),
+  // called with the exact same slice shape (from the anchor candle
+  // forward through the point in question). Only the .mid of the
+  // returned PriceZone is used here; whatever else the zone carries
+  // (range bounds, etc.) isn't part of what this line draws.
   const points: { gi: number; price: number }[] = [];
   for (let i = anchorGi; i < all.length; i++) {
-    const c = all[i];
-    const typical = (c.high + c.low + c.close) / 3;
-    cumPV += typical * (c.volume ?? 0);
-    cumVol += c.volume ?? 0;
-    if (cumVol > 0) points.push({ gi: i, price: cumPV / cumVol });
+    const zone = CandleAnalyzerV2.getAnchorVwap(all.slice(anchorGi, i + 1));
+    points.push({ gi: i, price: zone.mid });
   }
   const id = existingId ?? nextId();
-  const next = { id, anchorGi, points };
   const idx = avwapLines.value.findIndex(x => x.id === id);
+  // Keep the existing line's own color on an update (this function reruns
+  // on every new candle for a live AVWAP) — only a genuinely NEW line gets
+  // a freshly rolled color, so a line's color stays stable for as long as
+  // it exists rather than reshuffling on every recompute.
+  const color = idx >= 0 ? avwapLines.value[idx].color : randomAvwapColor();
+  const next = { id, anchorGi, points, color };
   if (idx >= 0) avwapLines.value[idx] = next;
   else avwapLines.value.push(next);
 }
@@ -4670,6 +5410,13 @@ function startPositionEdgeDrag(id: string, edge: "x1" | "x2", event: MouseEvent)
 // threshold. Global, not per-symbol — enforceRRClamp toggles it on/off
 // for every symbol at once, from a checkbox in the preview panel.
 const MIN_RR_RATIO = 2;
+// Minimum candle-count width for a newly drawn long/short position box —
+// the drag defines entry->risk (mostly a vertical price drag), so a
+// quick drag can easily land curGi right next to startGi, producing a
+// near-invisible box. Shared between the live drag preview and the
+// actual created position so what you see while dragging matches what
+// you get.
+const MIN_POSITION_WIDTH_GI = 3;
 const enforceRRClamp = persistedBooleanRef("enforceRRClamp", true);
 
 function positionRR(p: PositionShape): number {
@@ -5028,6 +5775,48 @@ const verticalLineEditorStyle = computed(() => {
   };
 });
 
+const editingHorizontalLineId = ref<string | null>(null);
+const horizontalLineEditDraft = ref("");
+
+function startHorizontalLineEdit(id: string) {
+  const hl = horizontalLines.value.find(x => x.id === id);
+  if (!hl) return;
+  editingHorizontalLineId.value = id;
+  horizontalLineEditDraft.value = String(hl.price);
+  nextTick(() => {
+    document.querySelector<HTMLInputElement>(".drawing-value-editor input")?.focus();
+    document.querySelector<HTMLInputElement>(".drawing-value-editor input")?.select();
+  });
+}
+
+function commitHorizontalLineEdit() {
+  const id = editingHorizontalLineId.value;
+  if (!id) return;
+  const hl = horizontalLines.value.find(x => x.id === id);
+  const parsed = Number(horizontalLineEditDraft.value);
+  if (hl && Number.isFinite(parsed)) {
+    if (hl.price !== parsed) pushUndoSnapshot();
+    hl.price = parsed;
+  }
+  editingHorizontalLineId.value = null;
+  horizontalLineEditDraft.value = "";
+}
+
+function cancelHorizontalLineEdit() {
+  editingHorizontalLineId.value = null;
+  horizontalLineEditDraft.value = "";
+}
+
+const horizontalLineEditorStyle = computed(() => {
+  if (!editingHorizontalLineId.value) return { display: "none" };
+  const hl = horizontalLines.value.find(x => x.id === editingHorizontalLineId.value);
+  if (!hl) return { display: "none" };
+  return {
+    left: `${candleXAtTime(hl.time) + 10}px`,
+    top: `${priceToY(hl.price)}px`,
+  };
+});
+
 // ── Rectangle edit popup (item 9: view/change/copy upper/lower price) ────
 const editingRectangleId = ref<string | null>(null);
 const rectangleEditDraftUpper = ref("");
@@ -5146,6 +5935,123 @@ async function runPreview(side: "LONG" | "SHORT", apiSide: "BUY" | "SELL") {
   } finally {
     previewLoading.value = false;
     pendingSide.value = null;
+  }
+}
+
+/**
+ * "Ask Wisp" — side comes from the combo's own direction (via
+ * findDefaultComboRange, the SAME function that placed the combo, so
+ * this can never suggest a side that disagrees with what's actually
+ * drawn on the chart), opens the preview like Buy/Sell would, then waits
+ * for the actual scan to finish (not just start) before auto-applying
+ * the suggested TP/SL — through previewTpClamped, the same clamp-
+ * respecting path the manual "Use Suggested TP/SL" button already uses,
+ * so this doesn't get to bypass your R:R rule just because it's automatic.
+ */
+// Minimum number of close catalog matches required to actually use them —
+// lower than deriveCloseMatchThreshold's own minSampleSize (5), since the
+// live query point might sit in a slightly sparser part of the signature
+// space than the catalog's own densest regions. Below this, the match
+// isn't a meaningful aggregate; fall back to same-symbol history instead.
+const MIN_CATALOG_MATCH_SAMPLE = 3;
+
+/**
+ * The cross-symbol path: classifies the CURRENT, unresolved reference
+ * range's own signature, finds catalog entries whose signature is close
+ * enough (threshold derived from the catalog's own dispersion, not a
+ * fixed number — see deriveCloseMatchThreshold), and if there are enough
+ * of them, aggregates THEIR outcomes into a suggestion via the same
+ * aggregateStories used everywhere else. Returns null on any reason to
+ * fall back — no combo yet, no usable ATR, no/too-small catalog, or not
+ * enough close matches — so the caller can try same-symbol history
+ * instead rather than force a suggestion from a bad match.
+ */
+async function runCatalogWispScan(currentPrice: number): Promise<WispFinalResult | null> {
+  const range = findDefaultComboRange();
+  if (!range) return null;
+
+  const atr = primaryCandles.value[range.endGi]?.atr ?? 0;
+  const levels = measureRangeLevels(primaryCandles.value, range);
+  if (!levels) return null;
+
+  const liveSignature = computeProfileSignature({ direction: range.direction, ...levels }, atr);
+  if (!liveSignature) return null;
+
+  let catalog: CatalogEntry[];
+  try {
+    catalog = await listCatalogEntries();
+  } catch (err) {
+    console.error("Failed to load POC range catalog:", err);
+    return null;
+  }
+  if (!catalog.length) return null;
+
+  const threshold = deriveCloseMatchThreshold(catalog.map(c => c.signature));
+  if (threshold === null) return null; // catalog too small to derive a meaningful threshold yet — train more first
+
+  const matches = findCloseMatches(liveSignature, catalog, threshold);
+  if (matches.length < MIN_CATALOG_MATCH_SAMPLE) return null;
+
+  // Re-scale every matched entry onto THIS symbol's own price/ATR —
+  // matches came from potentially many different symbols, whose raw
+  // avwap/frvpPoc/redLevel/mfe/mae live on wildly different price scales
+  // (a sub-cent coin vs BTC can differ by a billion-fold). Only the
+  // NORMALIZED distances (already ATR-independent, same units the
+  // signature itself is built from) are safe to carry across symbols —
+  // projecting them through the live range's own referencePrice/atr
+  // reconstructs what each match's outcome would look like AT THIS
+  // SYMBOL's scale, which is what actually needs to be aggregated.
+  const sign = range.direction === "LONG" ? 1 : -1;
+  const project = (distance: number | null): number | null =>
+    distance === null ? null : levels!.referencePrice + sign * distance * atr;
+
+  const matchedStories: RangeStory[] = matches.map(m => ({
+    pointIndex: -1, startGi: -1, endGi: -1, startOpenTime: m.startOpenTime, endOpenTime: m.endOpenTime,
+    direction: range.direction, // re-expressed relative to the LIVE trade's own direction, not the matched entry's original one
+    avwap: project(m.signature.avwapDistance)!,
+    frvpPoc: project(m.signature.frvpPocDistance),
+    redLevel: project(m.signature.redLevelDistance),
+    referencePrice: levels!.referencePrice,
+    mfe: m.mfeNormalized * atr,
+    mae: m.maeNormalized * atr,
+    measuredThroughGi: -1,
+  }));
+
+  const result = aggregateStories(range, currentPrice, matchedStories);
+  return { ...result, source: "catalog" };
+}
+
+async function askWisp() {
+  const range = findDefaultComboRange();
+  if (!range) return; // no combo/point-candle history to derive a side from yet
+  const side: "LONG" | "SHORT" = range.direction === "LONG" ? "LONG" : "SHORT";
+  const apiSide: "BUY" | "SELL" = side === "LONG" ? "BUY" : "SELL";
+
+  await runPreview(side, apiSide);
+  wispNoSuggestionReason.value = null;
+
+  const price = currentLivePrice();
+  const catalogResult = price !== null ? await runCatalogWispScan(price) : null;
+  const result = catalogResult ?? (await runWispScan());
+
+  if (catalogResult) {
+    // Catalog matches span multiple symbols — there's no meaningful
+    // per-candle position on THIS chart to animate the wisp through, so
+    // show the result directly rather than running the same-symbol
+    // animation over data that isn't from this chart at all.
+    wispResult.value = catalogResult;
+  }
+
+  if (result && result.iterationsRun > 0) {
+    previewTpClamped.value = result.suggestedTp;
+    if (previewPosition.value) previewPosition.value.sl = result.suggestedSl;
+  } else {
+    // Neither path produced anything usable — make this explicit rather
+    // than silently leaving the preview's DEFAULT (non-wisp) TP/SL in
+    // place with no indication anything was even attempted.
+    wispNoSuggestionReason.value = result
+      ? "No matching setups found — neither same-symbol history nor a cross-symbol catalog match. TP/SL below are the default calculation, not a wisp suggestion."
+      : "No point-candle history to learn from yet for this symbol. TP/SL below are the default calculation, not a wisp suggestion.";
   }
 }
 
@@ -5459,7 +6365,13 @@ function formatPriceRangeLabel(pr: PriceRangeBox): string {
 // ── Hotkeys ─────────────────────────────────────────────────────────────
 const showHotkeysModal = ref(false);
 const showTestPositionModal = ref(false);
+const showWispMonitorModal = ref(false);
 const showCapturedDataModal = ref(false);
+const showBatchDownloadModal = ref(false);
+const batchDownloadInput = ref("");
+const batchDownloadInProgress = ref(false);
+const batchDownloadProgress = ref<{ current: number; total: number; symbol: string } | null>(null);
+const batchDownloadMissing = ref<string[]>([]);
 
 // Clicking a test position in the modal switches this viewer to that
 // symbol. This component doesn't own its own symbol — it's a prop — so
@@ -5482,6 +6394,8 @@ const HOTKEY_HELP = [
   { key: "←/→", desc: "Previous/next symbol" },
   { key: "0", desc: "Open test positions" },
   { key: "8", desc: "Capture range for research data export (drag a range)" },
+  { key: "`", desc: "Ask Wisp — auto-detects side from the combo, previews, and auto-applies the suggested TP/SL" },
+  { key: "Space", desc: "Confirm and place the test position (only while the preview panel is open)" },
   { key: "R", desc: "Rectangle tool" },
   { key: "B", desc: "Liquidity heatmap + FRVP together (drag a range) — steps training backward instead while Training Mode is on" },
   { key: "L", desc: "Trend line tool (click-drag)" },
@@ -5530,6 +6444,8 @@ function onKeydown(e: KeyboardEvent) {
     case "h": setActiveTool("liquidity"); break;
     case "arrowleft": goToPrevSymbol(); break;
     case "arrowright": goToNextSymbol(); break;
+    case "`": askWisp(); break;
+    case " ": if (previewPosition.value) { e.preventDefault(); addTestPosition(); } break;
     case "0": showTestPositionModal.value = true; break;
     case "u": setActiveTool("long-position"); break;
     case "d": setActiveTool("short-position"); break;
@@ -5575,6 +6491,7 @@ onMounted(async () => {
   loadAllNotes();
   loadAllScoreEntries();
   autoCheckAndDisplayTestPositions(activeSymbol.value);
+  addDefaultComboOnLoad();
 });
 
 onBeforeUnmount(() => {
@@ -5626,6 +6543,7 @@ watch(primaryCandles, () => {
 .preview-top-btn:hover { color: #fff; border-color: rgba(255,255,255,.28); }
 .preview-top-btn.buy.active, .preview-top-btn.buy:hover { color: var(--bull); border-color: var(--bull); background: rgba(38,166,154,.12); }
 .preview-top-btn.sell.active, .preview-top-btn.sell:hover { color: var(--bear); border-color: var(--bear); background: rgba(239,83,80,.12); }
+.preview-top-btn.ask-wisp:hover { color: #a78bfa; border-color: #a78bfa; background: rgba(167,139,250,.12); }
 .preview-top-btn.place { color: var(--accent); border-color: rgba(79,195,247,.4); }
 .preview-top-btn.place:hover:not(:disabled) { background: rgba(79,195,247,.12); }
 .preview-top-btn:disabled { opacity: .45; cursor: not-allowed; }
@@ -5663,8 +6581,8 @@ watch(primaryCandles, () => {
 .position-edge-handle { fill: transparent; stroke: transparent; pointer-events: all; cursor: ew-resize; }
 .drawing-remove { fill: #ef5350; font-family: var(--mono); font-size: 12px; font-weight: 800; cursor: pointer; pointer-events: all; }
 .drawing-remove:hover { fill: #fff; }
-.vertical-line-price-label { fill: #c8ccd4; font-family: var(--mono); font-size: 10px; pointer-events: none; }
-.horizontal-line-date-label { fill: #c8ccd4; font-family: var(--mono); font-size: 10px; text-anchor: middle; pointer-events: none; }
+.vertical-line-time-label { fill: #c8ccd4; font-family: var(--mono); font-size: 10px; text-anchor: middle; pointer-events: none; }
+.horizontal-line-price-label { fill: #c8ccd4; font-family: var(--mono); font-size: 10px; pointer-events: none; }
 .heatmap-range-outline { fill: none; stroke: rgba(255,255,255,.25); stroke-width: 1; pointer-events: none; }
 .heatmap-range-outline.selected { stroke: #ff8a65; stroke-width: 2; stroke-dasharray: 4 3; }
 
@@ -5868,6 +6786,25 @@ width: 30rem;
 .bars-input { width: 56px; }
 
 .symbol-nav { display: flex; align-items: center; gap: 4px; }
+.condition-met-toggle { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #99a; cursor: pointer; white-space: nowrap; }
+.condition-met-toggle input { cursor: pointer; }
+.opentime-search { display: flex; align-items: center; gap: 4px; }
+.opentime-search-input {
+  width: 140px;
+  font-size: 11px;
+  font-family: var(--mono);
+  padding: 3px 6px;
+  background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.15);
+  border-radius: 4px;
+  color: #c8ccd4;
+}
+.opentime-search-input.not-found {
+  border-color: var(--bear);
+  color: var(--bear);
+}
+.opentime-search-input::placeholder { color: #667; }
+.opentime-search-btn, .opentime-search-clear { font-size: 11px; padding: 2px 6px; }
 .symbol-nav-btn { padding: 2px 8px; font-weight: 700; }
 .symbol-nav-select {
   background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.1); color: #d7dde3;
@@ -5879,6 +6816,16 @@ width: 30rem;
   width: 26px; height: 26px; border-radius: 5px; cursor: pointer; font-size: 13px;
 }
 .icon-btn:hover { color: #fff; border-color: rgba(255, 255, 255, 0.3); }
+.auto-combo-toggle {
+  width: auto;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.auto-combo-toggle input[type="checkbox"] { margin: 0; cursor: pointer; }
 
 /* ── Body / rail / chart ── */
 .body-row { display: flex; flex: 1; min-height: 0; }
@@ -5972,6 +6919,42 @@ width: 30rem;
 .live-price-line { stroke-width: 1; stroke-dasharray: 6 4; pointer-events: none; }
 .live-price-line.bull { stroke: var(--bull); }
 .live-price-line.bear { stroke: var(--bear); }
+
+.wisp-marker { pointer-events: none; }
+.wisp-marker circle {
+  transition: cx 0.2s ease, cy 0.2s ease;
+}
+.wisp-core {
+  fill: #a78bfa;
+}
+.wisp-glow {
+  fill: #a78bfa;
+  opacity: 0.25;
+  filter: blur(3px);
+}
+.wisp-pulse-ring {
+  fill: none;
+  stroke: #a78bfa;
+  stroke-width: 1.5;
+  opacity: 0.6;
+  animation: wisp-pulse 0.9s ease-out infinite;
+}
+@keyframes wisp-pulse {
+  0% { r: 6; opacity: 0.7; }
+  100% { r: 20; opacity: 0; }
+}
+.search-highlight { pointer-events: none; }
+.search-highlight-band { fill: rgba(255, 193, 7, 0.12); }
+.search-highlight-outline {
+  fill: none;
+  stroke: #ffc107;
+  stroke-width: 1.5;
+  animation: search-highlight-pulse 1.2s ease-in-out infinite;
+}
+@keyframes search-highlight-pulse {
+  0%, 100% { opacity: 0.9; }
+  50% { opacity: 0.3; }
+}
 .live-price-label { font-family: var(--mono); font-size: 10px; font-weight: 700; pointer-events: none; fill: #fff; }
 .live-price-badge { pointer-events: none; }
 .live-price-badge.bull { fill: var(--bull); }
@@ -6125,6 +7108,39 @@ width: 30rem;
   margin-top: 6px;
   padding-top: 6px;
 }
+.preview-wisp {
+  border-top: 1px solid rgba(167, 139, 250, 0.3);
+  margin-top: 6px;
+  padding-top: 6px;
+}
+.preview-wisp-scanning {
+  font-size: 10.5px;
+  color: #a78bfa;
+  text-align: center;
+  padding: 4px 0;
+}
+.preview-wisp-no-suggestion {
+  font-size: 10.5px;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: 4px;
+  padding: 5px 8px;
+  line-height: 1.4;
+}
+.wisp-source-catalog { color: #a78bfa; font-weight: 600; }
+.wisp-source-same-symbol { color: #99a; }
+.preview-wisp-confluence {
+  display: flex;
+  gap: 8px;
+  font-size: 9.5px;
+  color: #667;
+  font-family: var(--mono);
+  padding: 2px 0 4px;
+}
+.preview-wisp-confluence .favorable {
+  color: #a78bfa;
+}
 .preview-book-ticker-loading {
   font-size: 10.5px;
   color: #667;
@@ -6192,6 +7208,7 @@ width: 30rem;
 .boolean-badge.is-false { background: rgba(255, 255, 255, 0.06); color: #667; }
 .candle-detail-modal { width: min(760px, calc(100vw - 32px)); }
 .candle-detail-modal .modal-body { max-height: calc(82vh - 54px); overflow-y: auto; }
+.candle-detail-opentime-raw { font-size: 11px; font-weight: 400; color: #667; }
 
 .side-badge, .status-badge { padding: 1px 7px; border-radius: 4px; font-size: 10px; font-weight: 700; }
 .side-badge.side-bullish { background: rgba(38, 166, 154, 0.22); color: var(--bull); }
@@ -6202,6 +7219,41 @@ width: 30rem;
 .hotkeys-modal .modal-body { display: flex; flex-direction: column; gap: 6px; }
 .test-position-modal { max-width: 860px; width: 92vw; }
 .captured-data-modal { max-width: 640px; width: 90vw; }
+.batch-download-modal { max-width: 480px; width: 90vw; }
+.batch-download-hint {
+  font-size: 11.5px;
+  color: #99a;
+  margin: 0 0 8px 0;
+}
+.batch-download-textarea {
+  width: 100%;
+  min-height: 100px;
+  resize: vertical;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 5px;
+  color: #e5e7eb;
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 8px 10px;
+  box-sizing: border-box;
+}
+.batch-download-missing {
+  margin-top: 8px;
+  font-size: 10.5px;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: 4px;
+  padding: 5px 8px;
+  line-height: 1.4;
+}
+.batch-download-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+}
+.wisp-monitor-modal { max-width: 960px; width: 92vw; }
 .hotkey-row { display: flex; align-items: center; gap: 12px; font-size: 12px; }
 .hotkey-row kbd { min-width: 42px; text-align: center; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 4px; padding: 2px 6px; font-family: var(--mono); font-size: 11px; color: var(--accent); }
 
@@ -6231,6 +7283,32 @@ width: 30rem;
     font-weight: 600;
     pointer-events: none;
 }
+.market-structure-label {
+    font-size: 9px;
+    font-weight: 700;
+    pointer-events: none;
+}
+.trend-cloud {
+  /* Rendered behind candles/drawings in document order, so those still
+     receive hover first wherever they overlap — this only picks up
+     hover in the gaps between candles, which is what actually lets the
+     cloud itself be hovered at all. "fill" (not the rect's full box)
+     so it only responds within the painted area. */
+  pointer-events: fill;
+  cursor: default;
+}
+.trend-cloud-up { fill: #22c55e; opacity: 0.10; }
+.trend-cloud-down { fill: #ef4444; opacity: 0.10; }
+.trend-confirm-line {
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
+.trend-cloud-up-line { stroke: #22c55e; opacity: 0.7; }
+.trend-cloud-down-line { stroke: #ef4444; opacity: 0.7; }
+
+.market-structure-label.ms-bullish { fill: #22c55e; }
+.market-structure-label.ms-bearish { fill: #ef4444; }
 
 .confluence-long .confluence-confidence {
     fill: #22c55e;
@@ -6259,6 +7337,14 @@ width: 30rem;
 }
 .lh-anchor-confirm-line.lh-anchor-long { stroke: #22c55e; opacity: 0.55; }
 .lh-anchor-confirm-line.lh-anchor-short { stroke: #ef4444; opacity: 0.55; }
+
+.ms-confirm-line {
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
+.ms-confirm-line.ms-bullish { stroke: #22c55e; opacity: 0.5; }
+.ms-confirm-line.ms-bearish { stroke: #ef4444; opacity: 0.5; }
 
 /* Price Action: single simple dot, strong/confirmed events only.
    A bright white outline (not a dark one) is what actually adds contrast
