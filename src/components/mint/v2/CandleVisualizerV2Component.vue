@@ -58,9 +58,16 @@
         <button
           class="chip"
           :class="{ active: showTrendPanels }"
-          title="Trend clouds (see trendState.ts) — hover a cloud to see its start/end confirmation lines"
+          title="Trend clouds (see trendState.ts) — hover a cloud to see its start/end confirmation lines. Also adds a draggable playback scrubber (starts at the current candle) showing what the cloud actually looked like at any earlier point, before hindsight filled it in."
           @click="showTrendPanels = !showTrendPanels"
         >Trend</button>
+
+        <button
+          class="chip"
+          :class="{ active: showTrendPocAvwap }"
+          title="Auto-anchors AVWAP to every TREND_START/TREND_SETTER candle across the last 2 trend segments — each completed trend contributes 2 anchors (its pivot and its confirmation), the current ongoing one contributes just its pivot so far."
+          @click="showTrendPocAvwap = !showTrendPocAvwap"
+        >Trend POC AVWAP</button>
 
         <button
           class="chip"
@@ -213,6 +220,12 @@
         </label>
         <button class="icon-btn" title="Download the full symbolInfo as JSON" @click="downloadSymbolInfoJson">⬇</button>
         <button class="icon-btn" title="Batch download symbolInfo for multiple symbols as a zip" @click="showBatchDownloadModal = true">⬇⬇</button>
+        <button
+          class="icon-btn mark-download-toggle"
+          :class="{ active: isMarkedForDownload }"
+          :title="isMarkedForDownload ? 'Remove this symbol from the batch download list' : 'Add this symbol to the batch download list'"
+          @click="toggleMarkForDownload"
+        >{{ isMarkedForDownload ? '★' : '☆' }} Mark</button>
         <button class="icon-btn" title="Test positions" @click="showTestPositionModal = true">Test</button>
         <button class="icon-btn" title="Wisp — captured learning" @click="showWispMonitorModal = true">Wisp</button>
         <button class="icon-btn" title="Captured research data" @click="showCapturedDataModal = true">📷</button>
@@ -399,7 +412,7 @@
                  by default so the chart doesn't stay cluttered with
                  every segment's confirmation lag at once. -->
             <g class="trend-clouds">
-              <template v-for="cloud in visibleTrendClouds" :key="`trend-${cloud.startGi}`">
+              <template v-for="cloud in activeTrendClouds" :key="`trend-${cloud.startGi}`">
                 <rect
                   class="trend-cloud"
                   :class="cloud.direction === 'UP' ? 'trend-cloud-up' : 'trend-cloud-down'"
@@ -410,6 +423,18 @@
                   rx="12" ry="12"
                   @mouseenter="hoveredTrendStartGi = cloud.startGi"
                   @mouseleave="hoveredTrendStartGi = null"
+                />
+                <!-- Mid line — the vertical midpoint of the cloud's own
+                     price range (minLow to maxHigh), NOT an AVWAP value
+                     — just the trend area's own geometric center,
+                     spanning its own start/end horizontal extent. -->
+                <line
+                  class="trend-cloud-mid-line"
+                  :class="cloud.direction === 'UP' ? 'trend-cloud-up-line' : 'trend-cloud-down-line'"
+                  :x1="candleX(cloud.startGi) - candleWidth / 2"
+                  :x2="candleX(cloud.endGi) + candleWidth / 2"
+                  :y1="priceToY((cloud.minLow + cloud.maxHigh) / 2)"
+                  :y2="priceToY((cloud.minLow + cloud.maxHigh) / 2)"
                 />
               </template>
               <template v-for="staple in hoveredTrendStaples" :key="staple.key">
@@ -451,6 +476,22 @@
                   :width="candleWidth * 0.62"
                   :height="Math.max(1, Math.abs(priceToY(c.candle.open) - priceToY(c.candle.close)))"
                 />
+
+                <!-- Generic marker for ANY conditions_met entry EXCEPT
+                     ones starting with "TREND_" (TREND_START,
+                     TREND_SETTER, etc. don't count) — not tied to which
+                     specific remaining condition fired, just that at
+                     least one did. Placed above the wick's high so it
+                     never overlaps the candle itself. -->
+                <circle
+                  v-if="nonTrendConditions(c.candle.conditions_met).length > 0"
+                  class="condition-met-dot"
+                  :cx="candleX(c.gi)"
+                  :cy="priceToY(c.candle.high) - 8"
+                  r="2.5"
+                >
+                  <title>{{ nonTrendConditions(c.candle.conditions_met).join(', ') }}</title>
+                </circle>
 
                 <!--
                   Market structure (HH/HL/LH/LL) label — placed at the
@@ -668,6 +709,46 @@
                 </g>
 
               </g>
+            </g>
+
+            <!-- Playback scrubber — drag to see what the trend cloud
+                 actually looked like AS OF that candle (parsed from
+                 extras' TREND_SNAPSHOT tag), not the final,
+                 hindsight-complete version. A wide invisible hit-area
+                 sits behind the thin visible line so it's easy to grab
+                 without needing pixel-perfect precision. -->
+            <g v-if="playbackGi !== null" class="playback-scrubber">
+              <line
+                class="playback-scrubber-hit"
+                :x1="candleX(playbackGi)" :x2="candleX(playbackGi)"
+                y1="0" :y2="mainPlotHeight"
+                @mousedown="startPlaybackDrag"
+              />
+              <line
+                class="playback-scrubber-line"
+                :x1="candleX(playbackGi)" :x2="candleX(playbackGi)"
+                y1="0" :y2="mainPlotHeight"
+              />
+              <polygon
+                class="playback-scrubber-handle"
+                :points="`${candleX(playbackGi)-6},0 ${candleX(playbackGi)+6},0 ${candleX(playbackGi)},10`"
+                @mousedown="startPlaybackDrag"
+              />
+            </g>
+
+            <!-- PRICE_ACTION_RESPECTED connectors — links the dot's own
+                 candle (where the condition was actually pushed, the
+                 confirmation candle) back to the strongAction candle
+                 it's respecting, since those are two different candles
+                 and the relationship is otherwise invisible. -->
+            <g class="price-action-respected-links">
+              <line
+                v-for="link in priceActionRespectedLinks"
+                :key="`par-${link.fromGi}-${link.toGi}`"
+                class="price-action-respected-line"
+                :x1="candleX(link.fromGi)" :y1="priceToY(primaryCandles[link.fromGi]?.high ?? 0) - 8"
+                :x2="candleX(link.toGi)" :y2="priceToY(primaryCandles[link.toGi]?.close ?? 0)"
+              />
             </g>
 
             <!-- liquidation heatmap -->
@@ -2543,6 +2624,27 @@ function batchDownloadAll() {
   batchDownloadSymbols(chocoMintoStore.futureSymbols.map(f => f.symbol));
 }
 
+/** Whether the currently active symbol is in the mark-for-download list. */
+const isMarkedForDownload = computed(() => parseSymbolList(batchDownloadInput.value).includes(activeSymbol.value));
+
+/**
+ * Toggles the current symbol in/out of the SAME comma-delimited list
+ * the batch download textarea uses — marking adds it, marking again
+ * (already present) removes it. Writing to batchDownloadInput.value
+ * here persists to localStorage automatically via persistedStringRef's
+ * own watch, same as if the user had typed the change into the
+ * textarea directly — there's exactly one source of truth, not two
+ * that could drift apart.
+ */
+function toggleMarkForDownload() {
+  const symbol = activeSymbol.value;
+  const current = parseSymbolList(batchDownloadInput.value);
+  const idx = current.indexOf(symbol);
+  if (idx === -1) current.push(symbol);
+  else current.splice(idx, 1);
+  batchDownloadInput.value = current.join(", ");
+}
+
 // ── Load older candles ───────────────────────────────────────────────────
 // Pulls history from before the oldest candle currently loaded for the
 // active primary timeframe. klineDbUtilityV2 only exposes whatever is
@@ -2648,7 +2750,22 @@ watch(() => activeSymbol.value, async () => {
   }
 
   autoCheckAndDisplayTestPositions(activeSymbol.value);
+  applySimulatedPositionDrawings();
   addDefaultComboOnLoad();
+  if (showTrendPanels.value) resetPlaybackToLatest();
+  if (showTrendPocAvwap.value) {
+    // On show/mount (initial load or a symbol switch), avwapLines was
+    // just restored wholesale from that symbol's persisted tool cache
+    // via loadToolCacheForSymbol above — which may include STALE
+    // auto-placed lines from a previous session. trendPocAvwapIds
+    // starts fresh and empty here, so clearTrendPocAvwap() alone can't
+    // recognize those as its own to remove. Clearing everything first,
+    // then re-applying fresh, avoids stale/duplicate lines piling up
+    // every time the page loads or the symbol changes with this toggle
+    // already on.
+    avwapLines.value = [];
+    applyTrendPocAvwap();
+  }
 });
 
 // ── Timeframe selection ───────────────────────────────────────────────
@@ -2814,6 +2931,125 @@ const displayCandles = computed(() => {
 // once per candle instead of once per segment. Price range spans the
 // segment's own full high/low (not just whatever's currently visible),
 // so scrolling doesn't change the cloud's vertical extent.
+/**
+ * Parses the "TREND_SNAPSHOT" tag out of a candle's extras (see
+ * simulationUtilityV2.ts) — a record of what the trend tracker's state
+ * looked like AS OF that candle's own processing step, distinct from
+ * the candle's final trendState field (which gets retroactively
+ * rewritten by later candles as more of the segment becomes known).
+ * This is what makes playback meaningful: dragging the scrubber back
+ * to an earlier candle shows what was actually knowable then, not
+ * what hindsight later revealed.
+ */
+function parseTrendSnapshot(candle: CandleInfo | undefined): { direction: "UP" | "DOWN"; startGi: number; endGi: number; confirmedOpenTime: number } | null {
+  if (!candle?.extras?.length) return null;
+  const tagIdx = candle.extras.indexOf("TREND_SNAPSHOT");
+  if (tagIdx === -1) return null;
+  const direction = candle.extras[tagIdx + 1] as "UP" | "DOWN";
+  const startGi = parseInt(candle.extras[tagIdx + 2], 10);
+  const endGi = parseInt(candle.extras[tagIdx + 3], 10);
+  const confirmedOpenTime = parseInt(candle.extras[tagIdx + 4], 10);
+  if (Number.isNaN(startGi) || Number.isNaN(endGi) || Number.isNaN(confirmedOpenTime)) return null;
+  return { direction, startGi, endGi, confirmedOpenTime };
+}
+
+/** Parses "PRICE_ACTION_RESPECTED_LINK" out of a candle's extras (see simulationUtilityV2.ts) — the gi of the strongAction candle a PRICE_ACTION_RESPECTED event is respecting. Needed because the condition itself is pushed to the confirmation candle, not the swing candle where the market structure label lives — this is what lets the UI draw an explicit connector rather than leaving the relationship implicit. */
+function parseRespectedLink(candle: CandleInfo | undefined): number | null {
+  if (!candle?.extras?.length) return null;
+  const tagIdx = candle.extras.indexOf("PRICE_ACTION_RESPECTED_LINK");
+  if (tagIdx === -1) return null;
+  const matchedGi = parseInt(candle.extras[tagIdx + 1], 10);
+  return Number.isNaN(matchedGi) ? null : matchedGi;
+}
+
+
+/** Playback scrubber position — null means playback is off (show the normal, final/hindsight-complete clouds). A number is the gi the draggable line currently sits at. */
+const playbackGi = ref<number | null>(null);
+
+/** The single cloud implied by the playback scrubber's current position — "as of this candle, this is the only trend that was knowable." Null if there's no snapshot recorded there (e.g. before any direction was ever established). */
+/**
+ * Walks backward from the scrubber's position, collecting every
+ * DISTINCT segment (by its own startGi) that had already started by
+ * then — not just the single current one. Each candle's own
+ * TREND_SNAPSHOT records whichever segment was active when THAT candle
+ * was processed, so scanning backward and deduping by startGi
+ * reconstructs the full history of segments as they existed at that
+ * point in time. A segment naturally disappears once the scrubber
+ * moves behind its own start — the backward walk from the new,
+ * earlier position simply never reaches it anymore, no explicit
+ * removal needed.
+ */
+/**
+ * Every visible PRICE_ACTION_RESPECTED event, paired with the
+ * strongAction candle it's respecting (via PRICE_ACTION_RESPECTED_LINK
+ * in extras — see simulationUtilityV2.ts). The linked candle can sit
+ * outside the currently visible range (the distance check is by price/
+ * ATR, not candle count) — still rendered; the SVG naturally clips
+ * whatever falls off-screen.
+ */
+const priceActionRespectedLinks = computed(() => {
+  const links: { fromGi: number; toGi: number }[] = [];
+  for (const c of displayCandles.value) {
+    if (c.candle.conditions_met?.includes("PRICE_ACTION_RESPECTED")) {
+      const toGi = parseRespectedLink(c.candle);
+      if (toGi !== null) links.push({ fromGi: c.gi, toGi });
+    }
+  }
+  return links;
+});
+
+const playbackTrendClouds = computed(() => {
+  if (playbackGi.value === null) return [];
+  const seen = new Set<number>();
+  const clouds: { startGi: number; endGi: number; direction: "UP" | "DOWN"; minLow: number; maxHigh: number; confirmedOpenTime: number }[] = [];
+  for (let i = playbackGi.value; i >= 0; i--) {
+    const snapshot = parseTrendSnapshot(primaryCandles.value[i]);
+    if (!snapshot || seen.has(snapshot.startGi)) continue;
+    seen.add(snapshot.startGi);
+    let minLow = Infinity, maxHigh = -Infinity;
+    for (let j = snapshot.startGi; j <= snapshot.endGi && j < primaryCandles.value.length; j++) {
+      const c = primaryCandles.value[j];
+      if (!c) continue;
+      minLow = Math.min(minLow, c.low);
+      maxHigh = Math.max(maxHigh, c.high);
+    }
+    if (minLow === Infinity) continue;
+    clouds.push({ startGi: snapshot.startGi, endGi: snapshot.endGi, direction: snapshot.direction, minLow, maxHigh, confirmedOpenTime: snapshot.confirmedOpenTime });
+  }
+  // Walked backward, so reverse to chronological order — matches
+  // visibleTrendClouds' own ordering, which the hover-staple logic
+  // relies on for finding "the next cloud" by array position.
+  return clouds.reverse();
+});
+
+/** What the cloud rendering actually iterates — the normal, full set of final segments, or (while playback is active) just the one snapshot-derived cloud at the scrubber's position. */
+const activeTrendClouds = computed(() => {
+  if (playbackGi.value === null) return visibleTrendClouds.value;
+  return playbackTrendClouds.value;
+});
+
+/** Resets the scrubber to the current (latest) candle — the natural "now" starting point for playback, not wherever happens to be scrolled into view. */
+function resetPlaybackToLatest() {
+  const lastIdx = primaryCandles.value.length - 1;
+  playbackGi.value = lastIdx >= 0 ? lastIdx : null;
+}
+
+function startPlaybackDrag(event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  const move = (e: MouseEvent) => {
+    const cur = chartPointFromClient(e.clientX, e.clientY);
+    if (!cur) return;
+    playbackGi.value = Math.max(0, Math.min(primaryCandles.value.length - 1, cur.gi));
+  };
+  const up = () => {
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+  };
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+}
+
 const visibleTrendClouds = computed(() => {
   if (!showTrendPanels.value) return [];
   const seen = new Set<number>();
@@ -2860,9 +3096,9 @@ const hoveredTrendStartGi = ref<number | null>(null);
  */
 const hoveredTrendStaples = computed(() => {
   if (hoveredTrendStartGi.value === null) return [];
-  const idx = visibleTrendClouds.value.findIndex(c => c.startGi === hoveredTrendStartGi.value);
+  const idx = activeTrendClouds.value.findIndex(c => c.startGi === hoveredTrendStartGi.value);
   if (idx === -1) return [];
-  const cloud = visibleTrendClouds.value[idx];
+  const cloud = activeTrendClouds.value[idx];
   const startCandle = primaryCandles.value[cloud.startGi];
   const endCandle = primaryCandles.value[cloud.endGi];
   if (!startCandle || !endCandle) return [];
@@ -2880,7 +3116,7 @@ const hoveredTrendStaples = computed(() => {
     staples.push({ key: "start", lineClass, markerGi: cloud.startGi, markerY, railY, confirmGi: giFromTime(cloud.confirmedOpenTime), confirmY });
   }
 
-  const nextCloud = visibleTrendClouds.value[idx + 1];
+  const nextCloud = activeTrendClouds.value[idx + 1];
   if (nextCloud && nextCloud.confirmedOpenTime !== endCandle.openTime) {
     const markerY = endIsHigh ? priceToY(endCandle.high) - 8 : priceToY(endCandle.low) + 8;
     const confirmY = trendConfirmCandleY(nextCloud.confirmedOpenTime, endIsHigh);
@@ -4009,8 +4245,30 @@ function persistedNumberRef(key: string, defaultValue: number) {
   return r;
 }
 
-// Toggles the liquidity heatmap anchor visualization: START/END markers
-// at each confirmed trend segment (see liquidityHeatmapAnchor.ts) plus an
+// Same pattern as persistedBooleanRef/persistedNumberRef, for a string
+// setting (e.g. the mark-for-download symbol list) — any reassignment
+// of the returned ref's .value is automatically persisted via the
+// watch, so a caller never needs a separate "now save it" step.
+function persistedStringRef(key: string, defaultValue: string) {
+  const storageKey = `cev2.${key}`;
+  let initial = defaultValue;
+  try {
+    const stored = localStorage.getItem(storageKey);
+    if (stored !== null) initial = stored;
+  } catch {
+    // localStorage unavailable — fall back to default.
+  }
+  const r = ref(initial);
+  watch(r, (val) => {
+    try {
+      localStorage.setItem(storageKey, val);
+    } catch {
+      // ignore — persistence is a nice-to-have
+    }
+  });
+  return r;
+}
+
 // auto-anchored heatmap zone over every confirmed segment. Off by
 // default. Persisted.
 const showLHAnchors = persistedBooleanRef("showLHAnchors", false);
@@ -4027,6 +4285,24 @@ const showPriceAction = persistedBooleanRef("showPriceAction", false);
 const showMarketStructureLabels = persistedBooleanRef("showMarketStructureLabels", true);
 /** Gates the trend clouds (see trendState.ts) AND their default-visible start/end boundary lines. Same reasoning as showMarketStructureLabels — defaults on. */
 const showTrendPanels = persistedBooleanRef("showTrendPanels", true);
+
+// Playback is automatic with the Trend toggle, not a separate opt-in —
+// turning Trend on starts the scrubber at the current (latest) candle;
+// turning it off clears it. immediate:true applies this right away on
+// mount too, since showTrendPanels defaults to true.
+watch(showTrendPanels, (enabled) => {
+  if (enabled) {
+    const lastIdx = primaryCandles.value.length - 1;
+    playbackGi.value = lastIdx >= 0 ? lastIdx : null;
+  } else {
+    playbackGi.value = null;
+  }
+}, { immediate: true });
+
+/** New, opt-in feature — defaults off unlike showTrendPanels/playback, since this actively places AVWAP lines rather than just changing what's displayed. Function bodies that use this live further down, after addAvwapAnchor/avwapLines are declared. */
+const showTrendPocAvwap = persistedBooleanRef("showTrendPocAvwap", false);
+/** IDs of avwapLines placed BY this feature specifically — tracked separately so re-computing or turning the toggle off only ever touches these, never anything the user placed by hand. */
+const trendPocAvwapIds = ref<Set<string>>(new Set());
 
 const showMovementAnalyzer = ref(false);
 
@@ -4234,10 +4510,12 @@ interface RectShape { id: string; x1: number; x2: number; y1: number; y2: number
 // profit zone sits on (above for long, below for short).
 interface PositionShape {
   id: string; kind: "long" | "short"; x1: number; x2: number; entry: number; tp: number; sl: number;
-  /** Set only for positions created via "Add Test" (test) or a placed order (live) — undefined for a regular hand-drawn position box. */
-  tag?: "test" | "live";
+  /** Set only for positions created via "Add Test" (test), a placed order (live), or the auto-simulated backtest overlay (simulated) — undefined for a regular hand-drawn position box. */
+  tag?: "test" | "live" | "simulated";
   /** Set only when tag is "test" — links this drawing back to its testPositionDb record. */
   testPositionId?: string;
+  /** Set only when tag is "simulated" — the entry candle's own gi (CandleInfo.positionEntry.openGi), used to dedupe against re-loads without creating duplicate boxes. */
+  simulatedOpenGi?: number;
   /** When true, the box's right edge is computed dynamically (positionRenderX2) instead of using x2 directly — follows the latest candle until TP/SL actually hits, then freezes there. Defaults to true for newly-created positions; dragging the right-edge handle explicitly turns it off, since a manual drag is a deliberate choice to fix the span. Undefined on positions saved before this feature existed, treated the same as false (old fixed-span behavior, unchanged for anything already drawn). */
   autoExtend?: boolean;
 }
@@ -4817,7 +5095,7 @@ async function captureDataForRange(startGi: number, endGi: number) {
     })),
     positions: overlappingPositions.map(p => ({
       id: p.id, kind: p.kind, x1: p.x1, x2: p.x2, entry: p.entry, tp: p.tp, sl: p.sl,
-      tag: p.tag, testPositionId: p.testPositionId,
+      tag: p.tag, testPositionId: p.testPositionId, simulatedOpenGi: p.simulatedOpenGi,
     })),
     testPositions: linkedTestPositions,
   };
@@ -4870,6 +5148,57 @@ function addAvwapAnchor(anchorGi: number, existingId?: string) {
   if (idx >= 0) avwapLines.value[idx] = next;
   else avwapLines.value.push(next);
 }
+
+function clearTrendPocAvwap() {
+  if (trendPocAvwapIds.value.size === 0) return;
+  avwapLines.value = avwapLines.value.filter(l => !trendPocAvwapIds.value.has(l.id));
+  trendPocAvwapIds.value = new Set();
+}
+
+/**
+ * Auto-anchors AVWAP to every candle carrying TREND_START or
+ * TREND_SETTER in conditions_met, across the last 2 trend segments —
+ * each segment contributes both its own pivot (TREND_START) and the
+ * candle that confirmed it (TREND_SETTER), so a completed segment
+ * yields 2 anchors; the current, still-ongoing one yields just its own
+ * TREND_START until it's eventually confirmed too. Verified against
+ * real data before wiring this in: scanning from the older of the last
+ * 2 segments' own startGi through to the end of the data naturally
+ * picks up exactly these candles, without needing to special-case
+ * which marker belongs to which segment.
+ */
+function applyTrendPocAvwap() {
+  clearTrendPocAvwap();
+  const candles = primaryCandles.value;
+  if (!candles.length) return;
+
+  const seenStarts = new Set<number>();
+  const segmentStarts: number[] = [];
+  for (const c of candles) {
+    if (c.trendState && !seenStarts.has(c.trendState.startGi)) {
+      seenStarts.add(c.trendState.startGi);
+      segmentStarts.push(c.trendState.startGi);
+    }
+  }
+  if (!segmentStarts.length) return;
+
+  const last2Starts = segmentStarts.slice(-2);
+  const rangeStart = last2Starts[0];
+
+  for (let i = rangeStart; i < candles.length; i++) {
+    const conditions = candles[i].conditions_met;
+    if (conditions && (conditions.includes("TREND_START") || conditions.includes("TREND_SETTER"))) {
+      const id = nextId();
+      addAvwapAnchor(i, id);
+      trendPocAvwapIds.value.add(id);
+    }
+  }
+}
+
+watch(showTrendPocAvwap, (enabled) => {
+  if (enabled) applyTrendPocAvwap();
+  else clearTrendPocAvwap();
+});
 
 function clearAllDrawings() {
   pushUndoSnapshot();
@@ -5197,6 +5526,11 @@ function removeDrawing(type: DrawingType, id: string) {
   if (type === "liquidity") liquidityRanges.value = liquidityRanges.value.filter(x => x.id !== id);
   if (type === "position") positions.value = positions.value.filter(x => x.id !== id);
   if (selectedDrawing.value?.type === type && selectedDrawing.value.id === id) selectedDrawing.value = null;
+}
+
+/** conditions_met entries that aren't trend-related — excludes anything CONTAINING "TREND_" (TREND_START, TREND_SETTER, AND RECENT_TREND_SETTER, which starts with "RECENT_" but still counts as trend-related) — used to gate and label the condition-met dot. Handles a missing/empty conditions_met safely. */
+function nonTrendConditions(conditions: string[] | undefined | null): string[] {
+  return (conditions ?? []).filter(c => !c.includes("TREND_"));
 }
 
 function chartPointFromClient(clientX: number, clientY: number) {
@@ -6098,6 +6432,59 @@ function ensureTestPositionDrawing(position: TestPosition) {
 }
 
 /**
+ * Scans the currently loaded symbol's candles for positionEntry
+ * objects (from SimulationUtilityV2's own backtest simulation — see
+ * positionEntry.ts) and draws a long/short box for each DISTINCT one
+ * (deduped by openGi, since the same shared object appears on every
+ * candle it spans — same pattern as trendState). A resolved position
+ * (closeGi set) gets a FIXED box ending exactly where it hit SL or TP
+ * — autoExtend is explicitly false, so it does NOT keep growing past
+ * that point. A still-open one (closeGi null) gets autoExtend true,
+ * so it visually follows the latest candle the same way a live test
+ * position would, until this gets re-run with more data and it
+ * resolves. Clears and rebuilds ALL "simulated"-tagged boxes each
+ * time rather than only adding missing ones — same reasoning as the
+ * Trend POC AVWAP fix: a stale box from an earlier run (different
+ * data, different SL/TP) could otherwise sit there unrecognized
+ * forever, since there's no cross-session identity to check against
+ * beyond gi, and gi alone can't distinguish "same position, unchanged"
+ * from "same gi, different underlying data now."
+ */
+function applySimulatedPositionDrawings() {
+  positions.value = positions.value.filter(p => p.tag !== "simulated");
+
+  const candles = primaryCandles.value;
+  if (!candles.length) return;
+
+  const seenOpenGi = new Set<number>();
+  for (const candle of candles) {
+    const pe = candle.positionEntry;
+    if (!pe || seenOpenGi.has(pe.openGi)) continue;
+    seenOpenGi.add(pe.openGi);
+
+    const openCandle = candles[pe.openGi];
+    if (!openCandle) continue;
+
+    const resolved = pe.closeGi !== null;
+    const endCandle = resolved ? candles[pe.closeGi!] : candles[candles.length - 1];
+    if (!endCandle) continue;
+
+    positions.value.push({
+      id: nextId(),
+      kind: pe.side === "LONG" ? "long" : "short",
+      x1: openCandle.openTime,
+      x2: endCandle.openTime,
+      entry: pe.entryPrice,
+      tp: pe.tp,
+      sl: pe.sl,
+      tag: "simulated",
+      simulatedOpenGi: pe.openGi,
+      autoExtend: !resolved,
+    });
+  }
+}
+
+/**
  * On loading a symbol's chart, finds any ACTIVE test positions for THAT
  * symbol, ensures each has its drawing on the chart right away (the
  * visual reminder shouldn't wait on a network round trip), then runs a
@@ -6368,7 +6755,13 @@ const showTestPositionModal = ref(false);
 const showWispMonitorModal = ref(false);
 const showCapturedDataModal = ref(false);
 const showBatchDownloadModal = ref(false);
-const batchDownloadInput = ref("");
+// Persisted (not just a plain ref): this is the SAME comma-delimited
+// list the "Mark for Download" toggle button adds/removes symbols
+// from — editing the textarea directly, or toggling the button,
+// both go through this one ref, so both paths stay in sync with
+// localStorage automatically (persistedStringRef's own watch saves on
+// every change, no separate "now persist it" step needed anywhere).
+const batchDownloadInput = persistedStringRef("markedForDownload", "");
 const batchDownloadInProgress = ref(false);
 const batchDownloadProgress = ref<{ current: number; total: number; symbol: string } | null>(null);
 const batchDownloadMissing = ref<string[]>([]);
@@ -6491,7 +6884,22 @@ onMounted(async () => {
   loadAllNotes();
   loadAllScoreEntries();
   autoCheckAndDisplayTestPositions(activeSymbol.value);
+  applySimulatedPositionDrawings();
   addDefaultComboOnLoad();
+  if (showTrendPanels.value) resetPlaybackToLatest();
+  if (showTrendPocAvwap.value) {
+    // On show/mount (initial load or a symbol switch), avwapLines was
+    // just restored wholesale from that symbol's persisted tool cache
+    // via loadToolCacheForSymbol above — which may include STALE
+    // auto-placed lines from a previous session. trendPocAvwapIds
+    // starts fresh and empty here, so clearTrendPocAvwap() alone can't
+    // recognize those as its own to remove. Clearing everything first,
+    // then re-applying fresh, avoids stale/duplicate lines piling up
+    // every time the page loads or the symbol changes with this toggle
+    // already on.
+    avwapLines.value = [];
+    applyTrendPocAvwap();
+  }
 });
 
 onBeforeUnmount(() => {
@@ -6816,6 +7224,12 @@ width: 30rem;
   width: 26px; height: 26px; border-radius: 5px; cursor: pointer; font-size: 13px;
 }
 .icon-btn:hover { color: #fff; border-color: rgba(255, 255, 255, 0.3); }
+.icon-btn.active { color: #f59e0b; border-color: rgba(245, 158, 11, 0.5); }
+.mark-download-toggle {
+  width: auto;
+  padding: 0 8px;
+  white-space: nowrap;
+}
 .auto-combo-toggle {
   width: auto;
   padding: 0 8px;
@@ -7288,6 +7702,10 @@ width: 30rem;
     font-weight: 700;
     pointer-events: none;
 }
+.condition-met-dot {
+    fill: #ffffff;
+    pointer-events: auto;
+}
 .trend-cloud {
   /* Rendered behind candles/drawings in document order, so those still
      receive hover first wherever they overlap — this only picks up
@@ -7306,6 +7724,33 @@ width: 30rem;
 }
 .trend-cloud-up-line { stroke: #22c55e; opacity: 0.7; }
 .trend-cloud-down-line { stroke: #ef4444; opacity: 0.7; }
+.trend-cloud-mid-line {
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  pointer-events: none;
+}
+
+.playback-scrubber-hit {
+  stroke: transparent;
+  stroke-width: 16;
+  cursor: ew-resize;
+}
+.playback-scrubber-line {
+  stroke: #f59e0b;
+  stroke-width: 2;
+  pointer-events: none;
+}
+.playback-scrubber-handle {
+  fill: #f59e0b;
+  cursor: ew-resize;
+}
+.price-action-respected-line {
+  stroke: #f97316;
+  stroke-width: 1.5;
+  stroke-dasharray: 5 3;
+  opacity: 0.8;
+  pointer-events: none;
+}
 
 .market-structure-label.ms-bullish { fill: #22c55e; }
 .market-structure-label.ms-bearish { fill: #ef4444; }

@@ -317,6 +317,40 @@ export interface CandleInfo {
     liquidityAnchor: LiquidityHeatmapAnchor[]
 
     confluenceScore?: ConfluenceScore
+
+    // Shared across every candle from the entry candle through to
+    // resolution (same pattern as trendState/marketStructure) — the
+    // SAME object reference, mutated in place as each subsequent
+    // candle is processed, so by the end of the run every candle in
+    // that range reflects the FINAL, resolved outcome, not a frozen
+    // snapshot of what was known at that candle's own time. Null on
+    // any candle with no entry active or being resolved on it.
+    positionEntry: PositionEntry | null
+}
+
+export interface PositionEntry {
+    side: "LONG" | "SHORT"
+    entryPrice: number
+    margin: number
+    leverage: number
+    sl: number
+    tp: number
+    // ATR-normalized excursions, updated every candle the position is
+    // open (including the candle it resolves on) — MAE is the worst
+    // (most against) move seen, MFE the best (most favorable), both
+    // measured from entryPrice.
+    mae: number
+    mfe: number
+    // MID = SL and TP both fell within the same candle's [low, high] —
+    // genuinely ambiguous which was hit first intra-candle, so no PnL
+    // is computed for it (see the reference logic this mirrors).
+    status: "OPEN" | "WON" | "LOSS" | "MID"
+    // Mark-to-market while OPEN, final realized value once WON/LOSS,
+    // null for MID (unresolvable) and before entry.
+    pnl: number | null
+    openGi: number
+    closeGi: number | null
+    durationMinutes: number | null
 }
 
 export interface OpenInterestEntry {

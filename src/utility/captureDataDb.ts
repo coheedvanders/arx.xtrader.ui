@@ -20,8 +20,10 @@ export interface CapturedPosition {
     entry: number;
     tp: number;
     sl: number;
-    tag?: "test" | "live";
+    tag?: "test" | "live" | "simulated";
     testPositionId?: string;
+    /** Set only when tag is "simulated" — the entry candle's own gi from CandleInfo.positionEntry.openGi (see PositionShape). */
+    simulatedOpenGi?: number;
 }
 
 export interface CapturedTestPosition {

@@ -1,4 +1,4 @@
-import type { CandleInfo, MARKET_INTERVAL, SymbolInfo } from "@/core/interfacesv2";
+import type { CandleInfo, MARKET_INTERVAL, SymbolInfo, SIGNAL_DIRECTION, MarketStructureLabel } from "@/core/interfacesv2";
 import type { Candle, PriceZone } from "@/core/interfaces";
 import { CandleAnalyzerV2 } from "./candleAnalyzerV2";
 import { getCandleStructure } from "./analysis/candleStructure";
@@ -15,7 +15,9 @@ import { getLiquidityHeatmapAnchors } from "./analysis/liquidityHeatmapAnchor";
 import { getLiquiditySweepInfo } from "./analysis/liquidationSweepInfo";
 import { getImbalanceState } from "./analysis/imbalance";
 import { checkSwingPoint, classifyMarketStructure } from "./analysis/marketStructure";
-import { detectTrendSegments } from "./analysis/trendState";
+import { initTrendTracker, stepTrendTracker, type TrendTrackerState } from "./analysis/trendState";
+import { checkPositionEntry, updatePositionEntry, DEFAULT_LEVERAGE } from "./analysis/positionEntry";
+import type { PositionEntry } from "@/core/interfacesv2";
 
 export class SimulationUtilityV2 {
     static async constructSymbolInfo(symbol:string,limit:number){
@@ -26,12 +28,12 @@ export class SimulationUtilityV2 {
             candle_4h: [], //this.mapToInfo(await KlineUtility.getRecentKlines(symbol, "4h", limit)),
             candle_1d: [],//this.mapToInfo(await KlineUtility.getRecentKlines(symbol, "1d", limit)),
 
-            oi_15m: [], //await KlineUtility.getOIByRange(symbol, "15m", limit),
+            oi_15m: await KlineUtility.getOIByRange(symbol, "15m", limit),
             oi_1h: [],//await KlineUtility.getOIByRange(symbol, "1h", limit),
             oi_4h: [], //await KlineUtility.getOIByRange(symbol, "4h", limit),
             oi_1d: [],//await KlineUtility.getOIByRange(symbol, "1d", limit),
 
-            ls_15m: [], //await KlineUtility.getLSRatioByRange(symbol, "15m", limit),
+            ls_15m: await KlineUtility.getLSRatioByRange(symbol, "15m", limit),
             ls_1h: [],//await KlineUtility.getLSRatioByRange(symbol, "1h", limit),
             ls_4h: [], //await KlineUtility.getLSRatioByRange(symbol, "4h", limit),
             ls_1d: []//await KlineUtility.getLSRatioByRange(symbol, "1d", limit),
@@ -48,7 +50,6 @@ export class SimulationUtilityV2 {
     }
 
     static runAnalysis(targetSymbol: SymbolInfo, candles: CandleInfo[], interval:MARKET_INTERVAL, mainMarkets: SymbolInfo[]) {
-        var lastAvwap: PriceZone | null = null;
         // Classic 5-candle fractal (2 candles required on either side to
         // confirm a swing) — a standard, conventional choice, not derived
         // from anything in this data; arbitrary in the sense that other
@@ -62,6 +63,63 @@ export class SimulationUtilityV2 {
         const MARKET_STRUCTURE_MIN_SIGNIFICANCE_ATR = 1.0;
         var lastSwingHighPrice: number | null = null;
         var lastSwingLowPrice: number | null = null;
+
+        // trendState tracker — same algorithm as the old, separate
+        // detectTrendSegments batch pass, walked forward one candle at a
+        // time here instead. Verified byte-identical output between the
+        // batch and incremental forms against real data before this was
+        // wired in (see trendState.ts). The main loop below starts at
+        // i=1 and never itself revisits candles[0], so seeding the
+        // tracker from it here is safe.
+        let trendTrackerState: TrendTrackerState = initTrendTracker(candles[0]);
+
+        // Separate from candle.trendState itself: THAT field gets
+        // retroactively overwritten on earlier candles every time the
+        // running extreme extends or a segment commits (see the
+        // application loop below) — by the end of the full run, every
+        // candle's trendState reflects the FINAL, hindsight-complete
+        // segment it belongs to. This variable instead captures "what
+        // was the most recently known segment AS OF processing this
+        // exact candle" — a snapshot that never gets rewritten by later
+        // candles, which is what playback actually needs: the real lag
+        // between when a trend genuinely started (in hindsight) and
+        // when it was actually confirmable at the time.
+        let lastKnownTrendSnapshot: { direction: string; startGi: number; endGi: number; confirmedOpenTime: number } | null = null;
+
+        // Position simulation state. previousTrendCloud is the LAST
+        // FULLY COMPLETED trend segment's own price range (not the
+        // current, still-ongoing one) — updated whenever a commit
+        // happens, to the segment that JUST finished. This is what the
+        // entry rules mean by "the previous trend['s mid/low/high]".
+        let openPosition: PositionEntry | null = null;
+        let previousTrendCloud: { minLow: number; maxHigh: number } | null = null;
+        // Stated by the user directly (not arbitrary): 2 USDT margin per position.
+        const POSITION_MARGIN = 2;
+
+        // POC AVWAP anchors — the "edge" found through research: AVWAP
+        // anchored at the TREND_START and TREND_SETTER candles of the
+        // last 2 trend segments. Each commit contributes 2 new anchors
+        // (the new segment's own pivot, and the candle that confirmed
+        // it), carrying that segment's own direction. Pruned to the
+        // last 4 (2 trends x 2 anchors each) — a completed segment's
+        // pair ages out once a 3rd trend's worth of anchors arrives.
+        interface PocAvwapAnchor { anchorGi: number; direction: SIGNAL_DIRECTION; }
+        let pocAvwapAnchors: PocAvwapAnchor[] = [];
+
+        // Same source of truth as the UI's own addAvwapAnchor — reuses
+        // CandleAnalyzerV2.getAnchorVwap rather than reimplementing the
+        // cumulative-volume-weighted formula a second time. Recomputes
+        // each anchor's value from scratch every step rather than
+        // maintaining incremental running sums — with at most 4 anchors
+        // and ~500 candles, this is cheap, and it guarantees this can
+        // never silently drift from the same calculation the chart uses.
+        function currentPocAvwapValues(candles: CandleInfo[], anchors: PocAvwapAnchor[], uptoGi: number): { value: number; direction: SIGNAL_DIRECTION }[] {
+            return anchors.map(a => {
+                const zone = CandleAnalyzerV2.getAnchorVwap(candles.slice(a.anchorGi, uptoGi + 1));
+                return { value: zone.mid, direction: a.direction };
+            });
+        }
+
         for (let i = 1; i <= candles.length - 1; i++) {
             var movingCandles = candles.slice(0, i + 1);
             var candle = candles[i];
@@ -76,6 +134,7 @@ export class SimulationUtilityV2 {
             candle.extras = [];
             candle.marketStructure = null;
             candle.trendState = null;
+            candle.positionEntry = null;
 
             // A swing at confirmIdx only becomes checkable once movingCandles
             // has grown to include confirmIdx + FRACTAL_WIDTH candles after it
@@ -83,6 +142,12 @@ export class SimulationUtilityV2 {
             // than the one this loop iteration is otherwise processing, and
             // its label is only knowable now, not at its own event time.
             const confirmIdx = i - MARKET_STRUCTURE_FRACTAL_WIDTH;
+            // Hoisted out of the block below so the conditions section
+            // can know "a market structure swing was JUST confirmed this
+            // step" without re-deriving it — this is the confirmation
+            // MOMENT (this candle's own openTime), even though the label
+            // itself lives on the earlier confirmIdx candle.
+            let newlyConfirmedLabel: MarketStructureLabel | null = null;
             if (confirmIdx >= 0) {
                 const swingType = checkSwingPoint(movingCandles, confirmIdx, MARKET_STRUCTURE_FRACTAL_WIDTH);
                 if (swingType) {
@@ -94,6 +159,7 @@ export class SimulationUtilityV2 {
                         // not confirmIdx's — this is the moment the swing at
                         // confirmIdx actually became knowable.
                         candles[confirmIdx].marketStructure = { label: result.label, confirmedOpenTime: candle.openTime };
+                        newlyConfirmedLabel = result.label;
                     }
                     if (result.updateReference) {
                         if (swingType === "HIGH") lastSwingHighPrice = price;
@@ -102,61 +168,273 @@ export class SimulationUtilityV2 {
                 }
             }
 
-            // candle.openInterest = getOpenInterestState(targetSymbol,movingCandles,interval);
+            // trendState — advance the tracker by exactly this one
+            // candle. If the running extreme just extended (or an
+            // initial direction was just established), re-apply the
+            // active segment's info across its WHOLE range so far —
+            // every candle in a segment shares the same endGi, which
+            // just changed, so earlier candles in the range need the
+            // update too, not only the newest one.
+            const trendResult = stepTrendTracker(candles, i, trendTrackerState);
+            trendTrackerState = trendResult.state;
+            // Order matters: the just-finished segment and the newly-started
+            // one share exactly one boundary candle (the pivot). The batch
+            // version's "later segment in the array wins" behavior means
+            // the NEW segment must be applied AFTER the old one here, or
+            // the old segment's info would win at that shared candle instead.
+            if (trendResult.committedSegment) {
+                const seg = trendResult.committedSegment;
+                const info = { direction: seg.direction, startGi: seg.startGi, endGi: seg.endGi, confirmedOpenTime: seg.confirmedOpenTime };
+                for (let j = seg.startGi; j <= seg.endGi; j++) candles[j].trendState = info;
 
-            // candle.longShort = getLongShortRatioState(targetSymbol,movingCandles,interval);
+                // This segment just finished, so it becomes "the
+                // previous trend" for whatever entry logic runs on
+                // later candles, until the NEXT commit replaces it.
+                let segMinLow = Infinity, segMaxHigh = -Infinity;
+                for (let j = seg.startGi; j <= seg.endGi; j++) {
+                    segMinLow = Math.min(segMinLow, candles[j].low);
+                    segMaxHigh = Math.max(segMaxHigh, candles[j].high);
+                }
+                previousTrendCloud = { minLow: segMinLow, maxHigh: segMaxHigh };
+            }
+            if (trendResult.currentSegmentInfo) {
+                const info = trendResult.currentSegmentInfo;
+                for (let j = info.startGi; j <= info.endGi; j++) candles[j].trendState = info;
+            }
 
-            // candle.volumeState = getVolumeState(movingCandles)
+
+            candle.openInterest = getOpenInterestState(targetSymbol,movingCandles,interval);
+
+            candle.longShort = getLongShortRatioState(targetSymbol,movingCandles,interval);
+
+            candle.volumeState = getVolumeState(movingCandles)
 
             // const confirmedAnchors = getLiquidityHeatmapAnchors(movingCandles);
             // for (const { gi, anchor } of confirmedAnchors) {
             //     candles[gi].liquidityAnchor.push(anchor);
             // }
 
-
             //==========================
             //CONDITIONS
             //==========================
-            
-        }
 
-        // trendState is derived PURELY from marketStructure, which is
-        // already fully causal by the time the loop above finishes — so
-        // this only needs to run once on the complete array, not per
-        // candle inside the loop. Every candle within [startGi, endGi]
-        // gets the SAME segment info object (not a copy per candle) so
-        // the UI can render one shape per segment rather than stitching
-        // together per-candle fragments.
-        const trendSegments = detectTrendSegments(candles);
-        for (const seg of trendSegments) {
-            const info = { direction: seg.direction, startGi: seg.startGi, endGi: seg.endGi, confirmedOpenTime: seg.confirmedOpenTime };
-            for (let i = seg.startGi; i <= seg.endGi; i++) {
-                candles[i].trendState = info;
+            // RECENT_TREND_SETTER is checked BEFORE TREND_SETTER is pushed
+            // below for this same candle — a candle's own, just-detected
+            // TREND_SETTER should never count toward its own
+            // RECENT_TREND_SETTER, matching how this worked as two
+            // separate passes (the check always ran on strictly earlier
+            // candles' already-finalized conditions_met there too).
+            var hasRecentTrendSetter = movingCandles.slice(-8).some(c => c.conditions_met && c.conditions_met.includes("TREND_SETTER"));
+            if (hasRecentTrendSetter) {
+                candle.conditions_met.push("RECENT_TREND_SETTER");
             }
-        }
 
-        //CONDITIONS
+            if (trendResult.committedSegment) {
+                candle.conditions_met.push("TREND_SETTER");
+                // TREND_START goes on the PIVOT candle where the new
+                // trend actually began, in hindsight — not this current
+                // candle (which is the LATER, confirming one). That
+                // pivot is trendResult.currentSegmentInfo.startGi, which
+                // always exists alongside committedSegment (see
+                // trendState.ts) and equals the just-finished segment's
+                // own endGi — the boundary candle the two segments
+                // share. Pushed retroactively since that pivot candle
+                // was already fully processed earlier in this loop.
+                const newSegmentStartGi = trendResult.currentSegmentInfo!.startGi;
+                candles[newSegmentStartGi].conditions_met.push("TREND_START");
 
-        for (let i = 1; i <= candles.length - 1; i++) {
-            var movingCandles = candles.slice(0, i + 1);
-            var candle = candles[i];
-
-            if(i >= 2){
-                var prevCandle = candles[i - 2]
-
-                var hasRecentTrendSetter = movingCandles.slice(-8).filter(c => c.conditions_met && c.conditions_met.filter(condition => condition == "TREND_SETTER").length == 1).length > 0;
-                if(hasRecentTrendSetter){
-                    candle.conditions_met.push("RECENT_TREND_SETTER");
-                }
-                
-                if((candle.trendState && candle.openTime == candle.trendState.confirmedOpenTime)
-                    || (prevCandle.trendState && candle.openTime == prevCandle.trendState.confirmedOpenTime)
-                ){
-                    candle.conditions_met.push("TREND_SETTER")
+                //here push the 2 avwap to pocAvwaps[]
+                //remove the 0 and 1 indexes
+                const newDirection: SIGNAL_DIRECTION = trendResult.currentSegmentInfo!.direction === "UP" ? "LONG" : "SHORT";
+                pocAvwapAnchors.push({ anchorGi: newSegmentStartGi, direction: newDirection }); // TREND_START
+                pocAvwapAnchors.push({ anchorGi: i, direction: newDirection }); // TREND_SETTER (this candle itself)
+                if (pocAvwapAnchors.length > 4) {
+                    pocAvwapAnchors = pocAvwapAnchors.slice(pocAvwapAnchors.length - 4);
                 }
             }
-        }
 
+            const activePocAvwaps = currentPocAvwapValues(candles, pocAvwapAnchors, i);
+            candle.priceAction = getPriceAction(movingCandles, activePocAvwaps);
+
+            // PRICE_ACTION_RESPECTED — a market structure swing just
+            // confirmed THIS step, in the SAME direction as a recent
+            // strong price action AND close (in both cases) to where
+            // that action and the current POC AVWAP actually are.
+            //
+            // Matching direction within the segment was NOT sufficient
+            // on its own — verified against real data (AIXBT, SUN,
+            // NEAR): the only boundary was the current trend segment's
+            // own start, but segments can run 200+ candles, so a swing
+            // could get credited for "respecting" a strong action from
+            // 219 candles and 21 ATRs away, nowhere near any AVWAP
+            // either (9.8 ATR away). That's not respect, that's just
+            // "somewhere in the same broad trend." Added two explicit
+            // distance checks so only a genuinely LOCAL respect counts.
+            //
+            // Search ends at confirmIdx (the actual swing candle), NOT
+            // i (this later confirmation candle) — a strongAction that
+            // happened during the 2-candle confirmation lag, AFTER the
+            // swing already formed, isn't something the swing could
+            // have been "respecting" when it formed.
+            //
+            // Lookback boundary is the current trend segment's own
+            // start (lastKnownTrendSnapshot.startGi) rather than a
+            // fixed candle count — reuse an existing structural
+            // boundary before reaching for a guessed constant. Uses
+            // lastKnownTrendSnapshot rather than candle.trendState
+            // because the latter is null on undetermined/retracement
+            // candles — exactly the candles this check needs to still
+            // see through to find the prior segment's own start.
+            if (newlyConfirmedLabel) {
+                const searchFromGi = lastKnownTrendSnapshot?.startGi ?? 0;
+                let respectedDirection: SIGNAL_DIRECTION | null = null;
+                let matchedGi = -1;
+                for (let j = confirmIdx; j >= searchFromGi; j--) {
+                    if (candles[j].priceAction?.strongAction) {
+                        respectedDirection = candles[j].priceAction!.dominant;
+                        matchedGi = j;
+                        break;
+                    }
+                }
+
+                const labelIsBullish = newlyConfirmedLabel === "HH" || newlyConfirmedLabel === "HL";
+                const labelIsBearish = newlyConfirmedLabel === "LH" || newlyConfirmedLabel === "LL";
+                const directionMatches =
+                    (respectedDirection === "LONG" && labelIsBullish) ||
+                    (respectedDirection === "SHORT" && labelIsBearish);
+
+                if (directionMatches && matchedGi >= 0 && candle.atr > 0) {
+                    // "Close" is judged from the SWING's own extreme
+                    // (its high for HH/LH, its low for HL/LL) — not this
+                    // candle's close — since the swing's own price is
+                    // what the market structure label is actually about.
+                    const swingPrice = (newlyConfirmedLabel === "HH" || newlyConfirmedLabel === "LH")
+                        ? candles[confirmIdx].high : candles[confirmIdx].low;
+
+                    // Distance to the matched strong action's OWN
+                    // tracked level (priceAction.reclaim.level) — the
+                    // AVWAP level that action's own sequence was built
+                    // around at the time it happened.
+                    const actionLevel = candles[matchedGi].priceAction?.reclaim.level;
+                    const distanceToActionAtr = actionLevel != null
+                        ? Math.abs(swingPrice - actionLevel) / candle.atr
+                        : Infinity;
+
+                    // Distance to the CURRENTLY closest active POC
+                    // AVWAP — checked separately from the action's own
+                    // level above, since the AVWAP is a MOVING line and
+                    // may have shifted since that action happened.
+                    const distanceToAvwapAtr = activePocAvwaps.length
+                        ? Math.min(...activePocAvwaps.map(a => Math.abs(swingPrice - a.value))) / candle.atr
+                        : Infinity;
+
+                    // ARBITRARY, uncalibrated — same status as every
+                    // other distance threshold in this pipeline (see
+                    // priceAction.ts's own CONFIG). The real distance
+                    // distribution across AIXBT/SUN/NEAR had no sharp
+                    // natural breakpoint to derive this from; 1.5 is a
+                    // stated guess, not a measured value.
+                    const PRICE_ACTION_RESPECTED_MAX_DISTANCE_ATR = 1.5;
+
+                    if (distanceToActionAtr <= PRICE_ACTION_RESPECTED_MAX_DISTANCE_ATR &&
+                        distanceToAvwapAtr <= PRICE_ACTION_RESPECTED_MAX_DISTANCE_ATR) {
+                        candle.conditions_met.push("PRICE_ACTION_RESPECTED");
+                        // Links this candle back to the strongAction
+                        // candle it's respecting (matchedGi) — needed
+                        // because PRICE_ACTION_RESPECTED is pushed to
+                        // THIS candle (i, the confirmation moment), not
+                        // the swing candle (confirmIdx) where the
+                        // market structure label itself lives. Without
+                        // this link, the UI has no way to show WHICH
+                        // strong action a respect dot is actually about.
+                        candle.extras.push("PRICE_ACTION_RESPECTED_LINK", matchedGi.toString());
+                    }
+                }
+            }
+
+            // RECENT_AVWAP_BODY is checked BEFORE AVWAP_BODY_BREAK is
+            // pushed below for this same candle — same ordering as
+            // RECENT_TREND_SETTER/TREND_SETTER, so a candle's own
+            // just-detected break never counts toward its own
+            // RECENT_AVWAP_BODY.
+            var hasRecentAvwapBodyBreak = movingCandles.slice(-5).some(c => c.conditions_met && c.conditions_met.includes("AVWAP_BODY_BREAK"));
+            if (hasRecentAvwapBodyBreak) {
+                candle.conditions_met.push("RECENT_AVWAP_BODY");
+            }
+
+            // AVWAP_BODY_BREAK — this candle's own BODY (open to close,
+            // not the wicks) crosses an active POC AVWAP's mid value:
+            // open and close sit on OPPOSITE sides of it. Deliberately
+            // stricter than a bare wick touch (which priceAction.ts's
+            // own "touch" trigger already checks via low/high) — this
+            // is about whether the candle actually closed through the
+            // level with conviction, not just wicked into it.
+            for (const p of activePocAvwaps) {
+                const brokeUp = candle.open < p.value && candle.close > p.value;
+                const brokeDown = candle.open > p.value && candle.close < p.value;
+                if (brokeUp || brokeDown) {
+                    candle.conditions_met.push("AVWAP_BODY_BREAK");
+                    break;
+                }
+            }
+
+            // Playback snapshot — records, into extras (no new interface
+            // fields), what the tracker's state looked like AS OF this
+            // exact candle's own processing step. Updated whenever a
+            // commit just happened or the running extreme just moved;
+            // left UNCHANGED on an undetermined/retracement candle, so
+            // playback shows "the last thing that was actually known"
+            // rather than going blank the moment a pullback starts.
+            // Tagged with a leading "TREND_SNAPSHOT" marker so this
+            // reuses extras safely alongside anything else that might
+            // get pushed into it elsewhere.
+            if (trendResult.committedSegment) {
+                const seg = trendResult.committedSegment;
+                lastKnownTrendSnapshot = { direction: seg.direction, startGi: seg.startGi, endGi: seg.endGi, confirmedOpenTime: seg.confirmedOpenTime };
+            }
+            if (trendResult.currentSegmentInfo) {
+                lastKnownTrendSnapshot = { ...trendResult.currentSegmentInfo };
+            }
+            if (lastKnownTrendSnapshot) {
+                candle.extras.push(
+                    "TREND_SNAPSHOT",
+                    lastKnownTrendSnapshot.direction,
+                    lastKnownTrendSnapshot.startGi.toString(),
+                    lastKnownTrendSnapshot.endGi.toString(),
+                    lastKnownTrendSnapshot.confirmedOpenTime.toString()
+                );
+            }
+
+            candle.extras.push(JSON.stringify(candle.trendState))
+            candle.extras.push(i.toString())
+
+            // Position simulation — advance an open position first; only
+            // check for a NEW entry if nothing is currently open (one
+            // position at a time, matching the reference logic this
+            // mirrors). durationMinutes is computed here rather than
+            // inside updatePositionEntry, since only this loop has the
+            // full candles array to look up the entry candle's own
+            // openTime.
+            // if (openPosition) {
+            //     updatePositionEntry(openPosition, candle, i);
+            //     // closeTime is never actually populated anywhere in this
+            //     // pipeline (mapToInfo only maps openTime) — using it here
+            //     // would silently produce NaN. Duration is instead derived
+            //     // from the known, fixed interval this call was made with.
+            //     const intervalMinutes = { "15m": 15, "1h": 60, "4h": 240, "1d": 1440 }[interval];
+            //     openPosition.durationMinutes = (i - openPosition.openGi) * intervalMinutes;
+            //     candle.positionEntry = openPosition;
+            //     if (openPosition.status !== "OPEN") {
+            //         openPosition = null;
+            //     }
+            // } else {
+            //     const newPosition = checkPositionEntry(candle, activePocAvwaps, previousTrendCloud, (lastKnownTrendSnapshot?.direction as "UP" | "DOWN" | undefined) ?? null, i, POSITION_MARGIN, DEFAULT_LEVERAGE);
+            //     if (newPosition) {
+            //         openPosition = newPosition;
+            //         candle.positionEntry = openPosition;
+            //     }
+            // }
+        }
     }
 
     //HELPERS

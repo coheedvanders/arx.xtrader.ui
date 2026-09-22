@@ -63,6 +63,93 @@ function avgAtrOverRange(candles: CandleInfo[], startIdx: number, endIdx: number
     return count > 0 ? sum / count : 0;
 }
 
+export interface TrendTrackerState {
+    pivotIdx: number;
+    pivotConfirmedOpenTime: number;
+    direction: TrendDirection | null;
+    extremeIdx: number;
+    extremePrice: number;
+}
+
+export function initTrendTracker(firstCandle: CandleInfo): TrendTrackerState {
+    return {
+        pivotIdx: 0,
+        pivotConfirmedOpenTime: firstCandle.openTime,
+        direction: null,
+        extremeIdx: 0,
+        extremePrice: firstCandle.close,
+    };
+}
+
+export interface TrendStepResult {
+    state: TrendTrackerState;
+    /** The segment that just got confirmed AT THIS STEP, if the retracement threshold was cleared here — null on every step that doesn't commit anything (the common case: still extending or still not enough retracement yet). */
+    committedSegment: TrendSegment | null;
+    /**
+     * Info for the segment currently active as of this step, if this
+     * step's candle is part of a knowable trend right now — i.e. it
+     * either IS the running extreme, or falls within [pivotIdx, extremeIdx]
+     * of the CURRENT tracked direction. Null on steps still waiting to
+     * establish an initial direction, or (importantly) on retracement
+     * candles that haven't yet either extended the extreme or triggered
+     * a commit — those candles are genuinely undetermined at this point
+     * in time, same as the batch version leaves them unset.
+     */
+    currentSegmentInfo: { direction: TrendDirection; startGi: number; endGi: number; confirmedOpenTime: number } | null;
+}
+
+/**
+ * Advances the tracker by exactly one candle (index i, which must be
+ * state's own extremeIdx + 1 or later in a normal walk-forward loop —
+ * this function only ever reads candles up to i, matching the rest of
+ * this pipeline's no-look-ahead discipline). Produces the same segment
+ * boundaries as detectTrendSegments would for the same data, verified
+ * by comparing both against 6 real symbols before this was wired in
+ * anywhere.
+ */
+export function stepTrendTracker(candles: CandleInfo[], i: number, state: TrendTrackerState, minRetraceAtr: number = MIN_RETRACE_ATR): TrendStepResult {
+    const close = candles[i].close;
+    let { pivotIdx, pivotConfirmedOpenTime, direction, extremeIdx, extremePrice } = state;
+
+    if (direction === null) {
+        if (close > extremePrice) { direction = "UP"; extremeIdx = i; extremePrice = close; }
+        else if (close < extremePrice) { direction = "DOWN"; extremeIdx = i; extremePrice = close; }
+        const newState = { pivotIdx, pivotConfirmedOpenTime, direction, extremeIdx, extremePrice };
+        const info = direction ? { direction, startGi: pivotIdx, endGi: extremeIdx, confirmedOpenTime: pivotConfirmedOpenTime } : null;
+        return { state: newState, committedSegment: null, currentSegmentInfo: info };
+    }
+
+    if (direction === "UP") {
+        if (close > extremePrice) {
+            const newState = { pivotIdx, pivotConfirmedOpenTime, direction, extremeIdx: i, extremePrice: close };
+            return { state: newState, committedSegment: null, currentSegmentInfo: { direction, startGi: pivotIdx, endGi: i, confirmedOpenTime: pivotConfirmedOpenTime } };
+        }
+        const avgAtr = avgAtrOverRange(candles, pivotIdx, i);
+        const retrace = extremePrice - close;
+        if (avgAtr > 0 && retrace / avgAtr >= minRetraceAtr) {
+            const committed: TrendSegment = { direction: "UP", startGi: pivotIdx, endGi: extremeIdx, ended: true, confirmedOpenTime: pivotConfirmedOpenTime };
+            const newState: TrendTrackerState = { pivotIdx: extremeIdx, pivotConfirmedOpenTime: candles[i].openTime, direction: "DOWN", extremeIdx: i, extremePrice: close };
+            return { state: newState, committedSegment: committed, currentSegmentInfo: { direction: "DOWN", startGi: newState.pivotIdx, endGi: i, confirmedOpenTime: newState.pivotConfirmedOpenTime } };
+        }
+        // Retracement candle, not yet enough to commit — genuinely
+        // undetermined for now, same as the batch version leaves it.
+        return { state, committedSegment: null, currentSegmentInfo: null };
+    } else {
+        if (close < extremePrice) {
+            const newState = { pivotIdx, pivotConfirmedOpenTime, direction, extremeIdx: i, extremePrice: close };
+            return { state: newState, committedSegment: null, currentSegmentInfo: { direction, startGi: pivotIdx, endGi: i, confirmedOpenTime: pivotConfirmedOpenTime } };
+        }
+        const avgAtr = avgAtrOverRange(candles, pivotIdx, i);
+        const retrace = close - extremePrice;
+        if (avgAtr > 0 && retrace / avgAtr >= minRetraceAtr) {
+            const committed: TrendSegment = { direction: "DOWN", startGi: pivotIdx, endGi: extremeIdx, ended: true, confirmedOpenTime: pivotConfirmedOpenTime };
+            const newState: TrendTrackerState = { pivotIdx: extremeIdx, pivotConfirmedOpenTime: candles[i].openTime, direction: "UP", extremeIdx: i, extremePrice: close };
+            return { state: newState, committedSegment: committed, currentSegmentInfo: { direction: "UP", startGi: newState.pivotIdx, endGi: i, confirmedOpenTime: newState.pivotConfirmedOpenTime } };
+        }
+        return { state, committedSegment: null, currentSegmentInfo: null };
+    }
+}
+
 export function detectTrendSegments(candles: CandleInfo[], minRetraceAtr: number = MIN_RETRACE_ATR): TrendSegment[] {
     const segments: TrendSegment[] = [];
     if (candles.length < 2) return segments;

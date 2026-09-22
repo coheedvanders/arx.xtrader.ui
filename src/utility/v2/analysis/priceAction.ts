@@ -12,40 +12,38 @@ import type {
 } from "@/core/interfacesv2";
 
 /**
- * Narrates the sweep -> rejection -> reclaim -> displacement ->
- * closeConfirmation sequence, reusing data this pipeline has already
- * computed rather than re-detecting anything:
- *   - trigger:      liquiditySweepInfo.behavior is SWEPT_AND_RESPECTED or
- *                    SWEPT_AND_CONTINUED (either counts as a sweep having
- *                    happened; which one it was doesn't gate whether a
- *                    sequence starts — this module tracks its OWN
- *                    reject/reclaim path over the candles that follow)
- *   - direction:    liquiditySweepInfo.previousAnchorDirection — the
- *                    reference trend segment's own direction. When a
- *                    segment's old liquidity gets defended (respected),
- *                    that's evidence FOR that same direction resuming,
- *                    not against it — see liquiditySweepInfo.ts's own
- *                    reasoning for why respect on either side of a zone
- *                    maps back to the segment's original bias.
- *   - the level:    the hot zone's boundary on the side price approached
- *                    from (hotZoneHigh if this was a LONG-direction
- *                    segment, hotZoneLow if SHORT) — the old single
- *                    peakPrice concept doesn't exist anymore now that the
- *                    reference is a zone, not one point.
+ * Narrates the touch -> rejection -> reclaim -> displacement ->
+ * closeConfirmation sequence, now anchored to the project's own
+ * research finding: AVWAP anchored at the TREND_START/TREND_SETTER
+ * candles of the last 2 trend segments (see simulationUtilityV2.ts,
+ * which maintains the running anchors and passes in each one's
+ * CURRENT value every candle).
+ *   - trigger:      the current candle's [low, high] range straddles
+ *                    the CLOSEST active POC AVWAP (by distance from
+ *                    close) — this replaces the old liquidity-sweep
+ *                    trigger entirely; liquiditySweepInfo is no longer
+ *                    read here at all.
+ *   - direction:    the closest AVWAP's own carried direction — LONG
+ *                    if it was anchored from an UP trend segment,
+ *                    SHORT if DOWN (see simulationUtilityV2.ts's own
+ *                    UP->LONG / DOWN->SHORT mapping when it builds
+ *                    each anchor).
+ *   - the level:    that AVWAP's own current value — a single moving
+ *                    line, not a zone with high/low bounds, so there's
+ *                    no hotZoneHigh/Low equivalent anymore.
  *   - displacement: candleStructure.isExpansion / .isBullish / .isBearish
- *                    / .strength (all already computed elsewhere)
+ *                    / .strength (all already computed elsewhere) — unchanged
  *
- * NOTE ON OVERLAP: liquiditySweepInfo.behavior now already classifies
- * respected-vs-continued on the triggering candle itself — this module's
- * OWN rejection/reclaim tracking over SUBSEQUENT candles is a related but
- * not identical question (multi-candle follow-through vs a single-candle
- * read). That overlap is real and worth a closer look later; not resolved
- * here since collapsing them wasn't asked for and risks losing whichever
- * one turns out to be the better signal.
+ * The top-level field name `liquiditySweep` (from the PriceAction
+ * interface) is kept as-is even though this module no longer detects
+ * an actual liquidity-pool sweep — it now represents "the triggering
+ * POC AVWAP touch happened", the same MOMENTARY-event role the field
+ * always played in this module. Renaming the interface field wasn't
+ * asked for and isn't done here.
  *
  * This module does NOT implement breakout/failedBreakout — deferred as a
  * separate pass since it's a distinct hypothesis (a clean break with no
- * sweep/reject drama) from the liquidity-anchor validation loop this
+ * touch/reject drama) from the AVWAP-interaction validation loop this
  * module answers. Both are returned as blank/false.
  *
  * ── Field conventions (the interface doesn't specify these, so stating
@@ -56,17 +54,17 @@ import type {
  *     PERSISTENT once reached — level/penetration/closeDistance keep
  *     reflecting the tracked level on every subsequent candle until the
  *     sequence resets, since "where's the level and how is it holding" is
- *     an ongoing fact (directly useful as an AVWAP anchor candidate).
+ *     an ongoing fact.
  *   - sequence.* booleans: CUMULATIVE — has this stage ever been reached
  *     in the currently-tracked sequence.
  *   - long / short: NOT independent scores. They just route `strength`
  *     into whichever side `dominant` is, so the fields aren't left at 0/0
  *     while implying two separately-evidenced numbers that don't exist.
  *
- * A new single-side sweep always starts a fresh sequence, overriding any
- * still-pending unresolved one (logged in `reasons`, not silently dropped).
- * An ambiguous sweep (both sides hit at once) does not start a directional
- * sequence — reported honestly rather than guessing a side.
+ * A new touch of a DIFFERENT active AVWAP always starts a fresh
+ * sequence, overriding any still-pending unresolved one (logged in
+ * `reasons`, not silently dropped) — same override behavior the old
+ * sweep-based version had.
  */
 const CONFIG = {
     // How far (in ATRs) price must close beyond the tracked level to
@@ -83,12 +81,6 @@ const CONFIG = {
     // direction without ever reclaiming, the pending sequence is
     // considered invalidated and reset. ARBITRARY, uncalibrated.
     INVALIDATION_DISTANCE_ATR: 2.0,
-
-    // A SWEPT_AND_RESPECTED sweep's own strength (see liquiditySweepInfo.ts)
-    // must clear this to count as a "strong action" on its own, without
-    // needing a full reclaim/displacement chain to have followed it.
-    // ARBITRARY, uncalibrated — same status as every other threshold here.
-    STRONG_SWEEP_STRENGTH_THRESHOLD: 30,
 };
 
 function blankEvent(): PriceActionEvent {
@@ -135,7 +127,7 @@ function blankPriceAction(reasons: string[], liquiditySweep: PriceActionEvent = 
     };
 }
 
-export function getPriceAction(movingCandles: CandleInfo[]): PriceAction {
+export function getPriceAction(movingCandles: CandleInfo[], activePocAvwaps: { value: number; direction: SIGNAL_DIRECTION }[]): PriceAction {
 
     if (!movingCandles.length) {
         return blankPriceAction(["No candle data available"]);
@@ -146,7 +138,6 @@ export function getPriceAction(movingCandles: CandleInfo[]): PriceAction {
     const previousCandle = currentIndex > 0 ? movingCandles[currentIndex - 1] : null;
 
     const prevPA = previousCandle?.priceAction ?? null;
-    const sweepInfo = currentCandle.liquiditySweepInfo;
     const atr = currentCandle.atr;
 
     const reasons: string[] = [];
@@ -157,35 +148,51 @@ export function getPriceAction(movingCandles: CandleInfo[]): PriceAction {
     let direction: SIGNAL_DIRECTION = hadPending ? prevPA!.sequence.direction : "NEUTRAL";
     let sequence: PriceActionSequence = hadPending ? { ...prevPA!.sequence } : blankSequence();
 
-    let sweepEvent = blankEvent();
+    let touchEvent = blankEvent();
 
-    // ── Does this candle's own sweep start (or override) a sequence? ──
-    if (sweepInfo?.behavior === "SWEPT_AND_RESPECTED" || sweepInfo?.behavior === "SWEPT_AND_CONTINUED") {
-        const sweepDirection: SIGNAL_DIRECTION = sweepInfo.previousAnchorDirection ?? "NEUTRAL";
+    // ── Does this candle touch the CLOSEST active POC AVWAP? ──
+    // "Touch" means the candle's [low, high] range straddles that
+    // AVWAP's current value — the single-line equivalent of a sweep
+    // reaching into a zone. "Closest" is by distance from this candle's
+    // own close, among whichever anchors are currently active (see
+    // simulationUtilityV2.ts — up to 4, from the last 2 trend segments).
+    if (activePocAvwaps.length > 0) {
+        let closest = activePocAvwaps[0];
+        let closestDist = Math.abs(currentCandle.close - closest.value);
+        for (const p of activePocAvwaps.slice(1)) {
+            const d = Math.abs(currentCandle.close - p.value);
+            if (d < closestDist) { closest = p; closestDist = d; }
+        }
 
-        sweepEvent = {
-            detected: true,
-            direction: sweepDirection,
-            strength: Math.round(sweepInfo.sweptRatio * 100),
-            reasons: [`Swept ${(sweepInfo.sweptRatio * 100).toFixed(1)}% of the ${sweepDirection} reference segment's hot pool (${sweepInfo.previousAnchorPairId})`],
-        };
+        const touched = currentCandle.low <= closest.value && currentCandle.high >= closest.value;
 
-        if (sweepDirection !== "NEUTRAL") {
+        if (touched && closest.direction !== "NEUTRAL") {
+            // Strength here is "how far outside this candle's own range
+            // the touch point sits relative to ATR" has no meaning since
+            // touched implies the level IS inside [low, high] — instead,
+            // strength reflects how close the level sits to this
+            // candle's own close (a level right at the close is a more
+            // decisive test than one just barely clipped by the wick),
+            // normalized against ATR. No sweptRatio equivalent exists
+            // for a single moving line, so this replaces it outright
+            // rather than approximating it.
+            const strength = atr > 0 ? Math.round(Math.max(0, 1 - closestDist / atr) * 100) : 0;
+
+            touchEvent = {
+                detected: true,
+                direction: closest.direction,
+                strength,
+                reasons: [`Price touched the closest POC AVWAP (${closest.value.toFixed(4)}), anchored to a ${closest.direction} trend segment`],
+            };
+
             if (hadPending) {
                 reasons.push(
-                    `New ${sweepDirection} sweep overrides previous unresolved ${direction} sequence`
+                    `New ${closest.direction} POC AVWAP touch overrides previous unresolved ${direction} sequence`
                 );
             }
-            // Track the hot zone's boundary on the side price approached
-            // from — hotZoneHigh for a LONG-direction segment (price
-            // dipped in from above), hotZoneLow for SHORT (price poked up
-            // from below). Falls back to the candle's own low/high only if
-            // the zone bounds are somehow missing.
-            const newLevel = (sweepDirection === "LONG" ? sweepInfo.hotZoneHigh : sweepInfo.hotZoneLow)
-                ?? (sweepDirection === "LONG" ? currentCandle.low : currentCandle.high);
 
-            level = newLevel;
-            direction = sweepDirection;
+            level = closest.value;
+            direction = closest.direction;
             sequence = {
                 liquiditySweep: true,
                 rejection: false,
@@ -193,19 +200,17 @@ export function getPriceAction(movingCandles: CandleInfo[]): PriceAction {
                 displacement: false,
                 closeConfirmation: false,
                 completion: 0.2,
-                direction: sweepDirection,
+                direction: closest.direction,
             };
-            reasons.push(`${sweepDirection} liquidity sweep detected at level ${newLevel.toFixed(2)}`);
-        } else {
-            reasons.push("Sweep detected but the reference segment had no clear direction — not starting a directional sequence");
+            reasons.push(`${closest.direction} POC AVWAP touch detected at level ${closest.value.toFixed(4)}`);
         }
     }
 
     // No sequence at all (nothing pending, and nothing new started).
     if (!sequence.liquiditySweep || level === null) {
         return blankPriceAction(
-            reasons.length ? reasons : ["No active or new liquidity sweep sequence"],
-            sweepEvent
+            reasons.length ? reasons : ["No active or new POC AVWAP touch"],
+            touchEvent
         );
     }
 
@@ -222,7 +227,7 @@ export function getPriceAction(movingCandles: CandleInfo[]): PriceAction {
             reasons.push(
                 `Sequence invalidated — price moved ${distanceAtr.toFixed(2)}x ATR further from level ${trackedLevel.toFixed(2)} without reclaiming`
             );
-            return blankPriceAction(reasons, sweepEvent);
+            return blankPriceAction(reasons, touchEvent);
         }
     }
 
@@ -238,7 +243,7 @@ export function getPriceAction(movingCandles: CandleInfo[]): PriceAction {
             rejectionEvent = {
                 detected: true,
                 direction: trackedDirection,
-                strength: sweepEvent.strength || Math.round((sweepInfo?.sweptRatio ?? 0) * 100),
+                strength: touchEvent.strength,
                 reasons: [msg],
             };
             sequence = { ...sequence, rejection: true, completion: Math.max(sequence.completion, 0.4) };
@@ -323,16 +328,17 @@ export function getPriceAction(movingCandles: CandleInfo[]): PriceAction {
     const strength =
         displacementEvent.detected ? displacementEvent.strength :
         reclaimEvent.detected ? reclaimEvent.strength :
-        sweepEvent.strength;
+        touchEvent.strength;
 
     // A confirmed displacement is inherently the strongest signal this
-    // pipeline produces (only reachable after the full sweep->reject
-    // ->reclaim chain already played out) — always strong on its own. A
-    // SWEPT_AND_RESPECTED sweep counts too if it clears the threshold on
-    // its own, even without a reclaim/displacement chain following it.
-    const strongAction =
-        displacementEvent.detected ||
-        (sweepInfo?.behavior === "SWEPT_AND_RESPECTED" && sweepInfo.strength >= CONFIG.STRONG_SWEEP_STRENGTH_THRESHOLD);
+    // pipeline produces (only reachable after the full touch->reject
+    // ->reclaim chain already played out) — always strong on its own.
+    // Unlike the old sweep-based version, a bare touch never counts as
+    // "strong" by itself now: sweptRatio measured how much of an actual
+    // liquidity pool got consumed, which had no equivalent for a single
+    // moving AVWAP line, so that shortcut isn't approximated here —
+    // simplified to require the full chain instead.
+    const strongAction = displacementEvent.detected;
 
     return {
         displacement: displacementEvent,
@@ -340,7 +346,7 @@ export function getPriceAction(movingCandles: CandleInfo[]): PriceAction {
         reclaim: reclaimEvent,
         breakout: blankBreakout(),
         failedBreakout: blankBreakout(),
-        liquiditySweep: sweepEvent,
+        liquiditySweep: touchEvent,
         sequence,
         long: trackedDirection === "LONG" ? strength : 0,
         short: trackedDirection === "SHORT" ? strength : 0,

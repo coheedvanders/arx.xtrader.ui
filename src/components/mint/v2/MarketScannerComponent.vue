@@ -174,7 +174,7 @@ async function onNewCandleSpawned() {
 function setRecentFutureCandleData(candles: CandleInfo[]){
     var currentCandle = candles[candles.length - 1];
     if (currentCandle.conditions_met.length > 0) {
-        currentFutureSumbol.value!.conditionMet = currentCandle.conditions_met.join(", ")
+        currentFutureSumbol.value!.conditionMet = currentCandle.conditions_met.filter(condition => !condition.includes("TREND_")).join(", ")
     }
 }
 
