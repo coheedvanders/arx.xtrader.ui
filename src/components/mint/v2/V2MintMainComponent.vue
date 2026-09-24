@@ -17,6 +17,13 @@
         <ButtonComponent v-else @click="isBotEnabled = false" color="danger" rounded class="mr-sm">stop choco</ButtonComponent>
 
         <ButtonComponent v-if="!isBotEnabled" @click="runManualSimulation" rounded class="mr-sm">run all simulation</ButtonComponent>
+
+        <ButtonComponent @click="UI_SHOW_TRADE_REPLAY = true" color="ghost" rounded class="mr-sm">view trade replay</ButtonComponent>
+
+        <label class="ml-sm">
+            <input type="checkbox" v-model="onlyInterestingSymbols" />
+            only interesting symbols
+        </label>
     </div>
 
     <label>Cost</label>
@@ -161,6 +168,11 @@
         <CandleEntryHistoryComponent :candle-entries="selectedSymbolCandleEntries"/>
     </DialogComponent>
 
+    <DialogComponent v-model="UI_SHOW_TRADE_REPLAY" :width="'95vw'">
+        <DialogHeaderComponent>Trade Replay</DialogHeaderComponent>
+        <TradeReplayComponent :starting-balance="STARTING_BALANCE" />
+    </DialogComponent>
+
 </template>
 
 <script setup lang="ts">
@@ -180,6 +192,7 @@ import InputComponent from '../../shared/form/InputComponent.vue';
 import { BinanceMarginUtility } from '@/utility/binanceMarginUtility';
 import CandleEntryHistoryComponent from '../CandleEntryHistoryComponent.vue';
 import ReplayCandleEntryComponent from '../ReplayCandleEntryComponent.vue';
+import TradeReplayComponent from './TradeReplayComponent.vue';
 import { useNotificationStore } from '@/stores/notificationStore';
 import TableBodyComponent from '../../shared/table/TableBodyComponent.vue';
 import TableHeaderComponent from '../../shared/table/TableHeaderComponent.vue';
@@ -190,6 +203,7 @@ import RiskMeasureComponent from '../RiskMeasureComponent.vue';
 import MarketScannerComponent from './MarketScannerComponent.vue';
 import { SimulationUtilityV2 } from '@/utility/v2/simulationUtilityV2.ts';
 import { klineDbUtilityV2 } from '@/utility/v2/klineDbUtilityV2.ts';
+import { scanForInterestingSymbols, storeInterestingSymbols } from '@/utility/v2/analysis/symbolInterest';
 
 const chocoMintoStore = useChocoMintoStore();
 const notificationStore = useNotificationStore();
@@ -215,6 +229,21 @@ const UI_STATE_INITIALIZING_FUTURE_SYMBOLS = ref(false);
 const UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE = ref("")
 const UI_STATE_FORCE_CLOSE_MESSAGE = ref('')
 const UI_SHOW_REPLAY = ref(false)
+const UI_SHOW_TRADE_REPLAY = ref(false)
+
+// When on, a symbol pre-scan runs before the main simulation and the
+// scanner only processes symbols that scan found interesting right now
+// (see symbolInterest.ts). Persisted so the setting survives a reload.
+const onlyInterestingSymbols = ref(localStorage.getItem('only-interesting-symbols') === 'true');
+watch(onlyInterestingSymbols, (val) => {
+    localStorage.setItem('only-interesting-symbols', val.toString());
+    if (!val) {
+        // Blank list means "run everything" downstream (MarketScannerComponent) -
+        // clear it immediately so turning the checkbox off doesn't leave a
+        // stale filter from the last time it was checked.
+        storeInterestingSymbols([]);
+    }
+});
 
 const futureSymbolBatches = ref<FuturesSymbol[][]>([])
 
@@ -394,7 +423,17 @@ async function runManualSimulation() {
     // await analyzeMainMarkets();
 
     chocoMintoStore.isManualSimulation = true;
-    
+
+    // Wipe everything captured from a previous run FIRST - before the
+    // interest pre-scan or the main scan, both of which would otherwise
+    // read stale data left over from last time.
+    UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE.value = "clearing previously captured data...";
+    await klineDbUtilityV2.clearAllSymbolInfo();
+
+    if (onlyInterestingSymbols.value) {
+        await runInterestingSymbolsPreScan();
+    }
+
     // Ensure the template ref array exists and has components loaded
     await nextTick();
     
@@ -408,6 +447,31 @@ async function runManualSimulation() {
         });
         
         await Promise.all(scanPromises);
+    }
+}
+
+/**
+ * Cheap pre-scan (raw klines/OI/long-short, not the full simulation
+ * pipeline) across every known futures symbol, run before the main
+ * scan whenever "only interesting symbols" is checked. Stores the
+ * resulting symbol list via symbolInterest.ts; MarketScannerComponent
+ * reads it back and only loops over that set. An empty result (or the
+ * checkbox being off) means downstream falls back to running everything.
+ */
+async function runInterestingSymbolsPreScan() {
+    UI_STATE_INITIALIZING_FUTURE_SYMBOLS.value = true;
+    try {
+        const interesting = await scanForInterestingSymbols(
+            chocoMintoStore.futureSymbols,
+            undefined,
+            (current, total, symbol) => {
+                UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE.value = `Checking interest: ${current} / ${total} [${symbol}]`;
+            }
+        );
+        storeInterestingSymbols(interesting);
+    } finally {
+        UI_STATE_INITIALIZING_FUTURE_SYMBOLS.value = false;
+        UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE.value = "";
     }
 }
 

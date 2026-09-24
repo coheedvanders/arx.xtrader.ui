@@ -103,6 +103,77 @@ function getAdaptiveLookback(
     return CONFIG.NORMAL_LOOKBACK;
 }
 
+/**
+ * Z-score of the current candle's volume against its OWN trend
+ * segment's prior volume (trendState.startGi..endGi, excluding this
+ * candle) - a structural baseline instead of a rolling one. Returns 0
+ * when the candle isn't currently classified into a trend at all
+ * (trendState null - e.g. an undetermined/retracement candle between
+ * segments), or when the trend hasn't produced enough PRIOR candles
+ * yet to have a baseline (e.g. this candle IS the trend's own start).
+ *
+ * Safe to trust trendState.endGi at face value here even though it
+ * can retroactively extend as a live trend continues (see
+ * TrendSegmentInfo's own doc comment) - this runs inside the same
+ * forward-only loop that builds movingCandles, so endGi on the
+ * CURRENT candle can never exceed the current index; nothing beyond
+ * "now" has been processed yet to have extended it.
+ */
+function getTrendZScore(
+    movingCandles: CandleInfo[],
+    currentCandle: CandleInfo,
+    currentVolume: number
+): number {
+
+    const trendState = currentCandle.trendState;
+
+    if (!trendState) {
+        return 0;
+    }
+
+    const currentGlobalIndex = movingCandles.length - 1;
+
+    const trendStartGi = Math.max(0, trendState.startGi);
+    const trendEndGiExclusive =
+        Math.min(trendState.endGi, currentGlobalIndex) - 1;
+
+    if (trendEndGiExclusive < trendStartGi) {
+        return 0;
+    }
+
+    const trendCandles = movingCandles.slice(
+        trendStartGi,
+        trendEndGiExclusive + 1
+    );
+
+    if (!trendCandles.length) {
+        return 0;
+    }
+
+    const trendMeanVolume =
+        trendCandles.reduce(
+            (sum, candle) => sum + candle.volume,
+            0
+        ) / trendCandles.length;
+
+    if (trendMeanVolume <= 0) {
+        return 0;
+    }
+
+    const trendVariance =
+        trendCandles.reduce(
+            (sum, candle) =>
+                sum + Math.pow(candle.volume - trendMeanVolume, 2),
+            0
+        ) / trendCandles.length;
+
+    const trendStdDev = Math.sqrt(trendVariance);
+
+    return trendStdDev > 0
+        ? (currentVolume - trendMeanVolume) / trendStdDev
+        : 0;
+}
+
 export function getVolumeState(
     movingCandles: CandleInfo[]
 ): VolumeState {
@@ -112,6 +183,8 @@ export function getVolumeState(
             value: 0,
             averageVolume: 0,
             relativeVolume: 0,
+            dynamicZScore: 0,
+            trendZScore: 0,
             volumeChange: 0,
             volumeChangePercent: 0,
             state: "NEUTRAL",
@@ -134,6 +207,8 @@ export function getVolumeState(
             value: currentVolume,
             averageVolume: 0,
             relativeVolume: 0,
+            dynamicZScore: 0,
+            trendZScore: 0,
             volumeChange: 0,
             volumeChangePercent: 0,
             state: "NEUTRAL",
@@ -163,6 +238,8 @@ export function getVolumeState(
             value: currentVolume,
             averageVolume: currentVolume,
             relativeVolume: 1,
+            dynamicZScore: 0,
+            trendZScore: 0,
             volumeChange: 0,
             volumeChangePercent: 0,
             state: "NEUTRAL",
@@ -196,6 +273,8 @@ export function getVolumeState(
             value: currentVolume,
             averageVolume: currentVolume,
             relativeVolume: 1,
+            dynamicZScore: 0,
+            trendZScore: 0,
             volumeChange: 0,
             volumeChangePercent: 0,
             state: "NEUTRAL",
@@ -219,6 +298,8 @@ export function getVolumeState(
             value: currentVolume,
             averageVolume: 0,
             relativeVolume: 0,
+            dynamicZScore: 0,
+            trendZScore: 0,
             volumeChange: 0,
             volumeChangePercent: 0,
             state: "NEUTRAL",
@@ -232,6 +313,34 @@ export function getVolumeState(
 
     const relativeVolume =
         currentVolume / averageVolume;
+
+    /*
+     * Same dynamically sized baselineCandles used for
+     * averageVolume/relativeVolume above - NOT a separate fixed
+     * window. relativeVolume says how many times normal;
+     * dynamicZScore says how statistically unusual, which needs the
+     * baseline's own spread, not just its mean. A short
+     * (expansion/displacement) baseline naturally produces a noisier
+     * dynamicZScore than a long (compression) one - that's
+     * intentional, matching getAdaptiveLookback's own reasoning that
+     * a fresh volume regime shouldn't be judged against a stale one.
+     */
+    const baselineVariance =
+        baselineCandles.reduce(
+            (sum, candle) =>
+                sum + Math.pow(candle.volume - averageVolume, 2),
+            0
+        ) / baselineCandles.length;
+
+    const baselineStdDev = Math.sqrt(baselineVariance);
+
+    const dynamicZScore =
+        baselineStdDev > 0
+            ? (currentVolume - averageVolume) / baselineStdDev
+            : 0;
+
+    const trendZScore =
+        getTrendZScore(movingCandles, currentCandle, currentVolume);
 
     const previousVolume =
         previousCandles[
@@ -346,6 +455,23 @@ export function getVolumeState(
     }
 
     if (
+        Math.abs(dynamicZScore) >= 2
+    ) {
+        reasons.push(
+            `Volume dynamic z-score ${dynamicZScore >= 0 ? "+" : ""}${dynamicZScore.toFixed(2)} - statistically unusual vs its own baseline`
+        );
+    }
+
+    if (
+        currentCandle.trendState &&
+        Math.abs(trendZScore) >= 2
+    ) {
+        reasons.push(
+            `Volume trend z-score ${trendZScore >= 0 ? "+" : ""}${trendZScore.toFixed(2)} - statistically unusual vs this trend's own volume`
+        );
+    }
+
+    if (
         Math.abs(volumeChangePercent) >
         CONFIG.FLAT_CHANGE_THRESHOLD_PERCENT
     ) {
@@ -413,6 +539,8 @@ export function getVolumeState(
         value: currentVolume,
         averageVolume,
         relativeVolume,
+        dynamicZScore,
+        trendZScore,
         volumeChange,
         volumeChangePercent,
         state,

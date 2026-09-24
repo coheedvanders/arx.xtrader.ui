@@ -74,18 +74,19 @@
 <script setup lang="ts">
 import CardBodyComponent from '@/components/shared/card/CardBodyComponent.vue';
 import CardComponent from '@/components/shared/card/CardComponent.vue';
-import type { Candle, FuturesSymbol } from '@/core/interfaces';
+import type { Candle, FuturesSymbol, SimulationStats } from '@/core/interfaces';
 import { ref } from 'vue';
 import { useChocoMintoStore } from '@/stores/chocoMintoStore';
 import ProgressBarComponent from '@/components/shared/ProgressBarComponent.vue';
 import DialogComponent from '@/components/shared/dialog/DialogComponent.vue';
 import DialogHeaderComponent from '@/components/shared/dialog/DialogHeaderComponent.vue';
-import type { CandleInfo, SymbolInfo } from '@/core/interfacesv2';
+import type { CandleInfo, SymbolInfo, PositionEntry } from '@/core/interfacesv2';
 import { KlineUtility } from '@/utility/klineUtility';
 import { klineDbUtilityV2 } from '@/utility/v2/klineDbUtilityV2';
 import { CandleAnalyzerV2 } from '@/utility/v2/candleAnalyzerV2';
 import { SimulationUtilityV2 } from '@/utility/v2/simulationUtilityV2';
 import CandleVisualizerV2Component from './CandleVisualizerV2Component.vue';
+import { getStoredInterestingSymbols } from '@/utility/v2/analysis/symbolInterest';
 
 const chocoMintoStore = useChocoMintoStore();
 
@@ -120,6 +121,15 @@ async function runInitialScan() {
     //     (await klineDbUtilityV2.getSymbolInfo("SOLUSDT"))!,
     // ]
 
+    // A blank/empty stored list means "run everything" - same feature,
+    // same loop, same progress bar (bounds stay against the full
+    // futureSymbols array either way; only the per-symbol work below is
+    // skipped for symbols not on the list, matching MarketScanner's own
+    // "only loop/run those that are interesting" requirement without
+    // needing a separate progress-bar total).
+    const interestingSymbols = getStoredInterestingSymbols();
+    const interestFilter = interestingSymbols.length > 0 ? new Set(interestingSymbols) : null;
+
     for (let i = 0; i < props.futureSymbols.length; i++) {
         try {
             
@@ -128,11 +138,15 @@ async function runInitialScan() {
             //TARGET SYMBOL ANALYSIS
             //if (futureSymbol.symbol != "LTCUSDT") continue;
 
+            progressCounter.value = i + 1;
+
+            if (interestFilter && !interestFilter.has(futureSymbol.symbol)) {
+                futureSymbol.status = "skipped (not interesting)";
+                continue;
+            }
+
             futureSymbol.status = "constructing info";
             var symbolInfo = await SimulationUtilityV2.constructSymbolInfo(futureSymbol.symbol,props.maxInitCandles)
-
-            progressCounter.value = i + 1;
-            
 
             currentFutureSumbol.value = futureSymbol;
             futureSymbol.status = "processing";
@@ -142,6 +156,8 @@ async function runInitialScan() {
             klineDbUtilityV2.storeSymbolInfo(symbolInfo);
 
             setRecentFutureCandleData(symbolInfo.candle_15m);
+
+            updateStoreFutureSymbolSimulationStats(symbolInfo.name,symbolInfo.candle_15m);
 
             await new Promise(resolve => setTimeout(resolve, 400));
 
@@ -169,6 +185,56 @@ async function runInitialScan() {
 
 
 async function onNewCandleSpawned() {
+}
+
+function updateStoreFutureSymbolSimulationStats(symbol:string, candles:CandleInfo[]){
+    var storeFutureSymbol = chocoMintoStore.futureSymbols.find(s => s.symbol == symbol);
+    if(storeFutureSymbol){
+        // candle.positionEntry is the SAME mutated object reference on
+        // every candle a position spans, from the candle it opened on
+        // through every candle it stayed OPEN and the one it finally
+        // resolved on (see updatePositionEntry: "mutates and returns the
+        // SAME object"). Filtering/summing over candles directly, as this
+        // did before, counts and sums each position once per candle it
+        // was open for rather than once total — a position open 10
+        // candles before winning was counted as 10 wins and its pnl
+        // summed 10 times. Dedupe to one entry per distinct position
+        // (openGi) FIRST, then count/sum over that.
+        const seenOpenGis = new Set<number>();
+        const distinctPositions: PositionEntry[] = [];
+        for (const c of candles) {
+            const pe = c.positionEntry;
+            if (pe && !seenOpenGis.has(pe.openGi)) {
+                seenOpenGis.add(pe.openGi);
+                distinctPositions.push(pe);
+            }
+        }
+
+        var won = distinctPositions.filter(p => p.status == "WON").length;
+        var loss = distinctPositions.filter(p => p.status == "LOSS").length;
+        var mid = distinctPositions.filter(p => p.status == "MID").length;
+        var open = distinctPositions.filter(p => p.side && p.tp > 0 && p.sl > 0 && p.status == "OPEN").length;
+
+        var takerFee = distinctPositions.reduce((sum, p) => sum + (p.entryFee ?? 0), 0);
+        var closedPnl = distinctPositions.filter(p => p.status == "WON" || p.status == "LOSS").reduce((sum, p) => sum + (p.pnl ?? 0), 0);
+        var wonPnl = distinctPositions.filter(p => p.status == "WON").reduce((sum, p) => sum + (p.pnl ?? 0), 0);
+        var lossPnl = distinctPositions.filter(p => p.status == "LOSS").reduce((sum, p) => sum + (p.pnl ?? 0), 0);
+        var openPnl = distinctPositions.filter(p => p.side && p.tp > 0 && p.sl > 0 && p.status == "OPEN").reduce((sum, p) => sum + (p.pnl ?? 0), 0);
+
+        var simulationStats: SimulationStats = {
+            won,
+            loss,
+            open,
+            mid,
+            takerFee,
+            closedPnl,
+            openPnl,
+            lossPnl,
+            wonPnl
+        }
+
+        storeFutureSymbol.simulationStats = simulationStats;
+    }
 }
 
 function setRecentFutureCandleData(candles: CandleInfo[]){

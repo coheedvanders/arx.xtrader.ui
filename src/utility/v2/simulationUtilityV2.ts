@@ -17,6 +17,7 @@ import { getImbalanceState } from "./analysis/imbalance";
 import { checkSwingPoint, classifyMarketStructure } from "./analysis/marketStructure";
 import { initTrendTracker, stepTrendTracker, type TrendTrackerState } from "./analysis/trendState";
 import { checkPositionEntry, updatePositionEntry, DEFAULT_LEVERAGE } from "./analysis/positionEntry";
+import { computeTrendStats } from "./analysis/trendStats";
 import type { PositionEntry } from "@/core/interfacesv2";
 
 export class SimulationUtilityV2 {
@@ -28,15 +29,19 @@ export class SimulationUtilityV2 {
             candle_4h: [], //this.mapToInfo(await KlineUtility.getRecentKlines(symbol, "4h", limit)),
             candle_1d: [],//this.mapToInfo(await KlineUtility.getRecentKlines(symbol, "1d", limit)),
 
-            oi_15m: await KlineUtility.getOIByRange(symbol, "15m", limit),
+            oi_15m: [], //await KlineUtility.getOIByRange(symbol, "15m", limit),
             oi_1h: [],//await KlineUtility.getOIByRange(symbol, "1h", limit),
             oi_4h: [], //await KlineUtility.getOIByRange(symbol, "4h", limit),
             oi_1d: [],//await KlineUtility.getOIByRange(symbol, "1d", limit),
 
-            ls_15m: await KlineUtility.getLSRatioByRange(symbol, "15m", limit),
+            ls_15m: [], //await KlineUtility.getLSRatioByRange(symbol, "15m", limit),
             ls_1h: [],//await KlineUtility.getLSRatioByRange(symbol, "1h", limit),
             ls_4h: [], //await KlineUtility.getLSRatioByRange(symbol, "4h", limit),
-            ls_1d: []//await KlineUtility.getLSRatioByRange(symbol, "1d", limit),
+            ls_1d: [],//await KlineUtility.getLSRatioByRange(symbol, "1d", limit),
+
+            // Only populated once runTrendStats runs, after runAnalysis
+            // has fully processed candle_15m — see runMarketAnalysis.
+            trendstats_15m: null,
         };
 
         return symbolInfo;
@@ -47,6 +52,25 @@ export class SimulationUtilityV2 {
         // this.runAnalysis(targetSymbol, targetSymbol.candle_1h,'1h', mainMarkets);
         //this.runAnalysis(targetSymbol, targetSymbol.candle_4h,'4h', mainMarkets);
         // this.runAnalysis(targetSymbol, targetSymbol.candle_1d,'1d', mainMarkets);
+
+        //this.runTrendStats(targetSymbol, targetSymbol.candle_15m, '15m', mainMarkets);
+    }
+
+    /**
+     * Must run AFTER runAnalysis above — computeTrendStats only reads
+     * fields runAnalysis has already populated on each candle
+     * (trendState, conditions_met, extras, openInterest, longShort,
+     * volumeState); it never derives anything from raw OHLCV itself.
+     * This is a post-hoc, hindsight-aware research summary — not part
+     * of the causal walk-forward pipeline runAnalysis is (see
+     * TrendStats' own doc comment in interfacesv2.ts) — its purpose is
+     * feeding market-behavior-around-each-move back for review, to
+     * refine positionEntry.ts's own rules, not to inform any live
+     * entry decision itself.
+     */
+    static runTrendStats(targetSymbol: SymbolInfo, candles: CandleInfo[], interval: MARKET_INTERVAL, mainMarkets: SymbolInfo[]) {
+        const stats = computeTrendStats(candles);
+        if (interval === '15m') targetSymbol.trendstats_15m = stats;
     }
 
     static runAnalysis(targetSymbol: SymbolInfo, candles: CandleInfo[], interval:MARKET_INTERVAL, mainMarkets: SymbolInfo[]) {
@@ -256,128 +280,6 @@ export class SimulationUtilityV2 {
             const activePocAvwaps = currentPocAvwapValues(candles, pocAvwapAnchors, i);
             candle.priceAction = getPriceAction(movingCandles, activePocAvwaps);
 
-            // PRICE_ACTION_RESPECTED — a market structure swing just
-            // confirmed THIS step, in the SAME direction as a recent
-            // strong price action AND close (in both cases) to where
-            // that action and the current POC AVWAP actually are.
-            //
-            // Matching direction within the segment was NOT sufficient
-            // on its own — verified against real data (AIXBT, SUN,
-            // NEAR): the only boundary was the current trend segment's
-            // own start, but segments can run 200+ candles, so a swing
-            // could get credited for "respecting" a strong action from
-            // 219 candles and 21 ATRs away, nowhere near any AVWAP
-            // either (9.8 ATR away). That's not respect, that's just
-            // "somewhere in the same broad trend." Added two explicit
-            // distance checks so only a genuinely LOCAL respect counts.
-            //
-            // Search ends at confirmIdx (the actual swing candle), NOT
-            // i (this later confirmation candle) — a strongAction that
-            // happened during the 2-candle confirmation lag, AFTER the
-            // swing already formed, isn't something the swing could
-            // have been "respecting" when it formed.
-            //
-            // Lookback boundary is the current trend segment's own
-            // start (lastKnownTrendSnapshot.startGi) rather than a
-            // fixed candle count — reuse an existing structural
-            // boundary before reaching for a guessed constant. Uses
-            // lastKnownTrendSnapshot rather than candle.trendState
-            // because the latter is null on undetermined/retracement
-            // candles — exactly the candles this check needs to still
-            // see through to find the prior segment's own start.
-            if (newlyConfirmedLabel) {
-                const searchFromGi = lastKnownTrendSnapshot?.startGi ?? 0;
-                let respectedDirection: SIGNAL_DIRECTION | null = null;
-                let matchedGi = -1;
-                for (let j = confirmIdx; j >= searchFromGi; j--) {
-                    if (candles[j].priceAction?.strongAction) {
-                        respectedDirection = candles[j].priceAction!.dominant;
-                        matchedGi = j;
-                        break;
-                    }
-                }
-
-                const labelIsBullish = newlyConfirmedLabel === "HH" || newlyConfirmedLabel === "HL";
-                const labelIsBearish = newlyConfirmedLabel === "LH" || newlyConfirmedLabel === "LL";
-                const directionMatches =
-                    (respectedDirection === "LONG" && labelIsBullish) ||
-                    (respectedDirection === "SHORT" && labelIsBearish);
-
-                if (directionMatches && matchedGi >= 0 && candle.atr > 0) {
-                    // "Close" is judged from the SWING's own extreme
-                    // (its high for HH/LH, its low for HL/LL) — not this
-                    // candle's close — since the swing's own price is
-                    // what the market structure label is actually about.
-                    const swingPrice = (newlyConfirmedLabel === "HH" || newlyConfirmedLabel === "LH")
-                        ? candles[confirmIdx].high : candles[confirmIdx].low;
-
-                    // Distance to the matched strong action's OWN
-                    // tracked level (priceAction.reclaim.level) — the
-                    // AVWAP level that action's own sequence was built
-                    // around at the time it happened.
-                    const actionLevel = candles[matchedGi].priceAction?.reclaim.level;
-                    const distanceToActionAtr = actionLevel != null
-                        ? Math.abs(swingPrice - actionLevel) / candle.atr
-                        : Infinity;
-
-                    // Distance to the CURRENTLY closest active POC
-                    // AVWAP — checked separately from the action's own
-                    // level above, since the AVWAP is a MOVING line and
-                    // may have shifted since that action happened.
-                    const distanceToAvwapAtr = activePocAvwaps.length
-                        ? Math.min(...activePocAvwaps.map(a => Math.abs(swingPrice - a.value))) / candle.atr
-                        : Infinity;
-
-                    // ARBITRARY, uncalibrated — same status as every
-                    // other distance threshold in this pipeline (see
-                    // priceAction.ts's own CONFIG). The real distance
-                    // distribution across AIXBT/SUN/NEAR had no sharp
-                    // natural breakpoint to derive this from; 1.5 is a
-                    // stated guess, not a measured value.
-                    const PRICE_ACTION_RESPECTED_MAX_DISTANCE_ATR = 1.5;
-
-                    if (distanceToActionAtr <= PRICE_ACTION_RESPECTED_MAX_DISTANCE_ATR &&
-                        distanceToAvwapAtr <= PRICE_ACTION_RESPECTED_MAX_DISTANCE_ATR) {
-                        candle.conditions_met.push("PRICE_ACTION_RESPECTED");
-                        // Links this candle back to the strongAction
-                        // candle it's respecting (matchedGi) — needed
-                        // because PRICE_ACTION_RESPECTED is pushed to
-                        // THIS candle (i, the confirmation moment), not
-                        // the swing candle (confirmIdx) where the
-                        // market structure label itself lives. Without
-                        // this link, the UI has no way to show WHICH
-                        // strong action a respect dot is actually about.
-                        candle.extras.push("PRICE_ACTION_RESPECTED_LINK", matchedGi.toString());
-                    }
-                }
-            }
-
-            // RECENT_AVWAP_BODY is checked BEFORE AVWAP_BODY_BREAK is
-            // pushed below for this same candle — same ordering as
-            // RECENT_TREND_SETTER/TREND_SETTER, so a candle's own
-            // just-detected break never counts toward its own
-            // RECENT_AVWAP_BODY.
-            var hasRecentAvwapBodyBreak = movingCandles.slice(-5).some(c => c.conditions_met && c.conditions_met.includes("AVWAP_BODY_BREAK"));
-            if (hasRecentAvwapBodyBreak) {
-                candle.conditions_met.push("RECENT_AVWAP_BODY");
-            }
-
-            // AVWAP_BODY_BREAK — this candle's own BODY (open to close,
-            // not the wicks) crosses an active POC AVWAP's mid value:
-            // open and close sit on OPPOSITE sides of it. Deliberately
-            // stricter than a bare wick touch (which priceAction.ts's
-            // own "touch" trigger already checks via low/high) — this
-            // is about whether the candle actually closed through the
-            // level with conviction, not just wicked into it.
-            for (const p of activePocAvwaps) {
-                const brokeUp = candle.open < p.value && candle.close > p.value;
-                const brokeDown = candle.open > p.value && candle.close < p.value;
-                if (brokeUp || brokeDown) {
-                    candle.conditions_met.push("AVWAP_BODY_BREAK");
-                    break;
-                }
-            }
-
             // Playback snapshot — records, into extras (no new interface
             // fields), what the tracker's state looked like AS OF this
             // exact candle's own processing step. Updated whenever a
@@ -408,32 +310,47 @@ export class SimulationUtilityV2 {
             candle.extras.push(JSON.stringify(candle.trendState))
             candle.extras.push(i.toString())
 
-            // Position simulation — advance an open position first; only
-            // check for a NEW entry if nothing is currently open (one
-            // position at a time, matching the reference logic this
-            // mirrors). durationMinutes is computed here rather than
-            // inside updatePositionEntry, since only this loop has the
-            // full candles array to look up the entry candle's own
-            // openTime.
-            // if (openPosition) {
-            //     updatePositionEntry(openPosition, candle, i);
-            //     // closeTime is never actually populated anywhere in this
-            //     // pipeline (mapToInfo only maps openTime) — using it here
-            //     // would silently produce NaN. Duration is instead derived
-            //     // from the known, fixed interval this call was made with.
-            //     const intervalMinutes = { "15m": 15, "1h": 60, "4h": 240, "1d": 1440 }[interval];
-            //     openPosition.durationMinutes = (i - openPosition.openGi) * intervalMinutes;
-            //     candle.positionEntry = openPosition;
-            //     if (openPosition.status !== "OPEN") {
-            //         openPosition = null;
-            //     }
-            // } else {
-            //     const newPosition = checkPositionEntry(candle, activePocAvwaps, previousTrendCloud, (lastKnownTrendSnapshot?.direction as "UP" | "DOWN" | undefined) ?? null, i, POSITION_MARGIN, DEFAULT_LEVERAGE);
-            //     if (newPosition) {
-            //         openPosition = newPosition;
-            //         candle.positionEntry = openPosition;
-            //     }
-            // }
+            if(i >= 2){
+                var past3Candles = movingCandles.slice(-4).filter(c => c.openTime < candle.openTime);
+                var past3CandlesHasTrend = past3Candles.filter(c => c.trendState && c.trendState.direction).length >= 3;
+                var currentCandleDoesntHaveATrend = !candle.trendState
+                if(currentCandleDoesntHaveATrend && past3CandlesHasTrend){
+                    candle.conditions_met.push("POTENTIAL_REVERSAL");
+                }
+            }
+
+            // Position simulation — one at a time, matching the
+            // established pattern elsewhere in this pipeline. Advance
+            // an already-open position first; only look for a new
+            // entry once nothing is open. reversingDirection/
+            // reversingSegmentStartGi come straight from
+            // lastKnownTrendSnapshot — the trend that's actually
+            // reversing right now, not the older previousTrendCloud
+            // (see positionEntry.ts's own header for why that
+            // distinction matters).
+            if (openPosition) {
+                const intervalMinutes = { "15m": 15, "1h": 60, "4h": 240, "1d": 1440 }[interval];
+                updatePositionEntry(openPosition, candle, i);
+                openPosition.durationMinutes = (i - openPosition.openGi) * intervalMinutes;
+                candle.positionEntry = openPosition;
+                if (openPosition.status !== "OPEN") {
+                    openPosition = null;
+                }
+            } else {
+                const newPosition = checkPositionEntry(
+                    candle,
+                    candles,
+                    i,
+                    (lastKnownTrendSnapshot?.direction as "UP" | "DOWN" | undefined) ?? null,
+                    lastKnownTrendSnapshot?.startGi ?? null,
+                    POSITION_MARGIN,
+                    DEFAULT_LEVERAGE
+                );
+                if (newPosition) {
+                    openPosition = newPosition;
+                    candle.positionEntry = openPosition;
+                }
+            }
         }
     }
 

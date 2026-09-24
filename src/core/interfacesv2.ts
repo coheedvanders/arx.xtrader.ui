@@ -269,6 +269,80 @@ export interface SymbolInfo {
     ls_1h: LongShortRatioEntry[]
     ls_4h: LongShortRatioEntry[]
     ls_1d: LongShortRatioEntry[]
+
+    // Computed AFTER runAnalysis has fully populated candle_15m (see
+    // SimulationUtilityV2.runTrendStats) — a post-hoc, hindsight-aware
+    // summary pass over the already-analyzed candles, not part of the
+    // causal walk-forward pipeline itself. Its purpose is research
+    // review (surfacing market behavior around each move for analysis),
+    // not a live trading input — unlike positionEntry.ts, look-ahead
+    // is fine here since nothing here feeds back into an entry decision.
+    trendstats_15m: TrendStats | null
+}
+
+export interface TrendSegmentStats {
+    direction: "UP" | "DOWN"
+    startGi: number
+    endGi: number
+    startOpenTime: number
+    endOpenTime: number
+    // The confirming candle's own openTime (same value as
+    // TrendSegmentInfo.confirmedOpenTime) — repeated here so a segment
+    // stat is self-contained without needing to cross-reference candles.
+    confirmedOpenTime: number
+    // THE LAG — candles between this segment's own pivot (startGi) and
+    // the candle that actually confirmed the reversal establishing it.
+    // Always >= 0; a segment's true start is only ever knowable in
+    // hindsight, this is exactly how much hindsight was needed.
+    confirmationLagCandles: number
+    durationCandles: number
+    // close-to-close, not high/low-to-high/low — consistent, simple
+    // basis for comparing segments against each other.
+    priceChangePercent: number
+    // priceChangePercent / durationCandles — a segment's own "steepness":
+    // a large magnitude means a sharp move packed into few candles: a
+    // small one means a slow, long-spanning move. Deliberately left as
+    // a raw, signed number rather than pre-sorted into "sharp" or
+    // "long-spanning" buckets — sort/filter on this and durationCandles
+    // directly rather than trusting an arbitrary bucket boundary.
+    changePerCandlePercent: number
+    // Descriptive aggregates of what OI/LS/volume were doing DURING this
+    // segment — context to review, not a score. Null when that field
+    // was never populated on the underlying candles.
+    avgOpenInterestChangePercent: number | null
+    dominantLongShortState: LS_STATE | null
+    avgRelativeVolume: number | null
+}
+
+export interface AvwapBreakEvent {
+    gi: number
+    openTime: number
+    // The specific POC AVWAP value the candle's own body broke through
+    // (see AVWAP_BODY_BREAK_LEVEL in simulationUtilityV2.ts's extras).
+    avwapLevel: number
+    // Which way the candle's body crossed the level.
+    breakDirection: "UP" | "DOWN"
+    // CONTINUATION: price moved further past the level in breakDirection
+    // by the stated ATR threshold before ever reversing back through it.
+    // SWEEP_REVERSAL: price crossed back through the level in the
+    // OPPOSITE direction by the stated threshold first — read literally
+    // per the request this answers: "price breaks AVWAP high/low then
+    // reverses back — more likely a sweep before going the other way."
+    // UNRESOLVED: neither happened within the lookahead window.
+    outcome: "CONTINUATION" | "SWEEP_REVERSAL" | "UNRESOLVED"
+    // The candle where the outcome above was actually determined — null
+    // for UNRESOLVED, since nothing resolved it within the window.
+    resolvedAtGi: number | null
+    // Context AT the moment of the break itself — same "descriptive,
+    // not a score" status as TrendSegmentStats' own aggregates.
+    openInterestChangePercent: number | null
+    longShortState: LS_STATE | null
+    relativeVolume: number | null
+}
+
+export interface TrendStats {
+    segments: TrendSegmentStats[]
+    avwapBreakEvents: AvwapBreakEvent[]
 }
 
 export interface CandleInfo {
@@ -335,6 +409,11 @@ export interface PositionEntry {
     leverage: number
     sl: number
     tp: number
+    // Taker fee charged to open this position, in USDT — via
+    // PnlUtility.calculateTakerFee(margin, leverage). Captured once at
+    // entry (fee is fixed by margin/leverage at open time, doesn't
+    // change as the position runs).
+    entryFee: number
     // ATR-normalized excursions, updated every candle the position is
     // open (including the candle it resolves on) — MAE is the worst
     // (most against) move seen, MFE the best (most favorable), both
@@ -348,6 +427,22 @@ export interface PositionEntry {
     // Mark-to-market while OPEN, final realized value once WON/LOSS,
     // null for MID (unresolvable) and before entry.
     pnl: number | null
+    // Per-candle pnl HISTORY, indexed by candles-since-open:
+    // walkingPnl[k] is the pnl as of candle (openGi + k) — so
+    // walkingPnl[gi - openGi] gives the pnl AT any specific gi the
+    // position covered. walkingPnl[0] is always 0 (pnl is trivially 0
+    // at the entry candle itself, since entryPrice === that candle's
+    // own close). The LAST entry always equals the final `pnl` once
+    // resolved (WON/LOSS), or null for MID at that final index.
+    //
+    // Exists because candle.positionEntry is the SAME mutated object
+    // referenced from every candle the position spans — reading `pnl`
+    // from an EARLIER candle mid-replay would show the position's
+    // FINAL outcome, not what it actually was at that point in time,
+    // since it's one shared object, not a snapshot per candle.
+    // walkingPnl is what actually varies by which candle you're
+    // looking from; `pnl` alone does not.
+    walkingPnl: (number | null)[]
     openGi: number
     closeGi: number | null
     durationMinutes: number | null
@@ -595,6 +690,24 @@ export interface VolumeState {
 
     averageVolume: number
     relativeVolume: number
+    // Standard-deviations from the mean, using the SAME dynamically
+    // sized baseline as relativeVolume/averageVolume (see
+    // getAdaptiveLookback in volumeState.ts) - not a separate fixed
+    // window. relativeVolume answers "how many times normal";
+    // dynamicZScore answers "how statistically unusual", which needs
+    // the baseline's own spread (stdDev), not just its mean. 0 when
+    // the baseline has zero variance (e.g. a single-candle baseline)
+    // or volume data isn't available - see volumeState.ts's own
+    // reasons strings to distinguish "genuinely flat" from "not
+    // enough data."
+    dynamicZScore: number
+    // Standard-deviations from the mean of THIS candle's own trend
+    // segment's volume (candle.trendState.startGi..endGi, excluding
+    // this candle itself) - a structural baseline instead of a
+    // rolling one. 0 whenever the candle isn't currently classified
+    // into a trend (trendState is null) or the trend hasn't produced
+    // enough prior candles yet to have a baseline of its own.
+    trendZScore: number
 
     volumeChange: number
     volumeChangePercent: number

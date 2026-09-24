@@ -90,6 +90,25 @@ class KlineDbUtilityV2 {
   }
 
   /**
+   * Wipes every stored SymbolInfo record in one shot (native
+   * IDBObjectStore.clear(), not a loop of individual deletes) - for
+   * starting a fresh capture with no stale data left over from a
+   * previous run.
+   */
+  async clearAllSymbolInfo(): Promise<void> {
+    await this.init();
+
+    return new Promise<void>((resolve, reject) => {
+      const tx = this.db!.transaction([this.symbolInfoStoreName], "readwrite");
+      const store = tx.objectStore(this.symbolInfoStoreName);
+      const req = store.clear();
+
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  /**
    * Returns all stored symbol names currently cached in IndexedDB.
    */
   async getAllSymbolNames(): Promise<string[]> {
