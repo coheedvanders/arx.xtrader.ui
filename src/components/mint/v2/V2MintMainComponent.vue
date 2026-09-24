@@ -19,6 +19,7 @@
         <ButtonComponent v-if="!isBotEnabled" @click="runManualSimulation" rounded class="mr-sm">run all simulation</ButtonComponent>
 
         <ButtonComponent @click="UI_SHOW_TRADE_REPLAY = true" color="ghost" rounded class="mr-sm">view trade replay</ButtonComponent>
+        <ButtonComponent @click="UI_SHOW_ROLLING_SIMULATION = true" color="ghost" rounded class="mr-sm">run rolling simulation</ButtonComponent>
 
         <label class="ml-sm">
             <input type="checkbox" v-model="onlyInterestingSymbols" />
@@ -173,6 +174,11 @@
         <TradeReplayComponent :starting-balance="STARTING_BALANCE" />
     </DialogComponent>
 
+    <DialogComponent v-model="UI_SHOW_ROLLING_SIMULATION" :width="'95vw'">
+        <DialogHeaderComponent>Rolling Trade Simulation</DialogHeaderComponent>
+        <RollingTradeSimulationComponent :starting-balance="STARTING_BALANCE" />
+    </DialogComponent>
+
 </template>
 
 <script setup lang="ts">
@@ -193,6 +199,7 @@ import { BinanceMarginUtility } from '@/utility/binanceMarginUtility';
 import CandleEntryHistoryComponent from '../CandleEntryHistoryComponent.vue';
 import ReplayCandleEntryComponent from '../ReplayCandleEntryComponent.vue';
 import TradeReplayComponent from './TradeReplayComponent.vue';
+import RollingTradeSimulationComponent from './RollingTradeSimulationComponent.vue';
 import { useNotificationStore } from '@/stores/notificationStore';
 import TableBodyComponent from '../../shared/table/TableBodyComponent.vue';
 import TableHeaderComponent from '../../shared/table/TableHeaderComponent.vue';
@@ -230,6 +237,7 @@ const UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE = ref("")
 const UI_STATE_FORCE_CLOSE_MESSAGE = ref('')
 const UI_SHOW_REPLAY = ref(false)
 const UI_SHOW_TRADE_REPLAY = ref(false)
+const UI_SHOW_ROLLING_SIMULATION = ref(false)
 
 // When on, a symbol pre-scan runs before the main simulation and the
 // scanner only processes symbols that scan found interesting right now

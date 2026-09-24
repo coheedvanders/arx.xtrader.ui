@@ -191,6 +191,13 @@ export function checkPositionEntry(
         if (sl <= entryPrice || tp >= entryPrice) return null; // guards the inversion bug found in earlier testing
         return {
             side: "SHORT", entryPrice, margin, leverage, sl, tp,
+            entryReason: {
+                trigger: "POTENTIAL_REVERSAL",
+                reversingDirection: "UP",
+                segmentLow: range.low, segmentHigh: range.high, segmentMid: mid,
+                broaderMoveAtr: broader, exhaustionWickRatio: wick, trendZScoreAvg: trendZ,
+                summary: `SHORT: UP trend reversing; 24h context ${broader.toFixed(2)} ATR, exhaustion wick ${wick.toFixed(2)} ATR, trend volume z-score avg ${trendZ.toFixed(2)}`,
+            },
             entryFee: PnlUtility.calculateTakerFee(margin, leverage),
             mae: 0, mfe: 0, status: "OPEN", pnl: 0, walkingPnl: [0],
             openGi: gi, closeGi: null, durationMinutes: null,
@@ -201,8 +208,21 @@ export function checkPositionEntry(
         const sl = range.low - LONG_SL_ATR * atr;
         const tp = mid + LONG_TP_ATR * atr;
         if (sl >= entryPrice || tp <= entryPrice) return null;
+        const segmentProgress = range.high > range.low ? (entryPrice - range.low) / (range.high - range.low) : null;
         return {
             side: "LONG", entryPrice, margin, leverage, sl, tp,
+            entryReason: {
+                trigger: "POTENTIAL_REVERSAL",
+                reversingDirection: "DOWN",
+                segmentLow: range.low, segmentHigh: range.high, segmentMid: mid,
+                broaderMoveAtr: null, exhaustionWickRatio: null, trendZScoreAvg: null,
+                // % into the segment's own range at entry - the exact
+                // metric that explained LONG's bad-RR pattern in an
+                // earlier research pass (0% bad-RR below ~20% progress,
+                // 60% above it) - visible here directly, not something
+                // that needs re-deriving from raw candles later.
+                summary: `LONG: DOWN trend reversing; entry ${segmentProgress != null ? (segmentProgress * 100).toFixed(0) + "%" : "?"} into the segment's own range`,
+            },
             entryFee: PnlUtility.calculateTakerFee(margin, leverage),
             mae: 0, mfe: 0, status: "OPEN", pnl: 0, walkingPnl: [0],
             openGi: gi, closeGi: null, durationMinutes: null,
@@ -286,6 +306,44 @@ export function updatePositionEntry(position: PositionEntry, candle: CandleInfo,
     // still OPEN, the final realized value if WON/LOSS, null if MID),
     // and walkingPnl is exactly that value's history over time.
     position.walkingPnl.push(position.pnl);
+
+    return position;
+}
+
+/**
+ * Force-closes a still-OPEN position at whatever it's worth on this
+ * exact candle, classifying WON/LOSS purely by the sign of the
+ * resulting pnl (not by SL/TP - this isn't a real exit, it's a
+ * duration cap giving up on the position). Same leveraged pnl formula
+ * as every other exit, so this number is consistent with how the
+ * position would read if it had resolved normally.
+ *
+ * Deliberately a SEPARATE function from updatePositionEntry rather
+ * than a flag inside it — the ordinary live/backtest path never calls
+ * this; only a caller that explicitly wants a duration cap (see
+ * runAnalysis's own maxPositionDurationCandles parameter) does.
+ * Keeping it isolated means the default behavior everywhere else is
+ * provably unchanged.
+ */
+export function forceClosePosition(position: PositionEntry, candle: CandleInfo, closeGi: number): PositionEntry {
+    const pnlPercent = ((candle.close - position.entryPrice) / position.entryPrice) * (position.side === "LONG" ? 1 : -1) * position.leverage;
+    const pnl = position.margin * pnlPercent;
+
+    position.status = pnl >= 0 ? "WON" : "LOSS";
+    position.pnl = pnl;
+    position.closeGi = closeGi;
+    // Overwrites, not pushes: this is meant to be called immediately
+    // after updatePositionEntry on the SAME candle, which already
+    // pushed a mark-to-market entry for this exact gi. The forced
+    // value supersedes that entry rather than adding a second one for
+    // the same candle - walkingPnl must stay exactly one entry per
+    // candle (walkingPnl[gi - openGi]) or every index past this point
+    // would be shifted by one.
+    if (position.walkingPnl.length > 0) {
+        position.walkingPnl[position.walkingPnl.length - 1] = pnl;
+    } else {
+        position.walkingPnl.push(pnl);
+    }
 
     return position;
 }

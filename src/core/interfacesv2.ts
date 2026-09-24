@@ -402,6 +402,30 @@ export interface CandleInfo {
     positionEntry: PositionEntry | null
 }
 
+// Captures WHY an entry actually fired, in structured, analyzable form
+// (not just a prose sentence) - so a batch of positions can be grouped
+// and studied by which factors were true at entry, matching how every
+// other piece of this pipeline has been designed to stay analyzable
+// rather than just readable. SHORT-only fields are null for LONG,
+// since LONG's current entry logic has no extra confirmation gates -
+// segmentLow/High/Mid are populated for both sides, since that
+// geometry alone was enough to find and explain the LONG "late entry"
+// bad-RR pattern in an earlier research pass.
+export interface PositionEntryReason {
+    trigger: "POTENTIAL_REVERSAL"
+    reversingDirection: "UP" | "DOWN"
+    segmentLow: number
+    segmentHigh: number
+    segmentMid: number
+    // null for LONG - these are SHORT-only confirmation checks.
+    broaderMoveAtr: number | null
+    exhaustionWickRatio: number | null
+    trendZScoreAvg: number | null
+    // Short, human-readable summary for quick scanning without having
+    // to interpret the raw numbers above.
+    summary: string
+}
+
 export interface PositionEntry {
     side: "LONG" | "SHORT"
     entryPrice: number
@@ -409,6 +433,8 @@ export interface PositionEntry {
     leverage: number
     sl: number
     tp: number
+    // Why this specific entry fired - see PositionEntryReason.
+    entryReason: PositionEntryReason
     // Taker fee charged to open this position, in USDT — via
     // PnlUtility.calculateTakerFee(margin, leverage). Captured once at
     // entry (fee is fixed by margin/leverage at open time, doesn't

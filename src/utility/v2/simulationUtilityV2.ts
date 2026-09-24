@@ -16,7 +16,7 @@ import { getLiquiditySweepInfo } from "./analysis/liquidationSweepInfo";
 import { getImbalanceState } from "./analysis/imbalance";
 import { checkSwingPoint, classifyMarketStructure } from "./analysis/marketStructure";
 import { initTrendTracker, stepTrendTracker, type TrendTrackerState } from "./analysis/trendState";
-import { checkPositionEntry, updatePositionEntry, DEFAULT_LEVERAGE } from "./analysis/positionEntry";
+import { checkPositionEntry, updatePositionEntry, forceClosePosition, DEFAULT_LEVERAGE } from "./analysis/positionEntry";
 import { computeTrendStats } from "./analysis/trendStats";
 import type { PositionEntry } from "@/core/interfacesv2";
 
@@ -47,13 +47,19 @@ export class SimulationUtilityV2 {
         return symbolInfo;
     }
 
-    static async runMarketAnalysis(targetSymbol: SymbolInfo, mainMarkets: SymbolInfo[]) {
-        this.runAnalysis(targetSymbol, targetSymbol.candle_15m,'15m', mainMarkets);
+    static async runMarketAnalysis(
+        targetSymbol: SymbolInfo,
+        mainMarkets: SymbolInfo[],
+        initialOpenPosition: PositionEntry | null = null,
+        maxPositionDurationCandles?: number
+    ): Promise<{ openPosition: PositionEntry | null }> {
+        const result = this.runAnalysis(targetSymbol, targetSymbol.candle_15m, '15m', mainMarkets, initialOpenPosition, maxPositionDurationCandles);
         // this.runAnalysis(targetSymbol, targetSymbol.candle_1h,'1h', mainMarkets);
         //this.runAnalysis(targetSymbol, targetSymbol.candle_4h,'4h', mainMarkets);
         // this.runAnalysis(targetSymbol, targetSymbol.candle_1d,'1d', mainMarkets);
 
         //this.runTrendStats(targetSymbol, targetSymbol.candle_15m, '15m', mainMarkets);
+        return result;
     }
 
     /**
@@ -73,7 +79,7 @@ export class SimulationUtilityV2 {
         if (interval === '15m') targetSymbol.trendstats_15m = stats;
     }
 
-    static runAnalysis(targetSymbol: SymbolInfo, candles: CandleInfo[], interval:MARKET_INTERVAL, mainMarkets: SymbolInfo[]) {
+    static runAnalysis(targetSymbol: SymbolInfo, candles: CandleInfo[], interval:MARKET_INTERVAL, mainMarkets: SymbolInfo[], initialOpenPosition: PositionEntry | null = null, maxPositionDurationCandles?: number): { openPosition: PositionEntry | null } {
         // Classic 5-candle fractal (2 candles required on either side to
         // confirm a swing) — a standard, conventional choice, not derived
         // from anything in this data; arbitrary in the sense that other
@@ -115,7 +121,17 @@ export class SimulationUtilityV2 {
         // current, still-ongoing one) — updated whenever a commit
         // happens, to the segment that JUST finished. This is what the
         // entry rules mean by "the previous trend['s mid/low/high]".
-        let openPosition: PositionEntry | null = null;
+        //
+        // openPosition starts from initialOpenPosition when provided -
+        // lets a caller resume a position that was already open going
+        // INTO this call (e.g. a rolling-window replay carrying a
+        // position across a window shift), rather than always starting
+        // fresh. The existing if(openPosition)/else branch below
+        // already does exactly the right thing with this: if it's
+        // non-null, checkPositionEntry is never called for this symbol
+        // until the resumed position resolves, so a carried-over
+        // position can never be silently overwritten by a new one.
+        let openPosition: PositionEntry | null = initialOpenPosition;
         let previousTrendCloud: { minLow: number; maxHigh: number } | null = null;
         // Stated by the user directly (not arbitrary): 2 USDT margin per position.
         const POSITION_MARGIN = 2;
@@ -328,14 +344,43 @@ export class SimulationUtilityV2 {
             // reversing right now, not the older previousTrendCloud
             // (see positionEntry.ts's own header for why that
             // distinction matters).
-            if (openPosition) {
+            if (openPosition && i > openPosition.openGi) {
                 const intervalMinutes = { "15m": 15, "1h": 60, "4h": 240, "1d": 1440 }[interval];
                 updatePositionEntry(openPosition, candle, i);
+
+                // Only active when a caller explicitly passes this -
+                // MarketScannerComponent's own existing call never does,
+                // so its behavior is provably unchanged. A rolling-
+                // window "rigorous test" replay is the one caller that
+                // wants a hard cap on how long a single position can
+                // occupy a symbol's one-at-a-time slot.
+                if (
+                    openPosition.status === "OPEN" &&
+                    maxPositionDurationCandles != null &&
+                    (i - openPosition.openGi) >= maxPositionDurationCandles
+                ) {
+                    forceClosePosition(openPosition, candle, i);
+                }
+
                 openPosition.durationMinutes = (i - openPosition.openGi) * intervalMinutes;
                 candle.positionEntry = openPosition;
                 if (openPosition.status !== "OPEN") {
                     openPosition = null;
                 }
+            } else if (openPosition) {
+                // openPosition is set but this candle is AT OR BEFORE
+                // its own openGi - only possible via a resumed position
+                // whose (remapped) openGi lands later than index 0 in
+                // THIS particular array. Do nothing here: not yet time
+                // to update it, and definitely not a vacant slot to
+                // open a new position into. Without this branch, a
+                // naive re-run from i=0 on a resumed position would
+                // call updatePositionEntry on candles BEFORE it ever
+                // opened, corrupting walkingPnl with wrong/duplicate
+                // entries on every subsequent window shift. Still just
+                // set candle.positionEntry so this candle's own display
+                // reflects the resumed position correctly either way.
+                candle.positionEntry = openPosition;
             } else {
                 const newPosition = checkPositionEntry(
                     candle,
@@ -352,6 +397,8 @@ export class SimulationUtilityV2 {
                 }
             }
         }
+
+        return { openPosition };
     }
 
     //HELPERS
