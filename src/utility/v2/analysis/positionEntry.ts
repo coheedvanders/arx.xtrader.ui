@@ -160,11 +160,20 @@ export function checkPositionEntry(
     reversingDirection: "UP" | "DOWN" | null,
     reversingSegmentStartGi: number | null,
     margin: number,
-    leverage: number
+    leverage: number,
+    allowLong: boolean = true,
+    allowShort: boolean = true
 ): PositionEntry | null {
     if (!candle.conditions_met?.includes("POTENTIAL_REVERSAL")) return null;
     if (!reversingDirection || reversingSegmentStartGi == null) return null;
     if (!(candle.atr > 0)) return null;
+
+    // An UP trend reversing produces a SHORT; a DOWN trend reversing
+    // produces a LONG. Bail out before doing any of that side's work
+    // when its own flag is off. Both default to true, so existing
+    // callers that don't pass them behave exactly as before.
+    if (reversingDirection === "UP" && !allowShort) return null;
+    if (reversingDirection === "DOWN" && !allowLong) return null;
 
     const range = currentSegmentRange(candles, reversingSegmentStartGi, gi);
     if (!range) return null;
@@ -191,6 +200,7 @@ export function checkPositionEntry(
         if (sl <= entryPrice || tp >= entryPrice) return null; // guards the inversion bug found in earlier testing
         return {
             side: "SHORT", entryPrice, margin, leverage, sl, tp,
+            openTime: candle.openTime,
             entryReason: {
                 trigger: "POTENTIAL_REVERSAL",
                 reversingDirection: "UP",
@@ -199,7 +209,7 @@ export function checkPositionEntry(
                 summary: `SHORT: UP trend reversing; 24h context ${broader.toFixed(2)} ATR, exhaustion wick ${wick.toFixed(2)} ATR, trend volume z-score avg ${trendZ.toFixed(2)}`,
             },
             entryFee: PnlUtility.calculateTakerFee(margin, leverage),
-            mae: 0, mfe: 0, status: "OPEN", pnl: 0, walkingPnl: [0],
+            mae: 0, mfe: 0, exitFee: null, fundingPaid: 0, status: "OPEN", pnl: 0, walkingPnl: [0],
             openGi: gi, closeGi: null, durationMinutes: null,
         };
     } else {
@@ -211,6 +221,7 @@ export function checkPositionEntry(
         const segmentProgress = range.high > range.low ? (entryPrice - range.low) / (range.high - range.low) : null;
         return {
             side: "LONG", entryPrice, margin, leverage, sl, tp,
+            openTime: candle.openTime,
             entryReason: {
                 trigger: "POTENTIAL_REVERSAL",
                 reversingDirection: "DOWN",
@@ -224,7 +235,7 @@ export function checkPositionEntry(
                 summary: `LONG: DOWN trend reversing; entry ${segmentProgress != null ? (segmentProgress * 100).toFixed(0) + "%" : "?"} into the segment's own range`,
             },
             entryFee: PnlUtility.calculateTakerFee(margin, leverage),
-            mae: 0, mfe: 0, status: "OPEN", pnl: 0, walkingPnl: [0],
+            mae: 0, mfe: 0, exitFee: null, fundingPaid: 0, status: "OPEN", pnl: 0, walkingPnl: [0],
             openGi: gi, closeGi: null, durationMinutes: null,
         };
     }
@@ -262,14 +273,33 @@ export function updatePositionEntry(position: PositionEntry, candle: CandleInfo,
             position.status = "MID";
             position.pnl = null;
             position.closeGi = closeGi;
+            position.closeReason = "MID";
         } else if (hitSl) {
+            // GAP-AWARE FILL. Filling at exactly `sl` assumes the stop
+            // was always reachable at its own price - but if this candle
+            // OPENED past the stop, the market gapped through it while no
+            // trading happened at that level, and a resting stop fills at
+            // the open instead, worse. Alt perps gap on news and on
+            // thin-liquidity hours, so this is not a rare edge case.
+            // Math.min(open, sl) resolves to sl in the ordinary case and to the
+            // open only when the gap actually happened.
+            const fill = Math.min(candle.open, position.sl);
             position.status = "LOSS";
-            position.pnl = calculatePnl(position.entryPrice, position.sl, "LONG");
+            position.pnl = calculatePnl(position.entryPrice, fill, "LONG");
+            position.exitPrice = fill;
             position.closeGi = closeGi;
+            position.closeReason = "SL";
         } else if (hitTp) {
+            // Same treatment on the favorable side, for symmetry and
+            // honesty: a candle that opened past the target fills THERE,
+            // which is better than the target. Modelling only the adverse
+            // gap and not this one would bias the result downward.
+            const fill = Math.max(candle.open, position.tp);
             position.status = "WON";
-            position.pnl = calculatePnl(position.entryPrice, position.tp, "LONG");
+            position.pnl = calculatePnl(position.entryPrice, fill, "LONG");
+            position.exitPrice = fill;
             position.closeGi = closeGi;
+            position.closeReason = "TP";
         } else {
             position.status = "OPEN";
             position.pnl = calculatePnl(position.entryPrice, candle.close, "LONG");
@@ -287,25 +317,81 @@ export function updatePositionEntry(position: PositionEntry, candle: CandleInfo,
             position.status = "MID";
             position.pnl = null;
             position.closeGi = closeGi;
+            position.closeReason = "MID";
         } else if (hitSl) {
+            // GAP-AWARE FILL. Filling at exactly `sl` assumes the stop
+            // was always reachable at its own price - but if this candle
+            // OPENED past the stop, the market gapped through it while no
+            // trading happened at that level, and a resting stop fills at
+            // the open instead, worse. Alt perps gap on news and on
+            // thin-liquidity hours, so this is not a rare edge case.
+            // Math.max(open, sl) resolves to sl in the ordinary case and to the
+            // open only when the gap actually happened.
+            const fill = Math.max(candle.open, position.sl);
             position.status = "LOSS";
-            position.pnl = calculatePnl(position.entryPrice, position.sl, "SHORT");
+            position.pnl = calculatePnl(position.entryPrice, fill, "SHORT");
+            position.exitPrice = fill;
             position.closeGi = closeGi;
+            position.closeReason = "SL";
         } else if (hitTp) {
+            // Same treatment on the favorable side, for symmetry and
+            // honesty: a candle that opened past the target fills THERE,
+            // which is better than the target. Modelling only the adverse
+            // gap and not this one would bias the result downward.
+            const fill = Math.min(candle.open, position.tp);
             position.status = "WON";
-            position.pnl = calculatePnl(position.entryPrice, position.tp, "SHORT");
+            position.pnl = calculatePnl(position.entryPrice, fill, "SHORT");
+            position.exitPrice = fill;
             position.closeGi = closeGi;
+            position.closeReason = "TP";
         } else {
             position.status = "OPEN";
             position.pnl = calculatePnl(position.entryPrice, candle.close, "SHORT");
         }
     }
 
-    // One push covers all branches above - position.pnl has just been
-    // set to whatever this candle's outcome was (mark-to-market if
-    // still OPEN, the final realized value if WON/LOSS, null if MID),
-    // and walkingPnl is exactly that value's history over time.
-    position.walkingPnl.push(position.pnl);
+    // Exit taker fee, charged on the EXIT notional (quantity x exit
+    // price), not the entry notional - a position that moved pays a
+    // different fee out than it paid in. Previously never charged at all,
+    // which understated round-trip cost by almost exactly half.
+    //
+    // ASSIGNED, not accumulated: the rolling simulation re-runs this same
+    // analysis over its whole window on every shift, so a `+=` here would
+    // grow without bound - the same trap walkingPnl's index-based write
+    // exists to avoid. Assignment is idempotent; a repeat pass writes the
+    // identical value.
+    if (position.status !== "OPEN" && position.exitPrice != null) {
+        const quantity = (position.margin * position.leverage) / position.entryPrice;
+        position.exitFee = PnlUtility.calculateTakerFeeOnNotional(Math.abs(quantity * position.exitPrice));
+    }
+
+    // walkingPnl[k] is the pnl as of candle (openGi + k), so this
+    // candle's own slot is exactly (closeGi - openGi). WRITING to that
+    // index rather than blindly appending is what makes this safe to
+    // call more than once for the same candle.
+    //
+    // That matters because the rolling simulation re-runs the whole
+    // analysis over its entire 500-candle window on every window shift,
+    // so every candle from openGi to the window's end gets
+    // updatePositionEntry called again on each pass. The old
+    // unconditional push therefore appended (windowEnd - openGi)
+    // entries per shift instead of one, growing quadratically with a
+    // position's age - real exports showed walkingPnl reaching 31,376
+    // entries against a true ceiling of 251 (the 250-candle duration
+    // cap plus the entry candle's own leading 0). Indexing makes a
+    // repeat pass overwrite the same slot with the same value instead.
+    //
+    // A gap can only appear if this were called with candles skipped,
+    // which the walk-forward loop never does; filling with null rather
+    // than leaving holes keeps the array dense either way, and null is
+    // already a valid walkingPnl entry (it's what MID status records).
+    const walkingIndex = closeGi - position.openGi;
+    if (walkingIndex >= 0) {
+        while (position.walkingPnl.length < walkingIndex) {
+            position.walkingPnl.push(null);
+        }
+        position.walkingPnl[walkingIndex] = position.pnl;
+    }
 
     return position;
 }
@@ -325,24 +411,45 @@ export function updatePositionEntry(position: PositionEntry, candle: CandleInfo,
  * Keeping it isolated means the default behavior everywhere else is
  * provably unchanged.
  */
-export function forceClosePosition(position: PositionEntry, candle: CandleInfo, closeGi: number): PositionEntry {
+export function forceClosePosition(
+    position: PositionEntry,
+    candle: CandleInfo,
+    closeGi: number,
+    // WHY this force-close happened. Defaults to EXPIRED because the
+    // duration cap is the only caller that existed when this function
+    // was written; a scheduled portfolio-wide close passes AUTO_CLOSE.
+    // Recorded because status alone can't carry it - see
+    // PositionEntry.closeReason. A WON here means "closed above water",
+    // NOT "the strategy's take-profit was reached".
+    reason: "EXPIRED" | "AUTO_CLOSE" | "LIQUIDATED" = "EXPIRED"
+): PositionEntry {
     const pnlPercent = ((candle.close - position.entryPrice) / position.entryPrice) * (position.side === "LONG" ? 1 : -1) * position.leverage;
     const pnl = position.margin * pnlPercent;
 
     position.status = pnl >= 0 ? "WON" : "LOSS";
     position.pnl = pnl;
     position.closeGi = closeGi;
-    // Overwrites, not pushes: this is meant to be called immediately
-    // after updatePositionEntry on the SAME candle, which already
-    // pushed a mark-to-market entry for this exact gi. The forced
-    // value supersedes that entry rather than adding a second one for
-    // the same candle - walkingPnl must stay exactly one entry per
-    // candle (walkingPnl[gi - openGi]) or every index past this point
-    // would be shifted by one.
-    if (position.walkingPnl.length > 0) {
-        position.walkingPnl[position.walkingPnl.length - 1] = pnl;
-    } else {
-        position.walkingPnl.push(pnl);
+    position.closeReason = reason;
+    // A force-close is a market exit at this candle's close - so it pays
+    // a taker fee exactly like any other exit. LIQUIDATED included: a
+    // liquidation is still a fill, and in reality costs more than this.
+    position.exitPrice = candle.close;
+    const quantity = (position.margin * position.leverage) / position.entryPrice;
+    position.exitFee = PnlUtility.calculateTakerFeeOnNotional(Math.abs(quantity * candle.close));
+    // Same index-based write as updatePositionEntry (which this is
+    // called immediately after, on the SAME candle) - so the forced
+    // value lands in that candle's own slot, superseding the
+    // mark-to-market value already written there rather than adding a
+    // second entry for the same candle. Previously this overwrote the
+    // LAST element, which was only correct while walkingPnl was built
+    // by appending; with index-based writes the last element is not
+    // necessarily this candle's slot.
+    const walkingIndex = closeGi - position.openGi;
+    if (walkingIndex >= 0) {
+        while (position.walkingPnl.length < walkingIndex) {
+            position.walkingPnl.push(null);
+        }
+        position.walkingPnl[walkingIndex] = pnl;
     }
 
     return position;

@@ -2195,8 +2195,27 @@ function formatDetailNumber(key: string, value: number): string {
 const props = withDefaults(defineProps<{
   symbol: string;
   overlayMode?: boolean;
+  /**
+   * An already-built SymbolInfo to render INSTEAD of reading IndexedDB.
+   *
+   * Exists for callers that hold their own dataset in memory and need
+   * this chart to show exactly that - RollingTradeSimulationComponent
+   * passes the 500-candle window it's currently walking, which is a
+   * different period entirely from whatever IndexedDB has cached for the
+   * same symbol. Without this the chart would silently render the cached
+   * live data and look like it was showing the simulated period.
+   *
+   * When set, the live Binance websocket is also skipped: streaming a
+   * current price onto a historical window would draw a price line
+   * nowhere near the candles being shown.
+   *
+   * Absent (the default) - every existing caller - nothing changes:
+   * loadSymbolInfo reads IndexedDB and the websocket connects as before.
+   */
+  providedSymbolInfo?: SymbolInfo | null;
 }>(), {
   overlayMode: false,
+  providedSymbolInfo: null,
 });
 // activeSymbol is the SINGLE internal source of truth for which symbol
 // this viewer shows — initialized from the prop, but from here on owned
@@ -2424,6 +2443,9 @@ function syncCrossTimeframeCandles(info: SymbolInfo, primaryOpenTime: number, pr
 
 function connectBinanceWs() {
   closeBinanceWs();
+  // Historical/injected dataset: a live price stream has nothing to do
+  // with the window being shown, so don't open one. See providedSymbolInfo.
+  if (props.providedSymbolInfo) return;
   const streamSymbol = activeSymbol.value.trim().toLowerCase();
   if (!streamSymbol) return;
 
@@ -2528,6 +2550,11 @@ async function loadSymbolInfo() {
   loading.value = true;
   loadError.value = null;
   try {
+    // Injected data wins over IndexedDB - see the providedSymbolInfo prop.
+    if (props.providedSymbolInfo) {
+      symbolInfo.value = props.providedSymbolInfo;
+      return;
+    }
     const info = await klineDbUtilityV2.getSymbolInfo(activeSymbol.value);
     if (!info) {
       loadError.value = `No cached SymbolInfo for "${activeSymbol.value}" in IndexedDB.`;
@@ -2541,6 +2568,14 @@ async function loadSymbolInfo() {
     loading.value = false;
   }
 }
+
+// Follow an injected dataset when the parent swaps it out (e.g. the
+// rolling simulation's inspector reopening on a different symbol, or the
+// same symbol at a later point in its walk). Without this the chart would
+// keep showing whatever was injected on first mount.
+watch(() => props.providedSymbolInfo, (info) => {
+  if (info) symbolInfo.value = info;
+});
 
 // Downloads the currently loaded symbolInfo (every timeframe's candles,
 // with every computed field — candleStructure, openInterest, priceAction,

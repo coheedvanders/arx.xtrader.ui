@@ -1,5 +1,6 @@
 import type { Candle } from "@/core/interfaces"
 import type { LongShortRatioEntry, OpenInterestEntry, OpenInterestHistEntry } from "@/core/interfacesv2"
+import type { FundingRateEntry } from "@/utility/v2/analysis/fundingCost"
 
 
 // All kline intervals Binance supports, for ms conversion. Superset of
@@ -275,6 +276,77 @@ export class KlineUtility {
      * the same way as getRecentKlinesByRange. Binance only retains ~30 days
      * of history for this endpoint regardless of range requested.
      */
+    /**
+     * Funding rate history for one symbol over a time range, paginated the
+     * same way as getRecentKlinesByRange.
+     *
+     * UNLIKE the OI/LS endpoints above, this one is NOT limited to ~30
+     * days - funding history goes back to a symbol's listing, which is
+     * what makes real funding costs priceable for a simulation starting
+     * months in the past (the reason this mode skips OI/LS entirely).
+     *
+     * Settlements are on fixed wall-clock times (00:00/08:00/16:00 UTC by
+     * default, 4h for some symbols), not candle boundaries, so the caller
+     * matches them to ticks by timestamp rather than by index.
+     *
+     * Max 1000 per request; shares a 500/5min/IP limit with
+     * /fapi/v1/fundingInfo, so a 336-symbol initialization must expect to
+     * be throttled - see the caller's own pacing.
+     */
+    static async getFundingRatesByRange(
+        symbol: string,
+        startTime?: number,
+        endTime?: number,
+        limit: number = 1000
+    ): Promise<FundingRateEntry[]> {
+
+        const FUNDING_MAX_BATCH = 1000
+        const entries: FundingRateEntry[] = []
+        let currentStart = startTime ?? 0
+        const resolvedEnd = endTime ?? Date.now()
+
+        try {
+            while (entries.length < limit) {
+                const remaining = limit - entries.length
+                const batchLimit = Math.min(FUNDING_MAX_BATCH, remaining)
+
+                const url =
+                    `https://fapi.binance.com/fapi/v1/fundingRate` +
+                    `?symbol=${symbol.toUpperCase()}` +
+                    `&startTime=${currentStart}` +
+                    `&endTime=${resolvedEnd}` +
+                    `&limit=${batchLimit}`
+
+                const res = await fetch(url)
+                const data = await res.json()
+
+                if (!Array.isArray(data) || data.length === 0) break
+
+                const batch: FundingRateEntry[] = data.map((d: any) => ({
+                    fundingTime: d.fundingTime,
+                    fundingRate: +d.fundingRate
+                }))
+
+                entries.push(...batch)
+
+                const lastTime = data[data.length - 1].fundingTime
+                // +1ms, not + an assumed interval: symbols run on either
+                // 8h or 4h schedules and assuming the wrong one would
+                // skip real settlements. Binance's startTime is
+                // inclusive, so +1ms is exactly "everything after this".
+                currentStart = lastTime + 1
+
+                if (data.length < batchLimit || currentStart >= resolvedEnd) break
+            }
+
+            return entries.sort((a, b) => a.fundingTime - b.fundingTime)
+
+        } catch (error) {
+            console.error(`Error fetching funding rate history for ${symbol}:`, error)
+            return []
+        }
+    }
+
     static async getOIByRange(
         symbol: string,
         period: string,

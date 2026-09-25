@@ -63,21 +63,52 @@ function avgAtrOverRange(candles: CandleInfo[], startIdx: number, endIdx: number
     return count > 0 ? sum / count : 0;
 }
 
+/** Same range-sum as avgAtrOverRange, but returns the raw sum/count pair instead of just the average - used to (re)seed stepTrendTracker's own running atrSum/atrCount whenever a new pivot begins, which needs the components, not just the ratio. */
+function sumAtrOverRange(candles: CandleInfo[], startIdx: number, endIdx: number): { sum: number; count: number } {
+    let sum = 0, count = 0;
+    for (let i = startIdx; i <= endIdx; i++) {
+        const atr = candles[i].atr;
+        if (atr > 0) { sum += atr; count++; }
+    }
+    return { sum, count };
+}
+
 export interface TrendTrackerState {
     pivotIdx: number;
     pivotConfirmedOpenTime: number;
     direction: TrendDirection | null;
     extremeIdx: number;
     extremePrice: number;
+    // Running sum/count of ATR values over [pivotIdx, mostRecentlyProcessedIdx]
+    // (inclusive), maintained incrementally instead of via
+    // avgAtrOverRange's own from-scratch re-scan of that whole range on
+    // EVERY single step. That re-scan was a real, confirmed cost that
+    // scales with how long the CURRENT segment has run so far (up to
+    // the full window size for a long-running trend) - not O(1) as its
+    // own step-by-step framing suggested. Reset and reseeded (via
+    // sumAtrOverRange, a bounded one-time cost) whenever a new pivot
+    // begins; incremented by exactly one term on every other step.
+    atrSum: number;
+    atrCount: number;
 }
 
 export function initTrendTracker(firstCandle: CandleInfo): TrendTrackerState {
+    // avgAtrOverRange(candles, pivotIdx=0, i) always includes candle 0
+    // itself in its range - but the walk-forward loop only ever calls
+    // stepTrendTracker for i=1 onward, never for i=0. Without seeding
+    // atrSum/atrCount here, candle 0's own ATR contribution would be
+    // silently missing from the running average for as long as
+    // pivotIdx stays at 0, shifting every retracement-threshold
+    // comparison until the first commit.
+    const seedAtr = firstCandle.atr;
     return {
         pivotIdx: 0,
         pivotConfirmedOpenTime: firstCandle.openTime,
         direction: null,
         extremeIdx: 0,
         extremePrice: firstCandle.close,
+        atrSum: seedAtr > 0 ? seedAtr : 0,
+        atrCount: seedAtr > 0 ? 1 : 0,
     };
 }
 
@@ -109,44 +140,67 @@ export interface TrendStepResult {
  */
 export function stepTrendTracker(candles: CandleInfo[], i: number, state: TrendTrackerState, minRetraceAtr: number = MIN_RETRACE_ATR): TrendStepResult {
     const close = candles[i].close;
-    let { pivotIdx, pivotConfirmedOpenTime, direction, extremeIdx, extremePrice } = state;
+    let { pivotIdx, pivotConfirmedOpenTime, direction, extremeIdx, extremePrice, atrSum, atrCount } = state;
+
+    // avgAtrOverRange's own range [pivotIdx, i] always includes i
+    // itself - add this candle's own ATR to the running sum up front,
+    // before any branch below reads it, regardless of what happens
+    // next (extend, commit, or plain retracement all need this term
+    // included).
+    const currentAtr = candles[i].atr;
+    if (currentAtr > 0) { atrSum += currentAtr; atrCount += 1; }
 
     if (direction === null) {
         if (close > extremePrice) { direction = "UP"; extremeIdx = i; extremePrice = close; }
         else if (close < extremePrice) { direction = "DOWN"; extremeIdx = i; extremePrice = close; }
-        const newState = { pivotIdx, pivotConfirmedOpenTime, direction, extremeIdx, extremePrice };
+        const newState: TrendTrackerState = { pivotIdx, pivotConfirmedOpenTime, direction, extremeIdx, extremePrice, atrSum, atrCount };
         const info = direction ? { direction, startGi: pivotIdx, endGi: extremeIdx, confirmedOpenTime: pivotConfirmedOpenTime } : null;
         return { state: newState, committedSegment: null, currentSegmentInfo: info };
     }
 
     if (direction === "UP") {
         if (close > extremePrice) {
-            const newState = { pivotIdx, pivotConfirmedOpenTime, direction, extremeIdx: i, extremePrice: close };
+            const newState: TrendTrackerState = { pivotIdx, pivotConfirmedOpenTime, direction, extremeIdx: i, extremePrice: close, atrSum, atrCount };
             return { state: newState, committedSegment: null, currentSegmentInfo: { direction, startGi: pivotIdx, endGi: i, confirmedOpenTime: pivotConfirmedOpenTime } };
         }
-        const avgAtr = avgAtrOverRange(candles, pivotIdx, i);
+        const avgAtr = atrCount > 0 ? atrSum / atrCount : 0;
         const retrace = extremePrice - close;
         if (avgAtr > 0 && retrace / avgAtr >= minRetraceAtr) {
             const committed: TrendSegment = { direction: "UP", startGi: pivotIdx, endGi: extremeIdx, ended: true, confirmedOpenTime: pivotConfirmedOpenTime };
-            const newState: TrendTrackerState = { pivotIdx: extremeIdx, pivotConfirmedOpenTime: candles[i].openTime, direction: "DOWN", extremeIdx: i, extremePrice: close };
+            // New pivot is extremeIdx, which is BEFORE i (it stopped
+            // extending some candles ago) - the new segment's own ATR
+            // baseline covers [extremeIdx, i], a different range than
+            // what atrSum/atrCount was tracking. Bounded, one-time
+            // re-scan here (commits are rare compared to steps - "a
+            // handful of segments" per the module's own header - so
+            // this cost is negligible relative to what it replaces).
+            const { sum: newSum, count: newCount } = sumAtrOverRange(candles, extremeIdx, i);
+            const newState: TrendTrackerState = { pivotIdx: extremeIdx, pivotConfirmedOpenTime: candles[i].openTime, direction: "DOWN", extremeIdx: i, extremePrice: close, atrSum: newSum, atrCount: newCount };
             return { state: newState, committedSegment: committed, currentSegmentInfo: { direction: "DOWN", startGi: newState.pivotIdx, endGi: i, confirmedOpenTime: newState.pivotConfirmedOpenTime } };
         }
         // Retracement candle, not yet enough to commit — genuinely
         // undetermined for now, same as the batch version leaves it.
-        return { state, committedSegment: null, currentSegmentInfo: null };
+        // atrSum/atrCount (already incremented above with this
+        // candle's own ATR) carry forward as-is into the next step,
+        // exactly matching what a fresh avgAtrOverRange(candles,
+        // pivotIdx, i) would have summed - pivotIdx hasn't changed,
+        // and every candle from pivotIdx to i has now been added
+        // exactly once.
+        return { state: { pivotIdx, pivotConfirmedOpenTime, direction, extremeIdx, extremePrice, atrSum, atrCount }, committedSegment: null, currentSegmentInfo: null };
     } else {
         if (close < extremePrice) {
-            const newState = { pivotIdx, pivotConfirmedOpenTime, direction, extremeIdx: i, extremePrice: close };
+            const newState: TrendTrackerState = { pivotIdx, pivotConfirmedOpenTime, direction, extremeIdx: i, extremePrice: close, atrSum, atrCount };
             return { state: newState, committedSegment: null, currentSegmentInfo: { direction, startGi: pivotIdx, endGi: i, confirmedOpenTime: pivotConfirmedOpenTime } };
         }
-        const avgAtr = avgAtrOverRange(candles, pivotIdx, i);
+        const avgAtr = atrCount > 0 ? atrSum / atrCount : 0;
         const retrace = close - extremePrice;
         if (avgAtr > 0 && retrace / avgAtr >= minRetraceAtr) {
             const committed: TrendSegment = { direction: "DOWN", startGi: pivotIdx, endGi: extremeIdx, ended: true, confirmedOpenTime: pivotConfirmedOpenTime };
-            const newState: TrendTrackerState = { pivotIdx: extremeIdx, pivotConfirmedOpenTime: candles[i].openTime, direction: "UP", extremeIdx: i, extremePrice: close };
+            const { sum: newSum, count: newCount } = sumAtrOverRange(candles, extremeIdx, i);
+            const newState: TrendTrackerState = { pivotIdx: extremeIdx, pivotConfirmedOpenTime: candles[i].openTime, direction: "UP", extremeIdx: i, extremePrice: close, atrSum: newSum, atrCount: newCount };
             return { state: newState, committedSegment: committed, currentSegmentInfo: { direction: "UP", startGi: newState.pivotIdx, endGi: i, confirmedOpenTime: newState.pivotConfirmedOpenTime } };
         }
-        return { state, committedSegment: null, currentSegmentInfo: null };
+        return { state: { pivotIdx, pivotConfirmedOpenTime, direction, extremeIdx, extremePrice, atrSum, atrCount }, committedSegment: null, currentSegmentInfo: null };
     }
 }
 

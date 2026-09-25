@@ -288,7 +288,105 @@ function computeStrength(inputs: {
 /* ============================================================
  * PUBLIC API
  * ============================================================ */
-export function getCandleStructure(candles: CandleInfo[]): CandleStructure {
+export function getCandleStructure(
+    candles: CandleInfo[],
+    previousCandle?: CandleInfo,
+    previousConsecutiveState?: ConsecutiveState
+): CandleStructure {
+
+    // Incremental path: computes structure for ONLY the last candle in
+    // `candles`, using the explicitly-provided previous candle/state
+    // instead of re-deriving them by walking the whole array from
+    // index 0. Every sub-computation this module does (geometry,
+    // direction, ATR ratios, containment, engulfing) is already purely
+    // local - current candle, at most the immediately preceding one -
+    // except the running consecutive-streak count, which is exactly
+    // what previousConsecutiveState carries forward. Mathematically
+    // identical to the batch path below for the same last candle.
+    //
+    // Takes this path whenever EITHER optional param is passed - for
+    // the very first candle in a walk-forward loop, the caller still
+    // has a real previousCandle (there's a candle before it) but no
+    // previousConsecutiveState yet (nothing computed for it before),
+    // which correctly falls back to the {0, 0} default below, matching
+    // the batch loop's own initial state.
+    if (previousCandle !== undefined || previousConsecutiveState !== undefined) {
+        const candle = candles[candles.length - 1];
+        const previous = previousCandle ?? null;
+        const runningConsecutive = previousConsecutiveState ?? { consecutiveBullish: 0, consecutiveBearish: 0 };
+
+        const geometry = computeRawGeometry(candle);
+        const directionFlags = computeDirection(candle, geometry.bodyRatio);
+        const atrRatios = computeAtrRatios(candle, geometry.range, geometry.body);
+        const volatilityFlags = computeVolatilityFlags(atrRatios.rangeAtrRatio);
+        const containment = computeContainment(candle, previous);
+
+        let previousIsBullish = false;
+        let previousIsBearish = false;
+        if (previous) {
+            previousIsBullish = previous.close > previous.open;
+            previousIsBearish = previous.close < previous.open;
+        }
+
+        const engulfing = computeEngulfing(
+            candle,
+            directionFlags.isBullish,
+            directionFlags.isBearish,
+            previous,
+            previousIsBullish,
+            previousIsBearish,
+        );
+
+        const newConsecutive = computeConsecutive(directionFlags.direction, runningConsecutive);
+
+        const strength = computeStrength({
+            bodyRatio: geometry.bodyRatio,
+            rangeAtrRatio: atrRatios.rangeAtrRatio,
+            closeLocation: geometry.closeLocation,
+            isBullish: directionFlags.isBullish,
+            isBearish: directionFlags.isBearish,
+            isBullishEngulfing: engulfing.isBullishEngulfing,
+            isBearishEngulfing: engulfing.isBearishEngulfing,
+            isOutsideBar: containment.isOutsideBar,
+        });
+
+        return {
+            direction: directionFlags.direction,
+
+            range: geometry.range,
+            body: geometry.body,
+            upperWick: geometry.upperWick,
+            lowerWick: geometry.lowerWick,
+
+            bodyRatio: geometry.bodyRatio,
+            upperWickRatio: geometry.upperWickRatio,
+            lowerWickRatio: geometry.lowerWickRatio,
+
+            closeLocation: geometry.closeLocation,
+
+            rangeAtrRatio: atrRatios.rangeAtrRatio,
+            bodyAtrRatio: atrRatios.bodyAtrRatio,
+
+            isBullish: directionFlags.isBullish,
+            isBearish: directionFlags.isBearish,
+            isDoji: directionFlags.isDoji,
+
+            isExpansion: volatilityFlags.isExpansion,
+            isCompression: volatilityFlags.isCompression,
+
+            isInsideBar: containment.isInsideBar,
+            isOutsideBar: containment.isOutsideBar,
+
+            isBullishEngulfing: engulfing.isBullishEngulfing,
+            isBearishEngulfing: engulfing.isBearishEngulfing,
+
+            consecutiveBullish: newConsecutive.consecutiveBullish,
+            consecutiveBearish: newConsecutive.consecutiveBearish,
+
+            strength,
+        };
+    }
+
     const results: CandleStructure[] = [];
 
     let runningConsecutive: ConsecutiveState = {

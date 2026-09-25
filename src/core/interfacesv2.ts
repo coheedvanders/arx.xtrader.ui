@@ -435,6 +435,16 @@ export interface PositionEntry {
     tp: number
     // Why this specific entry fired - see PositionEntryReason.
     entryReason: PositionEntryReason
+    // The openTime of the candle this position opened on, stamped once
+    // at creation and never changed afterward. Lives HERE, on the
+    // position itself, rather than being tracked externally by the
+    // caller - an earlier design kept it in a single mutable per-symbol
+    // slot written in one place and read in another, which repeatedly
+    // desynchronized as positions opened/closed across rolling-window
+    // shifts (real exports had 11.8% of records carrying some earlier
+    // position's openTime). Immutable data travelling with the position
+    // is immune to that whole class of bug by construction.
+    openTime: number
     // Taker fee charged to open this position, in USDT — via
     // PnlUtility.calculateTakerFee(margin, leverage). Captured once at
     // entry (fee is fixed by margin/leverage at open time, doesn't
@@ -472,6 +482,53 @@ export interface PositionEntry {
     openGi: number
     closeGi: number | null
     durationMinutes: number | null
+    /**
+     * WHY the position closed — which is NOT recoverable from `status`.
+     *
+     * A force-close (duration cap, or a scheduled portfolio-wide close)
+     * sets status to WON/LOSS purely by the SIGN of its mark-to-market
+     * pnl, so an expiry at +0.30 USDT is indistinguishable from a real
+     * TP hit once it's written. Without this field a report can count
+     * wins and losses but cannot say how many of them the strategy
+     * actually chose to exit versus how many the cap closed for it.
+     *
+     *   TP / SL   — price reached the target or the stop.
+     *   MID       — SL and TP both fell inside one candle's range;
+     *               genuinely ambiguous, no pnl computed.
+     *   EXPIRED   — hit maxPositionDurationCandles while still OPEN.
+     *   AUTO_CLOSE— a scheduled portfolio-wide close (the rolling
+     *               simulation's auto-close modes), distinct from
+     *               EXPIRED because the two answer different questions.
+     *
+     * Undefined while the position is still OPEN, and on records
+     * produced before this field existed — so a report must treat
+     * `undefined` as "unknown", never as a zero for any bucket.
+     */
+    closeReason?: "TP" | "SL" | "MID" | "EXPIRED" | "AUTO_CLOSE" | "LIQUIDATED"
+    /**
+     * The price this position actually exited at. NOT always the SL/TP
+     * level: when a candle OPENS past the level, the market gapped
+     * through it and a resting stop fills at the open instead. Null
+     * while OPEN.
+     */
+    exitPrice?: number | null
+    /**
+     * Taker fee on the exit fill, charged on quantity x exitPrice. Null
+     * while OPEN. Separate from entryFee because the two are computed on
+     * different notionals - the position moved in between. Round-trip
+     * cost is entryFee + exitFee; charging only entryFee understates it
+     * by close to half.
+     */
+    exitFee?: number | null
+    /**
+     * Cumulative funding paid by this position, in USDT, POSITIVE when
+     * the position paid and negative when it received. Accrued per
+     * settlement by the simulation loop (never inside updatePositionEntry,
+     * which re-runs over the whole window on every shift and would
+     * multiply it), on notional at the settlement's own mark, not on
+     * margin - at 20x those differ by 20x.
+     */
+    fundingPaid: number
 }
 
 export interface OpenInterestEntry {
@@ -734,6 +791,15 @@ export interface VolumeState {
     // into a trend (trendState is null) or the trend hasn't produced
     // enough prior candles yet to have a baseline of its own.
     trendZScore: number
+    // Running sum/sumSq/count backing trendZScore's own calculation,
+    // covering [trendStartGi, upToGiInclusive] of the current trend
+    // segment's volume - carried forward so the NEXT candle's own
+    // getVolumeState call can extend this incrementally (one new term)
+    // instead of re-summing the whole segment from scratch every time.
+    // null whenever trendZScore itself is 0 for a reason that leaves no
+    // running range to carry forward (no active trend, or not enough
+    // prior candles yet) - see volumeState.ts's own getTrendZScore.
+    trendVolumeRunningStats?: TrendVolumeRunningStats | null
 
     volumeChange: number
     volumeChangePercent: number
@@ -745,6 +811,14 @@ export interface VolumeState {
     timestamp: number
 
     reasons: string[]
+}
+
+export interface TrendVolumeRunningStats {
+    trendStartGi: number
+    sum: number
+    sumSq: number
+    count: number
+    upToGiInclusive: number
 }
 
 export interface MarketAlignmentComponent {

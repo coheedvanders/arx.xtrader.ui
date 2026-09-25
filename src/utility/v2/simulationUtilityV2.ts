@@ -51,9 +51,13 @@ export class SimulationUtilityV2 {
         targetSymbol: SymbolInfo,
         mainMarkets: SymbolInfo[],
         initialOpenPosition: PositionEntry | null = null,
-        maxPositionDurationCandles?: number
+        maxPositionDurationCandles?: number,
+        positionMargin?: number,
+        allowNewEntry: boolean = true,
+        allowLong: boolean = true,
+        allowShort: boolean = true
     ): Promise<{ openPosition: PositionEntry | null }> {
-        const result = this.runAnalysis(targetSymbol, targetSymbol.candle_15m, '15m', mainMarkets, initialOpenPosition, maxPositionDurationCandles);
+        const result = this.runAnalysis(targetSymbol, targetSymbol.candle_15m, '15m', mainMarkets, initialOpenPosition, maxPositionDurationCandles, positionMargin, allowNewEntry, allowLong, allowShort);
         // this.runAnalysis(targetSymbol, targetSymbol.candle_1h,'1h', mainMarkets);
         //this.runAnalysis(targetSymbol, targetSymbol.candle_4h,'4h', mainMarkets);
         // this.runAnalysis(targetSymbol, targetSymbol.candle_1d,'1d', mainMarkets);
@@ -79,7 +83,7 @@ export class SimulationUtilityV2 {
         if (interval === '15m') targetSymbol.trendstats_15m = stats;
     }
 
-    static runAnalysis(targetSymbol: SymbolInfo, candles: CandleInfo[], interval:MARKET_INTERVAL, mainMarkets: SymbolInfo[], initialOpenPosition: PositionEntry | null = null, maxPositionDurationCandles?: number): { openPosition: PositionEntry | null } {
+    static runAnalysis(targetSymbol: SymbolInfo, candles: CandleInfo[], interval:MARKET_INTERVAL, mainMarkets: SymbolInfo[], initialOpenPosition: PositionEntry | null = null, maxPositionDurationCandles?: number, positionMargin?: number, allowNewEntry: boolean = true, allowLong: boolean = true, allowShort: boolean = true): { openPosition: PositionEntry | null } {
         // Classic 5-candle fractal (2 candles required on either side to
         // confirm a swing) — a standard, conventional choice, not derived
         // from anything in this data; arbitrary in the sense that other
@@ -102,6 +106,19 @@ export class SimulationUtilityV2 {
         // i=1 and never itself revisits candles[0], so seeding the
         // tracker from it here is safe.
         let trendTrackerState: TrendTrackerState = initTrendTracker(candles[0]);
+
+        // Seeds the running consecutive-bullish/bearish-streak state as
+        // if candle 0 had already been processed through
+        // getCandleStructure's own logic - matches what every OLD batch
+        // call to getCandleStructure(movingCandles) implicitly computed
+        // for candles[0] internally as part of its own warm-up (index 0
+        // of whatever slice got passed in), even though candles[0]
+        // itself never gets its own PERSISTED candleStructure field
+        // from this loop (which starts at i=1). Verified against the
+        // batch version across many randomized trials including this
+        // exact seeding edge case before being wired in.
+        let previousConsecutiveForStructure: { consecutiveBullish: number; consecutiveBearish: number } =
+            getCandleStructure([candles[0]]);
 
         // Separate from candle.trendState itself: THAT field gets
         // retroactively overwritten on earlier candles every time the
@@ -133,8 +150,11 @@ export class SimulationUtilityV2 {
         // position can never be silently overwritten by a new one.
         let openPosition: PositionEntry | null = initialOpenPosition;
         let previousTrendCloud: { minLow: number; maxHigh: number } | null = null;
-        // Stated by the user directly (not arbitrary): 2 USDT margin per position.
-        const POSITION_MARGIN = 2;
+        // Stated by the user directly (not arbitrary): 2 USDT margin per
+        // position by default - now configurable via the positionMargin
+        // parameter, defaulting to 2 so existing callers (that don't
+        // pass it) see unchanged behavior.
+        const POSITION_MARGIN = positionMargin ?? 2;
 
         // POC AVWAP anchors — the "edge" found through research: AVWAP
         // anchored at the TREND_START and TREND_SETTER candles of the
@@ -165,9 +185,18 @@ export class SimulationUtilityV2 {
             var candle = candles[i];
 
             candle.atr = CandleAnalyzerV2.calculateATR(movingCandles, 8);
-            candle.ema200 = CandleAnalyzerV2.calculateEMA(movingCandles, 200);
+            // Threading the previous candle's own stored ema200 lets
+            // calculateEMA take its incremental path (one more step)
+            // instead of re-converging from index 200 every single
+            // candle. candles[i-1].ema200 is undefined on the loop's
+            // first iteration (candle 0 is never directly processed by
+            // this loop) and calculateEMA correctly falls back to full
+            // recomputation whenever the previous value isn't
+            // available or trustworthy - see its own guard.
+            candle.ema200 = CandleAnalyzerV2.calculateEMA(movingCandles, 200, candles[i - 1]?.ema200);
 
-            candle.candleStructure = getCandleStructure(movingCandles);
+            candle.candleStructure = getCandleStructure(movingCandles, candles[i - 1], previousConsecutiveForStructure);
+            previousConsecutiveForStructure = candle.candleStructure;
 
             candle.liquidityAnchor = [];
             candle.conditions_met = [];
@@ -247,7 +276,7 @@ export class SimulationUtilityV2 {
 
             candle.longShort = getLongShortRatioState(targetSymbol,movingCandles,interval);
 
-            candle.volumeState = getVolumeState(movingCandles)
+            candle.volumeState = getVolumeState(movingCandles, candles[i - 1]?.volumeState?.trendVolumeRunningStats ?? undefined)
 
             // const confirmedAnchors = getLiquidityHeatmapAnchors(movingCandles);
             // for (const { gi, anchor } of confirmedAnchors) {
@@ -359,7 +388,7 @@ export class SimulationUtilityV2 {
                     maxPositionDurationCandles != null &&
                     (i - openPosition.openGi) >= maxPositionDurationCandles
                 ) {
-                    forceClosePosition(openPosition, candle, i);
+                    forceClosePosition(openPosition, candle, i, "EXPIRED");
                 }
 
                 openPosition.durationMinutes = (i - openPosition.openGi) * intervalMinutes;
@@ -381,7 +410,7 @@ export class SimulationUtilityV2 {
                 // set candle.positionEntry so this candle's own display
                 // reflects the resumed position correctly either way.
                 candle.positionEntry = openPosition;
-            } else {
+            } else if (allowNewEntry) {
                 const newPosition = checkPositionEntry(
                     candle,
                     candles,
@@ -389,7 +418,9 @@ export class SimulationUtilityV2 {
                     (lastKnownTrendSnapshot?.direction as "UP" | "DOWN" | undefined) ?? null,
                     lastKnownTrendSnapshot?.startGi ?? null,
                     POSITION_MARGIN,
-                    DEFAULT_LEVERAGE
+                    DEFAULT_LEVERAGE,
+                    allowLong,
+                    allowShort
                 );
                 if (newPosition) {
                     openPosition = newPosition;

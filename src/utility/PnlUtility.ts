@@ -89,6 +89,17 @@ export class PnlUtility {
   }
 
   /**
+   * Taker fee on an explicit notional, for the exit side where notional
+   * is quantity x EXIT price rather than margin x leverage. calculateTakerFee
+   * above derives notional from margin/leverage, which is only correct at
+   * entry - reusing it for the exit would charge the entry's notional twice
+   * and miss how much the position actually moved.
+   */
+  static calculateTakerFeeOnNotional(notional: number): number {
+    return Math.abs(notional) * this.TAKER_FEE
+  }
+
+  /**
    * Safe wrapper for SL loss calculation with error handling
    */
   static estimateSLLoss(

@@ -5,8 +5,18 @@ export class CandleAnalyzerV2 {
     static calculateATR(candlesList: CandleInfo[], period = 14): number {
         if (candlesList.length < period + 1) return 0
 
-        const trs = []
-        for (let i = 1; i < candlesList.length; i++) {
+        // Only the last `period` true-range values ever contribute to
+        // the result - no need to recompute true range for candles
+        // further back than that, no matter how long candlesList
+        // itself is. This is the same computation as before (identical
+        // pairs, identical average), just bounded to O(period) instead
+        // of O(candlesList.length) - matters because this gets called
+        // once per candle on a GROWING slice in simulationUtilityV2.ts,
+        // so the old version re-walked more of the array every single
+        // call.
+        const startIdx = candlesList.length - period
+        let sum = 0
+        for (let i = startIdx; i < candlesList.length; i++) {
             const c = candlesList[i]
             const prev = candlesList[i - 1]
             const tr = Math.max(
@@ -14,18 +24,37 @@ export class CandleAnalyzerV2 {
                 Math.abs(c.high - prev.close),
                 Math.abs(c.low - prev.close)
             )
-            trs.push(tr)
+            sum += tr
         }
-
-        const atrSlice = trs.slice(-period)
-        const atr = atrSlice.reduce((a, b) => a + b, 0) / atrSlice.length
-        return atr
+        return sum / period
     }
 
-    static calculateEMA(candlesList: CandleInfo[], period: number): number {
+    static calculateEMA(candlesList: CandleInfo[], period: number, previousEma?: number): number {
         if (candlesList.length < period) return 0
 
         const k = 2 / (period + 1)
+
+        // Incremental path: previousEma is only trusted when the PRIOR
+        // candle's own calculateEMA call would have had enough data to
+        // produce a genuine value, not the "not enough data yet"
+        // sentinel (0) this function returns above. candlesList.length
+        // >= period + 1 here means the prior call's own candlesList
+        // (one candle shorter) already had length >= period, so
+        // whatever was passed in as previousEma is a real EMA value,
+        // not a stand-in for "undetermined" that would otherwise get
+        // silently treated as if it were a genuine 0 EMA.
+        //
+        // Mathematically identical to the full recomputation below —
+        // same recurrence relation (ema = close*k + prevEma*(1-k)) —
+        // just applies ONE more step instead of re-deriving the whole
+        // history from index `period` again. Matters because this is
+        // called once per candle on a GROWING slice in
+        // simulationUtilityV2.ts, so the old version re-walked
+        // (candlesList.length - period) steps every single call.
+        if (previousEma !== undefined && candlesList.length >= period + 1) {
+            const latest = candlesList[candlesList.length - 1]
+            return (latest.close * k) + (previousEma * (1 - k))
+        }
 
         // Start with SMA of first `period` candles
         let ema = 0
