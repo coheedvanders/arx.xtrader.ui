@@ -412,7 +412,30 @@ export interface CandleInfo {
 // geometry alone was enough to find and explain the LONG "late entry"
 // bad-RR pattern in an earlier research pass.
 export interface PositionEntryReason {
-    trigger: "POTENTIAL_REVERSAL"
+    /** Which entry produced this position.
+     *
+     *  POTENTIAL_REVERSAL — the segment-geometry entry in positionEntry.ts.
+     *  EXTENSION_FADE     — the original close-beyond-the-prior-extreme entry,
+     *                       also in positionEntry.ts. Kept so old exports still
+     *                       parse; its calibration was withdrawn 2026-09-27.
+     *  BREAKOUT_FADE      — the rebuilt version of that event in
+     *                       breakoutFadeEntry.ts, measured over 37 days rather
+     *                       than 38 hours. Distinct value on purpose: an export
+     *                       must be separable by which code produced it, because
+     *                       the two carry different level and side semantics and
+     *                       their numbers are not comparable.
+     *
+     *  CROSS_SECTIONAL    — the ranked market-neutral book in
+     *                       crossSectionalMomentum.ts. Not a per-symbol trigger
+     *                       at all: it is a RELATIVE decision, so the same
+     *                       candle can be a LONG for one symbol and a SHORT for
+     *                       another purely because of how they rank against each
+     *                       other. An export must be separable by this, because
+     *                       none of the segment fields below mean anything for
+     *                       it.
+     *     *  Note: simulationSummary.ts duplicates `closeReason`, not this field, so
+     *  adding a trigger here needs no change there. Check before assuming. */
+    trigger: "POTENTIAL_REVERSAL" | "EXTENSION_FADE" | "BREAKOUT_FADE" | "CROSS_SECTIONAL"
     reversingDirection: "UP" | "DOWN"
     segmentLow: number
     segmentHigh: number
@@ -421,6 +444,18 @@ export interface PositionEntryReason {
     broaderMoveAtr: number | null
     exhaustionWickRatio: number | null
     trendZScoreAvg: number | null
+    // Planned reward:risk at entry - (tp - entry) / (entry - sl) for a
+    // LONG, mirrored for a SHORT. Stamped at creation so an export can
+    // confirm the R:R gate actually held, rather than the gate being
+    // trusted because the code looks right. Unitless, so comparable
+    // across symbols and volatility regimes.
+    plannedRewardRisk: number
+    // Stop distance as a fraction of entry price. Recorded alongside
+    // R:R because the two answer different questions: R:R says whether
+    // the payoff is worth the risk, riskPercent says whether the risk
+    // is large enough for the round-trip fee to be a rounding error
+    // (fee/R = 2 * taker / riskPercent).
+    plannedRiskPercent: number
     // Short, human-readable summary for quick scanning without having
     // to interpret the raw numbers above.
     summary: string
@@ -456,6 +491,23 @@ export interface PositionEntry {
     // measured from entryPrice.
     mae: number
     mfe: number
+    /**
+     * Excursions in PRICE from entry, always >= 0. Recorded because
+     * mae/mfe above are re-normalized by EACH candle's own atr while
+     * sl/tp are fixed prices set from the ENTRY candle's atr - so those
+     * two are not in the same unit and their ratio is not interpretable.
+     * In a real 10,724-trade run, 24% of take-profit winners showed an
+     * MAE larger than their own stop distance, which cannot happen (a TP
+     * winner never touched its stop). Any question about where a stop or
+     * target should sit has to be asked of these price figures, or of R
+     * multiples derived from them and atrAtEntry.
+     */
+    maePrice: number
+    mfePrice: number
+    /** The ATR that sized this position's sl/tp, captured at entry. Makes
+     *  R multiples and ATR-relative analysis derivable without depending
+     *  on the sl/tp formula to back it out. */
+    atrAtEntry: number
     // MID = SL and TP both fell within the same candle's [low, high] —
     // genuinely ambiguous which was hit first intra-candle, so no PnL
     // is computed for it (see the reference logic this mirrors).
@@ -483,6 +535,21 @@ export interface PositionEntry {
     closeGi: number | null
     durationMinutes: number | null
     /**
+     * Per-position holding cap in candles, overriding the caller's global cap.
+     *
+     * OPTIONAL, and undefined means "use whatever the caller passed", so every
+     * existing position and every existing caller behaves exactly as before.
+     *
+     * It exists because two entries in the same run can want different holding
+     * times for reasons that are not interchangeable: the segment-geometry entry
+     * was measured at 250 candles, while the cross-sectional book was measured at
+     * 384 and is meaningless at anything else - its whole result is "rank, then
+     * hold four days". Widening the global cap to fit the longer one would
+     * silently change the shorter one, and the run would no longer be the
+     * configuration that was measured.
+     */
+    maxDurationCandles?: number
+    /**
      * WHY the position closed — which is NOT recoverable from `status`.
      *
      * A force-close (duration cap, or a scheduled portfolio-wide close)
@@ -504,7 +571,21 @@ export interface PositionEntry {
      * produced before this field existed — so a report must treat
      * `undefined` as "unknown", never as a zero for any bucket.
      */
-    closeReason?: "TP" | "SL" | "MID" | "EXPIRED" | "AUTO_CLOSE" | "LIQUIDATED"
+    closeReason?: "TP" | "SL" | "MID" | "EXPIRED" | "AUTO_CLOSE" | "LIQUIDATED" | "MANAGED"
+    /**
+     * Set only when closeReason is "MANAGED": which in-flight rule asked
+     * for the close, so an export can be grouped by it.
+     *
+     * The rule union is DUPLICATED from ManagedExitRule in
+     * utility/v2/analysis/positionEntry.ts, deliberately - that module
+     * imports from this one, so this one must not import back. Keep the
+     * two in sync; the same deliberate duplication exists for
+     * closeReason in simulationSummary.ts.
+     */
+    managedExit?: {
+        rule: "BREAKEVEN_STOP" | "TRAILING_GIVEBACK" | "EXTENSION_EXHAUSTION" | "ADVERSE_STRUCTURE" | "NO_PROGRESS"
+        detail: string
+    } | null
     /**
      * The price this position actually exited at. NOT always the SL/TP
      * level: when a candle OPENS past the level, the market gapped

@@ -55,7 +55,7 @@ export interface SummaryPosition {
      * exactly this - a reason added there and not here is a compile
      * error at the call site, so add new values in BOTH places.
      */
-    closeReason?: "TP" | "SL" | "MID" | "EXPIRED" | "AUTO_CLOSE" | "LIQUIDATED" | null;
+    closeReason?: "TP" | "SL" | "MID" | "EXPIRED" | "AUTO_CLOSE" | "LIQUIDATED" | "MANAGED" | null;
     /** ATR-normalized excursions from entry. Optional so this module
      *  still reads exports produced before they were captured. */
     mae?: number;
