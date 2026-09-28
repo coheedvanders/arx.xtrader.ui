@@ -3272,6 +3272,11 @@ function buildBasicCandleStructure(
             0,
             100
         ),
+
+        // No volume history for a synthetic candle, same as the
+        // other history-dependent flags above.
+        volumeSpike: false,
+        changePercentageZScore: 0,
     }
 }
 

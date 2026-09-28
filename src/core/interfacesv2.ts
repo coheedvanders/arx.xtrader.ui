@@ -400,6 +400,12 @@ export interface CandleInfo {
     // snapshot of what was known at that candle's own time. Null on
     // any candle with no entry active or being resolved on it.
     positionEntry: PositionEntry | null
+
+    // Session-based price zone (00/06/12/18 local), same as the old
+    // SimulationUtility: built at each session boundary from the last 24
+    // candles via PriceZoneUtility.generatePrizeZone, then shared by every
+    // candle in that session. Null before the first boundary.
+    priceZone: PriceZone | null
 }
 
 // Captures WHY an entry actually fired, in structured, analyzable form
@@ -667,6 +673,15 @@ export interface CandleStructure {
     consecutiveBearish: number
 
     strength: number
+
+    // Volume >= 1.8x the prior 20 candles' average AND >= their max.
+    // See CandleAnalyzerV2.hasVolumeSpike.
+    volumeSpike: boolean
+
+    // Z-score of this candle's |open->close %| against the last 50
+    // candles (itself included). 0 until 50 candles exist.
+    // See CandleAnalyzerV2.getCandleChangeZScore.
+    changePercentageZScore: number
 }
 
 export interface CandleAnchor {

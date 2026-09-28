@@ -1,5 +1,7 @@
 import type { CandleInfo, MARKET_INTERVAL, SymbolInfo, SIGNAL_DIRECTION, MarketStructureLabel } from "@/core/interfacesv2";
-import type { Candle, PriceZone } from "@/core/interfaces";
+import type { Candle, CandleEntry, PriceZone } from "@/core/interfaces";
+import { PriceZoneUtility } from "../priceZoneUtility";
+import { SimulationUtility } from "../simulationUtility";
 import { CandleAnalyzerV2 } from "./candleAnalyzerV2";
 import { getCandleStructure } from "./analysis/candleStructure";
 import { getAnchorDecision } from "./analysis/anchorDecisionEngine";
@@ -470,6 +472,10 @@ export class SimulationUtilityV2 {
 
         var lastTrendSetterAvwap: PriceZone | null = null;
 
+        // Session price zone. Not part of AnalysisCarry: on a resume the
+        // zone in force is simply the one the last derived candle holds.
+        let activePriceZone: PriceZone | null = startIndex > 1 ? (candles[startIndex - 1]?.priceZone ?? null) : null;
+
         for (let i = startIndex; i <= candles.length - 1; i++) {
             movingCandlesAccum.push(candles[i]);
             var movingCandles = movingCandlesAccum;
@@ -483,6 +489,14 @@ export class SimulationUtilityV2 {
             candle.marketStructure = null;
             candle.trendState = null;
             candle.positionEntry = null;
+
+            // SESSION BASED PRICE ZONE — ported from SimulationUtility.
+            // generatePrizeZone only reads open/close/high/low, which
+            // CandleInfo has, hence the cast.
+            if (SimulationUtility.isNewZonePeriod(candle.openTime)) {
+                activePriceZone = PriceZoneUtility.generatePrizeZone(movingCandles.slice(-24) as unknown as CandleEntry[], 0);
+            }
+            candle.priceZone = activePriceZone;
 
             // Threading the previous candle's own stored ema200 lets
             // calculateEMA take its incremental path (one more step)
@@ -579,41 +593,6 @@ export class SimulationUtilityV2 {
             //==========================
             //CONDITIONS
             //==========================
-
-            var trendSetters = movingCandles.filter(c => c.conditions_met && c.conditions_met.includes("TREND_SETTER"));
-            if(trendSetters.length >= 1){
-                var lastTrendSetter = trendSetters[trendSetters.length - 1];
-                candle.extras.push(`TS: ${lastTrendSetter.openTime}`);
-                lastTrendSetterAvwap = CandleAnalyzerV2.getAnchorVwap(movingCandles.filter(c => c.openTime >= lastTrendSetter.openTime));
-            }
-
-            if(lastTrendSetterAvwap){
-                var breaksLastTrendSetterAvwap = (candle.open < lastTrendSetterAvwap.mid && candle.close  > lastTrendSetterAvwap.mid) || (candle.open > lastTrendSetterAvwap.mid && candle.close  < lastTrendSetterAvwap.mid) 
-                if(breaksLastTrendSetterAvwap){
-                    
-
-                    if(candle.candleStructure.isBullish){
-                        candle.conditions_met.push("BULL_BREAKS_TS_AVWAP");
-                        var potentialReversals = movingCandles.filter(c => c.conditions_met && c.conditions_met.includes("POTENTIAL_REVERSAL"));
-                        if(potentialReversals.length >= 1){
-                            var lastPotentialReversal = potentialReversals[potentialReversals.length - 1];
-                            if(lastPotentialReversal.candleStructure.isBullish){
-                                candle.conditions_met.push("SUPPORT_POTENTIAL_REVERSAL_BREAK");
-                                
-                                var _lastTrendSetter = trendSetters[trendSetters.length - 1];
-                                var trendSetterTrendCandles = movingCandles.filter(c => c.trendState && c.trendState.confirmedOpenTime == _lastTrendSetter.trendState!.confirmedOpenTime);
-
-                                var highest = Math.max(...trendSetterTrendCandles.map(c => c.high));
-                                var lowest = Math.min(...trendSetterTrendCandles.map(c => c.low));
-
-                                candle.extras.push(`HIGH: ${highest}`);
-                                candle.extras.push(`LOW: ${lowest}`);
-                                debugger;
-                            }
-                        }
-                    }
-                }
-            }
 
             // RECENT_TREND_SETTER is checked BEFORE TREND_SETTER is pushed
             // below for this same candle — a candle's own, just-detected

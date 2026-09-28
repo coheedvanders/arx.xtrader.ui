@@ -1,4 +1,5 @@
 import type { CandleInfo, CandleStructure, MARKET_DIRECTION } from "@/core/interfacesv2";
+import { CandleAnalyzerV2 } from "../candleAnalyzerV2";
 
 /* ============================================================
  * CONFIGURATION
@@ -6,6 +7,14 @@ import type { CandleInfo, CandleStructure, MARKET_DIRECTION } from "@/core/inter
  * should hardcode a magic number — reference these constants.
  * ============================================================ */
 const CONFIG = {
+    // Volume spike lookback, same as the old SimulationUtility's
+    // hasVolumeSpike(movingCandles, 20).
+    VOLUME_SPIKE_LOOKBACK: 20,
+
+    // Change z-score window, same as the old SimulationUtility's
+    // getCandleChangeZScore(movingCandles, 50).
+    CHANGE_ZSCORE_LENGTH: 50,
+
     // A candle is a doji when its body is this fraction of its range or less.
     DOJI_BODY_RATIO_THRESHOLD: 0.10,
 
@@ -384,6 +393,9 @@ export function getCandleStructure(
             consecutiveBearish: newConsecutive.consecutiveBearish,
 
             strength,
+
+            volumeSpike: CandleAnalyzerV2.hasVolumeSpike(candles, CONFIG.VOLUME_SPIKE_LOOKBACK),
+            changePercentageZScore: CandleAnalyzerV2.getCandleChangeZScore(candles, CONFIG.CHANGE_ZSCORE_LENGTH),
         };
     }
 
@@ -467,10 +479,20 @@ export function getCandleStructure(
             consecutiveBearish: runningConsecutive.consecutiveBearish,
 
             strength,
+
+            // Only the last candle's structure is returned, so only it
+            // needs the (history-dependent) spike check - set below.
+            volumeSpike: false,
+            changePercentageZScore: 0,
         };
 
         results.push(structure);
     }
 
-    return results[results.length - 1];
+    const last = results[results.length - 1];
+    if (last) {
+        last.volumeSpike = CandleAnalyzerV2.hasVolumeSpike(candles, CONFIG.VOLUME_SPIKE_LOOKBACK);
+        last.changePercentageZScore = CandleAnalyzerV2.getCandleChangeZScore(candles, CONFIG.CHANGE_ZSCORE_LENGTH);
+    }
+    return last;
 }

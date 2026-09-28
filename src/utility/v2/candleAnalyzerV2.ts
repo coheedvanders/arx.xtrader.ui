@@ -3,6 +3,64 @@ import type { CandleInfo } from "@/core/interfacesv2"
 
 export class CandleAnalyzerV2 {
     /**
+     * CandleInfo port of candleAnalyzer.getCandleChangeZScore (old
+     * candleAnalyzerUtility.ts). The old one read candleData.change_percentage_v,
+     * which is ((close - open) / open) * 100 rounded to 2dp; CandleInfo has no
+     * candleData, so that is computed here the same way. Returns the z-score of
+     * the LAST candle's absolute change against the last `length` candles
+     * (itself included), or 0 when there aren't `length` candles yet.
+     */
+    static getCandleChangeZScore(candles: CandleInfo[], length: number): number {
+        if (candles.length < length) return 0;
+
+        const absChange = (c: CandleInfo): number | null => {
+            if (!c.open) return null;
+            return Math.abs(parseFloat((((c.close - c.open) / c.open) * 100).toFixed(2)));
+        };
+
+        const absChanges = candles
+            .slice(-length)
+            .map(absChange)
+            .filter((v): v is number => v !== null && Number.isFinite(v));
+
+        if (absChanges.length === 0) return 0;
+
+        const mean = absChanges.reduce((a, b) => a + b, 0) / absChanges.length;
+        const variance = absChanges.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / absChanges.length;
+        const stdDev = Math.sqrt(variance);
+
+        const latestAbsChange = absChange(candles[candles.length - 1]);
+        if (latestAbsChange === null || !Number.isFinite(latestAbsChange)) return 0;
+
+        return stdDev === 0 ? 0 : (latestAbsChange - mean) / stdDev;
+    }
+
+    /**
+     * CandleInfo port of candleAnalyzer.hasVolumeSpike (old
+     * candleAnalyzerUtility.ts): the LAST candle in `candles` is a spike
+     * when its volume is >= multiplier x the average of the previous
+     * `lookbackPeriod` candles' (non-zero) volume AND >= their max.
+     */
+    static hasVolumeSpike(candles: CandleInfo[], lookbackPeriod: number = 20, multiplier: number = 1.8): boolean {
+        if (candles.length < lookbackPeriod + 1) return false;
+
+        const currentVolume = candles[candles.length - 1].volume;
+        if (!currentVolume || currentVolume === 0) return false;
+
+        const pastVolumes = candles
+            .slice(-lookbackPeriod - 1, -1)
+            .map(c => c.volume)
+            .filter(v => v && v > 0);
+
+        if (pastVolumes.length === 0) return false;
+
+        const avgVolume = pastVolumes.reduce((sum, v) => sum + v, 0) / pastVolumes.length;
+        const maxVolume = Math.max(...pastVolumes);
+
+        return currentVolume >= avgVolume * multiplier && currentVolume >= maxVolume;
+    }
+
+    /**
      * Average true range: the mean of the last `period` true ranges.
      *
      * =====================================================================

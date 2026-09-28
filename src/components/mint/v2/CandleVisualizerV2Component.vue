@@ -29,45 +29,10 @@
 
         <button
           class="chip"
-          :class="{ active: showCrossTfEma }"
-          title="Project 15M/1H/4H/1D EMA200 onto this chart (hotkey: E)"
-          @click="showCrossTfEma = !showCrossTfEma"
-        >XTF EMA</button>
-
-        <button
-          class="chip"
-          :class="{ active: showLHAnchors }"
-          title="Liquidity heatmap anchors: START/END of each trend segment (swing structure), auto-anchors the heatmap over every confirmed segment"
-          @click="showLHAnchors = !showLHAnchors"
-        >LH Anchors</button>
-
-        <button
-          class="chip"
-          :class="{ active: showPriceAction }"
-          title="Strong confirmed price action only: a completed sweep->reject->reclaim->displace sequence, or a decisive rejection at a previous liquidity anchor's hot zone"
-          @click="showPriceAction = !showPriceAction"
-        >Price Action</button>
-
-        <button
-          class="chip"
-          :class="{ active: showMarketStructureLabels }"
-          title="HH/HL/LH/LL swing structure labels on the chart"
-          @click="showMarketStructureLabels = !showMarketStructureLabels"
-        >Market Structure</button>
-
-        <button
-          class="chip"
-          :class="{ active: showTrendPanels }"
-          title="Trend clouds (see trendState.ts) — hover a cloud to see its start/end confirmation lines. Also adds a draggable playback scrubber (starts at the current candle) showing what the cloud actually looked like at any earlier point, before hindsight filled it in."
-          @click="showTrendPanels = !showTrendPanels"
-        >Trend</button>
-
-        <button
-          class="chip"
-          :class="{ active: showTrendPocAvwap }"
-          title="Auto-anchors AVWAP to every TREND_START/TREND_SETTER candle across the last 2 trend segments — each completed trend contributes 2 anchors (its pivot and its confirmation), the current ongoing one contributes just its pivot so far."
-          @click="showTrendPocAvwap = !showTrendPocAvwap"
-        >Trend POC AVWAP</button>
+          :class="{ active: activeToggleCount > 0 }"
+          title="Chart overlay toggles: XTF EMA, LH Anchors, Price Action, Market Structure, Trend, Trend POC AVWAP, Conditions Met, Price Zone"
+          @click="showTogglesModal = true"
+        >See Toggles<template v-if="activeToggleCount > 0"> ({{ activeToggleCount }})</template></button>
 
         <button
           class="chip"
@@ -214,6 +179,10 @@
 
         <button class="icon-btn" title="Reset view (E)" @click="scrollToLatest">⇥</button>
         <button class="icon-btn" title="Refresh from IndexedDB" @click="loadSymbolInfo">⟳</button>
+        <label class="icon-btn auto-combo-toggle" title="Live price updates (Binance websocket + fallback polling). Remembered across sessions.">
+          <input type="checkbox" v-model="liveUpdatesEnabled" />
+          <span>Live</span>
+        </label>
         <label class="icon-btn auto-combo-toggle" title="Auto-plot the FRVP+AVWAP+heatmap combo at the last liquidityAnchor.length===2 candle on symbol load">
           <input type="checkbox" v-model="autoPlotDefaultCombo" />
           <span>Auto-combo</span>
@@ -411,6 +380,29 @@
                  to its actual start/end confirmation candles — hidden
                  by default so the chart doesn't stay cluttered with
                  every segment's confirmation lag at once. -->
+            <!-- Price zones: one box per session zone (candle.priceZone,
+                 see simulationUtilityV2.ts), same look as the old
+                 CandleEntryVisualizerComponent — grey for past sessions,
+                 blue for the latest, dashed mid line. -->
+            <g v-if="showPriceZones" class="price-zones">
+              <template v-for="zone in visiblePriceZones" :key="`pz-${zone.startGi}`">
+                <rect
+                  :class="['zone-rect', { 'zone-active': zone.isActive }]"
+                  :x="candleX(zone.startGi) - candleWidth / 2"
+                  :y="priceToY(zone.upper)"
+                  :width="candleX(zone.endGi) - candleX(zone.startGi) + candleWidth"
+                  :height="priceToY(zone.lower) - priceToY(zone.upper)"
+                />
+                <line
+                  class="zone-mid-line"
+                  :x1="candleX(zone.startGi) - candleWidth / 2"
+                  :x2="candleX(zone.endGi) + candleWidth / 2"
+                  :y1="priceToY(zone.mid)"
+                  :y2="priceToY(zone.mid)"
+                />
+              </template>
+            </g>
+
             <g class="trend-clouds">
               <template v-for="cloud in activeTrendClouds" :key="`trend-${cloud.startGi}`">
                 <rect
@@ -456,6 +448,23 @@
               </template>
             </g>
 
+            <!-- ATR extension: box from close to close ± ATR (in the
+                 candle's own direction), drawn behind the candle. Same as
+                 the old CandleEntryVisualizerComponent — only shown when
+                 the extension is at least 1% of price. -->
+            <g v-if="showAtrExtension" class="atr-extensions">
+              <template v-for="c in displayCandles" :key="`atr-ext-${c.gi}`">
+                <rect
+                  v-if="atrExtension(c.candle)"
+                  class="atr-extension-rect"
+                  :x="candleX(c.gi) - candleWidth / 2"
+                  :y="priceToY(Math.max(c.candle.close, atrExtension(c.candle)!))"
+                  :width="candleWidth"
+                  :height="Math.abs(priceToY(atrExtension(c.candle)!) - priceToY(c.candle.close))"
+                />
+              </template>
+            </g>
+
             <!-- candles (drawn beneath drawing tools so drawings/handles stay clickable) -->
             <g class="candles">
               <g
@@ -484,13 +493,38 @@
                      least one did. Placed above the wick's high so it
                      never overlaps the candle itself. -->
                 <circle
-                  v-if="nonTrendConditions(c.candle.conditions_met).length > 0"
+                  v-if="visibleConditions(c.candle.conditions_met).length > 0"
                   class="condition-met-dot"
                   :cx="candleX(c.gi)"
                   :cy="priceToY(c.candle.high) - 8"
                   r="2.5"
                 >
-                  <title>{{ nonTrendConditions(c.candle.conditions_met).join(', ') }}</title>
+                  <title>{{ visibleConditions(c.candle.conditions_met).join(', ') }}</title>
+                </circle>
+
+                <!-- Volume spike: yellow dot below the low, like the old
+                     CandleEntryVisualizerComponent (candleStructure.volumeSpike). -->
+                <circle
+                  v-if="showVolumeSpike && c.candle.candleStructure?.volumeSpike"
+                  class="volume-spike-dot"
+                  :cx="candleX(c.gi)"
+                  :cy="priceToY(c.candle.low) + 42"
+                  r="4"
+                >
+                  <title>Volume spike</title>
+                </circle>
+
+                <!-- Change z-score: light blue dot when the candle's
+                     |open->close %| z-score is above 3, like the old
+                     CandleEntryVisualizerComponent. -->
+                <circle
+                  v-if="showChangeZScore && (c.candle.candleStructure?.changePercentageZScore ?? 0) > 3"
+                  class="change-zscore-dot"
+                  :cx="candleX(c.gi)"
+                  :cy="priceToY(c.candle.low) + 54"
+                  r="4"
+                >
+                  <title>Change z-score {{ c.candle.candleStructure.changePercentageZScore.toFixed(2) }}</title>
                 </circle>
 
                 <!--
@@ -1923,6 +1957,57 @@
       <MovementAnalyzerComponent :symbol="symbol" :candles="primaryCandles" />
     </DialogComponent>
 
+    <!-- ── Toggles modal ────────────────────────────────────────────────── -->
+    <div v-if="showTogglesModal" class="modal-overlay" @click.self="showTogglesModal = false">
+      <div class="modal-content toggles-modal">
+        <div class="modal-header">
+          <h2>Toggles</h2>
+          <button class="close-btn" @click="showTogglesModal = false">✕</button>
+        </div>
+        <div class="modal-body toggles-grid">
+          <button
+            v-for="t in CHART_TOGGLES"
+            :key="t.label"
+            class="chip toggle-row"
+            :class="{ active: t.state.value }"
+            :title="t.title"
+            @click="t.state.value = !t.state.value"
+          >
+            <span class="toggle-label">{{ t.label }}</span>
+            <span class="toggle-state">{{ t.state.value ? 'ON' : 'OFF' }}</span>
+          </button>
+
+          <!-- Conditions Met filter: nothing picked = every non-TREND_
+               condition gets the white dot (the original behaviour);
+               anything picked = ONLY candles with one of those. -->
+          <div v-if="showConditionsMet" class="condition-filter">
+            <div class="condition-filter-head">
+              <span>Only notice:</span>
+              <span class="condition-filter-hint">{{ conditionFilter.length === 0 ? 'all (non-trend)' : `${conditionFilter.length} selected` }}</span>
+              <button v-if="conditionFilter.length > 0" class="chip" @click="conditionFilter = []">Clear</button>
+            </div>
+            <div class="condition-filter-list">
+              <button
+                v-for="cond in conditionFilterOptions"
+                :key="cond"
+                class="chip"
+                :class="{ active: conditionFilter.includes(cond) }"
+                @click="toggleConditionFilter(cond)"
+              >{{ cond }}</button>
+              <span v-if="conditionFilterOptions.length === 0" class="condition-filter-hint">No conditions on this chart yet</span>
+            </div>
+            <input
+              v-model="conditionFilterInput"
+              type="text"
+              class="condition-filter-input"
+              placeholder="Add condition name, Enter"
+              @keydown.enter.stop="addConditionFilterFromInput"
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Hotkeys modal ────────────────────────────────────────────────── -->
     <div v-if="showHotkeysModal" class="modal-overlay" @click.self="showHotkeysModal = false">
       <div class="modal-content hotkeys-modal">
@@ -2030,6 +2115,7 @@ import type {
   SIGNAL_DIRECTION,
   LiquidityHeatmapAnchor,
 } from "@/core/interfacesv2";
+import type { PriceZone } from "@/core/interfaces";
 import { klineDbUtilityV2 } from "@/utility/v2/klineDbUtilityV2";
 import { getLiqudationHeatmap, type LiquidationHeatmapCell } from "@/utility/v2/analysis/liquidationHeatmap";
 import { predictMovement, recomputeLevelAtPrice, type MovementPrediction, type PredictedLevel } from "@/utility/v2/analysis/predictMovement";
@@ -2441,11 +2527,30 @@ function syncCrossTimeframeCandles(info: SymbolInfo, primaryOpenTime: number, pr
   }
 }
 
+// "Live" toggle (top right): turns the price websocket AND its 1s REST
+// fallback poll on/off. Persisted, so an OFF choice survives reopening.
+const liveUpdatesEnabled = persistedBooleanRef("liveUpdatesEnabled", true);
+
+function stopLiveUpdates() {
+  closeBinanceWs();
+  stopPriceFallbackPolling();
+  livePrice.value = null;
+}
+
+watch(liveUpdatesEnabled, (enabled) => {
+  if (enabled) connectBinanceWs();
+  else stopLiveUpdates();
+});
+
 function connectBinanceWs() {
   closeBinanceWs();
   // Historical/injected dataset: a live price stream has nothing to do
   // with the window being shown, so don't open one. See providedSymbolInfo.
   if (props.providedSymbolInfo) return;
+  if (!liveUpdatesEnabled.value) {
+    stopLiveUpdates();
+    return;
+  }
   const streamSymbol = activeSymbol.value.trim().toLowerCase();
   if (!streamSymbol) return;
 
@@ -4340,6 +4445,135 @@ const showTrendPocAvwap = persistedBooleanRef("showTrendPocAvwap", false);
 const trendPocAvwapIds = ref<Set<string>>(new Set());
 
 const showMovementAnalyzer = ref(false);
+
+/** Session price-zone boxes (candle.priceZone). Off by default. Persisted. */
+const showPriceZones = persistedBooleanRef("showPriceZones", false);
+
+/** White condition-met dot. Defaults on — it was always visible before becoming toggleable. */
+const showConditionsMet = persistedBooleanRef("showConditionsMet", true);
+
+/** Conditions to ONLY notice. Empty = every non-TREND_ condition (original behaviour). Persisted as JSON. */
+const CONDITION_FILTER_KEY = "cev2.conditionFilter";
+function loadConditionFilter(): string[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CONDITION_FILTER_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === "string") : [];
+  } catch {
+    return [];
+  }
+}
+const conditionFilter = ref<string[]>(loadConditionFilter());
+watch(conditionFilter, (val) => {
+  try {
+    localStorage.setItem(CONDITION_FILTER_KEY, JSON.stringify(val));
+  } catch {
+    // ignore — persistence is a nice-to-have
+  }
+}, { deep: true });
+const conditionFilterInput = ref("");
+
+/** Every condition present on the current chart, plus any filtered ones not seen here (so they can still be un-picked). */
+const conditionFilterOptions = computed(() => {
+  const set = new Set<string>(conditionFilter.value);
+  for (const c of primaryCandles.value) {
+    for (const cond of c?.conditions_met ?? []) set.add(cond);
+  }
+  return [...set].sort();
+});
+
+function toggleConditionFilter(cond: string) {
+  conditionFilter.value = conditionFilter.value.includes(cond)
+    ? conditionFilter.value.filter(c => c !== cond)
+    : [...conditionFilter.value, cond];
+}
+
+function addConditionFilterFromInput() {
+  const cond = conditionFilterInput.value.trim();
+  if (cond && !conditionFilter.value.includes(cond)) conditionFilter.value = [...conditionFilter.value, cond];
+  conditionFilterInput.value = "";
+}
+
+/** Which of a candle's conditions earn the white dot, given the toggle and filter. */
+function visibleConditions(conditions: string[] | undefined | null): string[] {
+  if (!showConditionsMet.value) return [];
+  if (conditionFilter.value.length === 0) return nonTrendConditions(conditions);
+  return (conditions ?? []).filter(c => conditionFilter.value.includes(c));
+}
+
+/** Yellow volume-spike dot (candleStructure.volumeSpike). Off by default. Persisted. */
+const showVolumeSpike = persistedBooleanRef("showVolumeSpike", false);
+
+/** Light blue change z-score dot (candleStructure.changePercentageZScore > 3). Off by default. Persisted. */
+const showChangeZScore = persistedBooleanRef("showChangeZScore", false);
+
+/** ATR extension boxes. Off by default. Persisted. */
+const showAtrExtension = persistedBooleanRef("showAtrExtension", false);
+
+/**
+ * close ± candle.atr in the candle's direction (bull adds, bear subtracts),
+ * ported from the old SimulationUtility's close_atr_adjusted. Null when
+ * there's no ATR, the candle is a doji, or the extension is under 1% of
+ * price (the old visualizer hid those too).
+ */
+function atrExtension(candle: CandleInfo | undefined): number | null {
+  if (!candle || !Number.isFinite(candle.atr) || candle.atr <= 0) return null;
+  let adjusted: number;
+  if (candle.close > candle.open) adjusted = candle.close + candle.atr;
+  else if (candle.close < candle.open) adjusted = candle.close - candle.atr;
+  else return null;
+  const absChangePct = Math.abs(((candle.close - adjusted) / adjusted) * 100);
+  return absChangePct >= 1 ? adjusted : null;
+}
+
+// "See Toggles" modal — the chart overlay toggles live here instead of as
+// individual chips in the top bar.
+const showTogglesModal = ref(false);
+const CHART_TOGGLES: { label: string; title: string; state: Ref<boolean> }[] = [
+  { label: "XTF EMA", state: showCrossTfEma, title: "Project 15M/1H/4H/1D EMA200 onto this chart (hotkey: E)" },
+  { label: "Price Action", state: showPriceAction, title: "Strong confirmed price action only: a completed sweep->reject->reclaim->displace sequence, or a decisive rejection at a previous liquidity anchor's hot zone" },
+  { label: "Market Structure", state: showMarketStructureLabels, title: "HH/HL/LH/LL swing structure labels on the chart" },
+  { label: "Trend", state: showTrendPanels, title: "Trend clouds (see trendState.ts) — hover a cloud to see its start/end confirmation lines. Also adds a draggable playback scrubber (starts at the current candle) showing what the cloud actually looked like at any earlier point, before hindsight filled it in." },
+  { label: "LH Anchors", state: showLHAnchors, title: "Liquidity heatmap anchors: START/END of each trend segment (swing structure), auto-anchors the heatmap over every confirmed segment" },
+  { label: "Trend POC AVWAP", state: showTrendPocAvwap, title: "Auto-anchors AVWAP to every TREND_START/TREND_SETTER candle across the last 2 trend segments — each completed trend contributes 2 anchors (its pivot and its confirmation), the current ongoing one contributes just its pivot so far." },
+  { label: "Conditions Met", state: showConditionsMet, title: "White dot above candles with a conditions_met entry. Pick conditions below to ONLY notice those; pick none to see every non-trend condition." },
+  { label: "Volume Spike", state: showVolumeSpike, title: "Yellow dot below candles whose volume is >= 1.8x the prior 20 candles' average AND >= their max" },
+  { label: "Change Z Score", state: showChangeZScore, title: "Light blue dot below candles whose |open->close %| z-score (vs the last 50 candles) is above 3" },
+  { label: "ATR Extension", state: showAtrExtension, title: "Box from close to close ± ATR in the candle's direction (bull up, bear down), like the old visualizer. Only shown when the extension is at least 1% of price." },
+  { label: "Price Zone", state: showPriceZones, title: "Session price zones (00/06/12/18): the zone built from the last 24 candles at each session start, with its mid line" },
+];
+const activeToggleCount = computed(() => CHART_TOGGLES.filter(t => t.state.value).length);
+
+/**
+ * One box per session price zone overlapping the visible range. Every
+ * candle in a session shares the SAME priceZone object (see
+ * simulationUtilityV2.ts), so consecutive candles are grouped by
+ * reference. The latest zone is extended forward to a full 6h session,
+ * like the old visualizer did with CANDLES_PER_ZONE.
+ */
+const visiblePriceZones = computed(() => {
+  if (!showPriceZones.value) return [];
+  const zones: { startGi: number; endGi: number; upper: number; mid: number; lower: number; isActive: boolean }[] = [];
+  let current: PriceZone | null = null;
+  for (const { gi, candle } of displayCandles.value) {
+    const pz = candle?.priceZone ?? null;
+    if (pz && pz === current) {
+      zones[zones.length - 1].endGi = gi;
+    } else if (pz) {
+      zones.push({ startGi: gi, endGi: gi, upper: pz.upper, mid: pz.mid, lower: pz.lower, isActive: false });
+    }
+    current = pz;
+  }
+  const lastGi = primaryCandles.value.length - 1;
+  const last = zones[zones.length - 1];
+  if (last && last.endGi === lastGi && primaryCandles.value[lastGi]?.priceZone) {
+    last.isActive = true;
+    const sessionCandles = Math.max(1, Math.round((6 * 60 * 60 * 1000) / TF_DURATION_MS[primaryTf.value]));
+    let firstGi = last.endGi;
+    while (firstGi > 0 && primaryCandles.value[firstGi - 1]?.priceZone === primaryCandles.value[lastGi].priceZone) firstGi--;
+    last.endGi = Math.max(last.endGi, firstGi + sessionCandles - 1);
+  }
+  return zones;
+});
 
 // ── Liquidity heatmap tool ─────────────────────────────────────────────
 
@@ -7741,6 +7975,24 @@ width: 30rem;
     fill: #ffffff;
     pointer-events: auto;
 }
+.volume-spike-dot { fill: #fbbf24; opacity: 0.9; pointer-events: auto; }
+.change-zscore-dot { fill: #3bd1ff; opacity: 0.9; pointer-events: auto; }
+.atr-extensions { pointer-events: none; }
+.atr-extension-rect { fill: #000; stroke: #808080; stroke-width: 1; opacity: 0.25; }
+.price-zones { pointer-events: none; }
+.zone-rect { fill: rgba(128,128,128,0.12); stroke: rgba(255,255,255,0.1); stroke-width: 1; }
+.zone-rect.zone-active { fill: rgba(100,149,237,0.2); stroke: rgba(100,149,237,0.4); stroke-width: 2; }
+.zone-mid-line { stroke: rgba(255,255,255,0.3); stroke-width: 1.5; stroke-dasharray: 4,4; }
+.toggles-modal { min-width: 320px; }
+.toggles-grid { display: flex; flex-direction: column; gap: 8px; }
+.toggle-row { display: flex; justify-content: space-between; align-items: center; width: 100%; }
+.toggle-state { font-size: 10px; opacity: 0.8; }
+.condition-filter { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+.condition-filter-head { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.condition-filter-hint { font-size: 11px; opacity: 0.6; }
+.condition-filter-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 220px; overflow-y: auto; }
+.condition-filter-input { background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 4px; color: inherit; padding: 6px 8px; font-size: 12px; }
+
 .trend-cloud {
   /* Rendered behind candles/drawings in document order, so those still
      receive hover first wherever they overlap — this only picks up
