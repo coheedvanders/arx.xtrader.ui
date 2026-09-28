@@ -226,18 +226,21 @@ const stepBuffers = new Map<string, CandleInfo[]>();
  * Builds one symbol's initial window.
  *
  * With no start date this is exactly the old call, so nothing changes. With one,
- * the window ENDS at that date - the last candle of the window is the candle at
- * the start date - so the first "next" advances past it. A window that started
- * there instead would put the scan 500 candles into the future of the date that
- * was typed.
+ * the window STARTS at that date: its first candle is the one opening at the
+ * start date, and it runs maxInitCandles forward (capped at now), so the data
+ * begins where the date says - same as Auto Capture. "next" then continues
+ * after the window's last candle. (It used to END at the start date, which put
+ * the first candle ~5 days earlier.) The first ~200 candles are indicator
+ * warm-up inside the window.
  */
 async function constructWindow(symbol: string): Promise<SymbolInfo> {
     const startMs = props.simulationStart ?? 0;
     if (!startMs) {
         return await SimulationUtilityV2.constructSymbolInfo(symbol, props.maxInitCandles);
     }
-    const from = startMs - props.maxInitCandles * FIFTEEN_MIN_MS;
-    const raw = await KlineUtility.getRecentKlinesByRange(symbol, props.interval, props.maxInitCandles, from, startMs);
+    const to = Math.min(startMs + (props.maxInitCandles - 1) * FIFTEEN_MIN_MS, Date.now());
+    const raw = (await KlineUtility.getRecentKlinesByRange(symbol, props.interval, props.maxInitCandles, startMs, to))
+        .filter(c => c.openTime >= startMs);
     // Built here rather than by calling constructSymbolInfo and overwriting its
     // candles, which would spend a second REST call fetching a window that is
     // then thrown away. The empty arrays are what constructSymbolInfo sets too.
@@ -510,9 +513,140 @@ async function showEntryHistoryModal(futureSymbol: FuturesSymbol) {
     visitedSymbols.value.add(futureSymbol.symbol);
 }
 
+/** Retries for a range fetch that comes back short of the requested end. */
+const CAPTURE_FETCH_RETRIES = 3;
+const CAPTURE_RETRY_DELAY_MS = 5000;
+
+/**
+ * Minimum time per klines CALL, per batch. Each call of up to 1000 candles
+ * costs weight 5. Four batches running unpaced reach ~2,800 weight/min on a
+ * 30-day range - over Binance's 2,400 and into 429s (repeated 429s earn a 418
+ * IP ban). 667 ms per call per batch caps the four at ~1,800 weight/min.
+ * A 30-day range is 3 calls, so 2 s per symbol: ~3 minutes for 300 symbols.
+ */
+const CAPTURE_MIN_MS_PER_KLINES_CALL = 667;
+
+/**
+ * AUTO CAPTURE: every symbol's full [startMs, endMs] range, analyzed and
+ * stored whole - nothing is dropped, unlike "next" which keeps the window at
+ * maxInitCandles.
+ *
+ * WHY ONE runMarketAnalysis CALL PER SYMBOL IS "AUTO NEXT". runAnalysis walks
+ * the candles forward one at a time and only ever reads candles up to the one
+ * it is processing, so walking a range once produces exactly what pressing
+ * "next" on a never-trimmed window would leave behind after the last press:
+ * each press re-derives the same earlier candles identically, then the new
+ * one. Doing it as one walk is the same result without re-deriving the
+ * history thousands of times.
+ *
+ * The first stored candle is the one opening at startMs, so the first ~200
+ * candles are indicator warm-up (EMA200 etc.) INSIDE the captured range.
+ *
+ * Symbols are processed one at a time per batch (the parent runs the four
+ * batches together) - a 30-day window is several MB per symbol analyzed, so
+ * nothing is kept in memory once it is stored. All symbols are captured; the
+ * "interesting symbols" filter does not apply.
+ *
+ * A fetch that ends before endMs is retried (Binance answers a rate limit with
+ * a non-array body, which getRecentKlinesByRange treats as "no more data").
+ * A symbol that still ends early - delisted, or genuinely short - is stored
+ * with what it has and says so in its status.
+ */
+async function autoCaptureRange(
+    startMs: number,
+    endMs: number,
+    shouldStop: () => boolean,
+    onSymbolDone?: () => void
+): Promise<{ captured: number; candles: number; stopped: boolean }> {
+    stepBuffers.clear();
+    symbolWindows.clear();
+
+    const lastWantedOpenTime = Math.min(endMs, Date.now() - FIFTEEN_MIN_MS);
+    const expected = Math.floor((lastWantedOpenTime - startMs) / FIFTEEN_MIN_MS) + 1;
+    let captured = 0;
+    let totalCandles = 0;
+    const minMsPerSymbol = Math.ceil(expected / 1000) * CAPTURE_MIN_MS_PER_KLINES_CALL;
+
+    for (let s = 0; s < props.futureSymbols.length; s++) {
+        if (shouldStop()) {
+            progressCounter.value = 0;
+            return { captured, candles: totalCandles, stopped: true };
+        }
+
+        const futureSymbol = props.futureSymbols[s];
+        progressCounter.value = s + 1;
+        currentFutureSumbol.value = futureSymbol;
+        const symbolStartedAt = Date.now();
+
+        try {
+            futureSymbol.status = "fetching";
+            let raw: Candle[] = [];
+            for (let attempt = 0; attempt <= CAPTURE_FETCH_RETRIES; attempt++) {
+                raw = await KlineUtility.getRecentKlinesByRange(futureSymbol.symbol, props.interval, expected, startMs, endMs);
+                const last = raw.length ? raw[raw.length - 1].openTime : 0;
+                if (last >= lastWantedOpenTime || attempt === CAPTURE_FETCH_RETRIES) break;
+                futureSymbol.status = `short fetch, retry ${attempt + 1}`;
+                await new Promise(resolve => setTimeout(resolve, CAPTURE_RETRY_DELAY_MS));
+            }
+            const candles = SimulationUtilityV2.mapToInfo(raw).filter(c => c.openTime >= startMs && c.openTime <= endMs);
+            if (candles.length < 2) {
+                futureSymbol.status = "no data in range";
+                continue;
+            }
+
+            let gaps = 0;
+            for (let k = 1; k < candles.length; k++) {
+                if (candles[k].openTime - candles[k - 1].openTime !== FIFTEEN_MIN_MS) gaps++;
+            }
+
+            const symbolInfo: SymbolInfo = {
+                name: futureSymbol.symbol,
+                candle_15m: candles,
+                candle_1h: [], candle_4h: [], candle_1d: [],
+                oi_15m: [], oi_1h: [], oi_4h: [], oi_1d: [],
+                ls_15m: [], ls_1h: [], ls_4h: [], ls_1d: [],
+                trendstats_15m: null,
+            };
+
+            futureSymbol.status = "processing";
+            await SimulationUtilityV2.runMarketAnalysis(symbolInfo, []);
+
+            // Awaited here (not fire-and-forget like the scan): the next
+            // symbol's multi-MB window must not pile up behind pending writes.
+            await klineDbUtilityV2.storeSymbolInfo(symbolInfo);
+            setRecentFutureCandleData(symbolInfo.candle_15m);
+            updateStoreFutureSymbolSimulationStats(symbolInfo.name, symbolInfo.candle_15m);
+
+            captured++;
+            totalCandles += candles.length;
+            const endedEarly = candles[candles.length - 1].openTime < lastWantedOpenTime;
+            const startedLate = candles[0].openTime > startMs;
+            futureSymbol.status =
+                `captured ${candles.length}`
+                + (startedLate ? " (listed later)" : "")
+                + (endedEarly ? " (ends early)" : "")
+                + (gaps ? ` (${gaps} gap${gaps === 1 ? "" : "s"})` : "");
+        } catch (error) {
+            console.error("autoCaptureRange", futureSymbol.symbol, error);
+            futureSymbol.status = "capture failed";
+        } finally {
+            onSymbolDone?.();
+        }
+
+        // Rate-limit pacing (see CAPTURE_MIN_MS_PER_KLINES_CALL); also lets
+        // the page repaint and the other batches interleave.
+        const elapsed = Date.now() - symbolStartedAt;
+        await new Promise(resolve => setTimeout(resolve, Math.max(0, minMsPerSymbol - elapsed)));
+    }
+
+    progressCounter.value = 0;
+    return { captured, candles: totalCandles, stopped: false };
+}
+
 defineExpose({
     runInitialScan,
-    stepNextCandle
+    stepNextCandle,
+    autoCaptureRange
 });
 </script>
 

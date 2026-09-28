@@ -32,7 +32,12 @@ export interface ImbalanceZone {
     confirmedOpenTime: number;
 }
 
-export function getImbalanceState(movingCandles: CandleInfo[]): ImbalanceZone | null {
+/**
+ * Renamed from getImbalanceState: that name now belongs to the zone-based
+ * auction imbalance in imbalanceState.ts, which reports this gap as its
+ * `fairValueGap` field.
+ */
+export function getFairValueGap(movingCandles: CandleInfo[]): ImbalanceZone | null {
     const n = movingCandles.length;
     if (n < 3) return null;
 

@@ -41,10 +41,11 @@ import type {
  * always played in this module. Renaming the interface field wasn't
  * asked for and isn't done here.
  *
- * This module does NOT implement breakout/failedBreakout — deferred as a
- * separate pass since it's a distinct hypothesis (a clean break with no
- * touch/reject drama) from the AVWAP-interaction validation loop this
- * module answers. Both are returned as blank/false.
+ * getPriceAction itself returns breakout/failedBreakout blank. They are a
+ * distinct hypothesis (a clean break of structure with no touch/reject
+ * drama), computed separately by getBreakoutEvents below and attached by
+ * runAnalysis, which owns the confirmed swing levels they are measured
+ * against.
  *
  * ── Field conventions (the interface doesn't specify these, so stating
  *    them explicitly rather than deciding silently) ──
@@ -355,4 +356,111 @@ export function getPriceAction(movingCandles: CandleInfo[], activePocAvwaps: { v
         strongAction,
         reasons: reasons.length ? reasons : ["Sequence pending, no new stage reached this candle"],
     };
+}
+
+/* ============================================================
+ * BREAKOUT / FAILED BREAKOUT
+ * ============================================================ */
+
+const BREAKOUT_CONFIG = {
+    // How far (in ATRs) the close must clear the level to count as a
+    // breakout rather than a close that merely sits on it. Filters the
+    // "closed 1 tick above" noise. ARBITRARY, uncalibrated.
+    MIN_CLOSE_BEYOND_ATR: 0.1,
+
+    // A breakout that closes back on the wrong side of its level within
+    // this many candles is a failed breakout. ARBITRARY, uncalibrated.
+    FAILED_LOOKBACK: 3,
+
+    // strength = how far the close cleared the level, where this many ATRs
+    // or more maps to 100. ARBITRARY.
+    STRENGTH_MAX_ATR: 1.0,
+};
+
+/**
+ * Breakout of CONFIRMED structure, and its failure.
+ *
+ * Level: the last confirmed, significant swing high (LONG) / swing low
+ * (SHORT) as of this candle - the same reference runAnalysis keeps for
+ * HH/HL/LH/LL classification (lastSwingHighPrice / lastSwingLowPrice).
+ * Those only update once a swing is confirmed (2 candles after the swing
+ * candle) and differs from the previous reference by >= 1 ATR, so nothing
+ * here looks ahead.
+ *
+ *   breakout (MOMENTARY): the FIRST close beyond the level by at least
+ *     MIN_CLOSE_BEYOND_ATR x ATR - previous close was not beyond it.
+ *     LONG above the swing high, SHORT below the swing low.
+ *   failedBreakout (MOMENTARY): a breakout within the previous
+ *     FAILED_LOOKBACK candles, and THIS is the first close back on the
+ *     other side of that breakout's level. Direction is the opposite of
+ *     the breakout (a failed LONG breakout is a SHORT signal).
+ *
+ * volumeConfirmation = volumeState.relativeVolume (x normal volume);
+ * displacementConfirmation = candleStructure.bodyAtrRatio. Both are raw
+ * numbers, not scores, so they can be thresholded in analysis.
+ *
+ * Reads candleStructure/volumeState of the current candle and priceAction
+ * of the previous ones, so it must run after those are computed.
+ */
+export function getBreakoutEvents(
+    movingCandles: CandleInfo[],
+    lastSwingHighPrice: number | null,
+    lastSwingLowPrice: number | null
+): { breakout: PriceActionBreakout; failedBreakout: PriceActionBreakout } {
+    const breakout = blankBreakout();
+    const failedBreakout = blankBreakout();
+
+    const i = movingCandles.length - 1;
+    if (i < 1) return { breakout, failedBreakout };
+
+    const candle = movingCandles[i];
+    const prev = movingCandles[i - 1];
+    const atr = candle.atr;
+    if (!(atr > 0)) return { breakout, failedBreakout };
+
+    const volumeConfirmation = candle.volumeState?.relativeVolume ?? 0;
+    const displacementConfirmation = candle.candleStructure?.bodyAtrRatio ?? 0;
+    const minBeyond = BREAKOUT_CONFIG.MIN_CLOSE_BEYOND_ATR * atr;
+    const strengthOf = (beyond: number) =>
+        Math.round(Math.min(1, beyond / (BREAKOUT_CONFIG.STRENGTH_MAX_ATR * atr)) * 100);
+
+    // ── Breakout ──
+    if (lastSwingHighPrice !== null
+        && candle.close >= lastSwingHighPrice + minBeyond
+        && prev.close <= lastSwingHighPrice) {
+        const beyond = candle.close - lastSwingHighPrice;
+        Object.assign(breakout, {
+            detected: true, direction: "LONG" as SIGNAL_DIRECTION, strength: strengthOf(beyond),
+            level: lastSwingHighPrice, volumeConfirmation, displacementConfirmation,
+            reasons: [`First close above confirmed swing high ${lastSwingHighPrice} by ${(beyond / atr).toFixed(2)}x ATR`],
+        });
+    } else if (lastSwingLowPrice !== null
+        && candle.close <= lastSwingLowPrice - minBeyond
+        && prev.close >= lastSwingLowPrice) {
+        const beyond = lastSwingLowPrice - candle.close;
+        Object.assign(breakout, {
+            detected: true, direction: "SHORT" as SIGNAL_DIRECTION, strength: strengthOf(beyond),
+            level: lastSwingLowPrice, volumeConfirmation, displacementConfirmation,
+            reasons: [`First close below confirmed swing low ${lastSwingLowPrice} by ${(beyond / atr).toFixed(2)}x ATR`],
+        });
+    }
+
+    // ── Failed breakout: most recent breakout in the lookback, first close back ──
+    for (let k = i - 1; k >= Math.max(0, i - BREAKOUT_CONFIG.FAILED_LOOKBACK); k--) {
+        const b = movingCandles[k].priceAction?.breakout;
+        if (!b || !b.detected) continue;
+        const failedLong = b.direction === "LONG" && prev.close >= b.level && candle.close < b.level;
+        const failedShort = b.direction === "SHORT" && prev.close <= b.level && candle.close > b.level;
+        if (failedLong || failedShort) {
+            const back = Math.abs(candle.close - b.level);
+            Object.assign(failedBreakout, {
+                detected: true, direction: (failedLong ? "SHORT" : "LONG") as SIGNAL_DIRECTION,
+                strength: strengthOf(back), level: b.level, volumeConfirmation, displacementConfirmation,
+                reasons: [`${b.direction} breakout of ${b.level} from ${i - k} candle(s) ago closed back through the level`],
+            });
+        }
+        break; // only the most recent breakout is judged
+    }
+
+    return { breakout, failedBreakout };
 }

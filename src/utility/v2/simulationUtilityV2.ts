@@ -1,6 +1,7 @@
 import type { CandleInfo, MARKET_INTERVAL, SymbolInfo, SIGNAL_DIRECTION, MarketStructureLabel } from "@/core/interfacesv2";
 import type { Candle, CandleEntry, PriceZone } from "@/core/interfaces";
 import { PriceZoneUtility } from "../priceZoneUtility";
+import { getOutsidePriceZoneMetrics } from "./analysis/priceZoneMetrics";
 import { SimulationUtility } from "../simulationUtility";
 import { CandleAnalyzerV2 } from "./candleAnalyzerV2";
 import { getCandleStructure } from "./analysis/candleStructure";
@@ -11,14 +12,17 @@ import { getVolumeState } from "./analysis/volumeState";
 import { KlineUtility } from "../klineUtility";
 import { getMarketAlignment } from "./analysis/marketAlignment";
 import { getConfluenceScore } from "./analysis/confluenceScore";
-import { getPriceAction } from "./analysis/priceAction";
+import { getPriceAction, getBreakoutEvents } from "./analysis/priceAction";
 import { getLiquidationHeatmapStamp } from "./analysis/liquidationHeatmapStamp";
 import { getLiquidityHeatmapAnchors } from "./analysis/liquidityHeatmapAnchor";
 import { getLiquiditySweepInfo } from "./analysis/liquidationSweepInfo";
-import { getImbalanceState } from "./analysis/imbalance";
+import { getImbalanceState } from "./analysis/imbalanceState";
 import { checkSwingPoint, classifyMarketStructure } from "./analysis/marketStructure";
 import { initTrendTracker, stepTrendTracker, type TrendTrackerState } from "./analysis/trendState";
 import { checkPositionEntry, updatePositionEntry, forceClosePosition, DEFAULT_LEVERAGE } from "./analysis/positionEntry";
+
+/** Price-zone session boundaries are at 00/06/12/18 in this UTC offset (PHT). */
+export const PRICE_ZONE_UTC_OFFSET_HOURS = 8;
 
 /**
  * Entry options for runAnalysis / runMarketAnalysis.
@@ -493,10 +497,13 @@ export class SimulationUtilityV2 {
             // SESSION BASED PRICE ZONE — ported from SimulationUtility.
             // generatePrizeZone only reads open/close/high/low, which
             // CandleInfo has, hence the cast.
-            if (SimulationUtility.isNewZonePeriod(candle.openTime)) {
+            // Boundaries pinned to UTC+8 (PHT: 00/06/12/18), not the browser's
+            // local time, so the same data always yields the same zones.
+            if (SimulationUtility.isNewZonePeriod(candle.openTime, PRICE_ZONE_UTC_OFFSET_HOURS)) {
                 activePriceZone = PriceZoneUtility.generatePrizeZone(movingCandles.slice(-24) as unknown as CandleEntry[], 0);
             }
             candle.priceZone = activePriceZone;
+            candle.outsidePriceZoneMetrics = getOutsidePriceZoneMetrics(candle, candles[i - 1]);
 
             // Threading the previous candle's own stored ema200 lets
             // calculateEMA take its incremental path (one more step)
@@ -536,6 +543,10 @@ export class SimulationUtilityV2 {
                         // confirmIdx actually became knowable.
                         candles[confirmIdx].marketStructure = { label: result.label, confirmedOpenTime: candle.openTime };
                         newlyConfirmedLabel = result.label;
+                        // Tagged on THIS candle - the one that confirms the
+                        // swing - not on the swing candle, so the condition is
+                        // causal (known at this candle's close).
+                        candle.conditions_met.push(`CONFIRMATION_${result.label}`);
                     }
                     if (result.updateReference) {
                         if (swingType === "HIGH") lastSwingHighPrice = price;
@@ -583,7 +594,46 @@ export class SimulationUtilityV2 {
 
             candle.longShort = getLongShortRatioState(targetSymbol,movingCandles,interval);
 
-            candle.volumeState = getVolumeState(movingCandles, candles[i - 1]?.volumeState?.trendVolumeRunningStats ?? undefined)
+            // As-of trend pivot from the tracker: known on pullback candles
+            // too, unlike candle.trendState (null there at this step).
+            candle.volumeState = getVolumeState(
+                movingCandles,
+                candles[i - 1]?.volumeState?.trendVolumeRunningStats ?? undefined,
+                trendTrackerState.direction !== null ? trendTrackerState.pivotIdx : null
+            )
+
+            // Imbalance - AFTER candleStructure and volumeState, which its
+            // per-candle score reads for THIS candle (change z, volume z).
+            candle.imbalanceState = getImbalanceState(movingCandles);
+
+            // VALUE ACCEPTED - an EVENT: the candle where the move is first
+            // ACCEPTED outside value (state turns IMBALANCE_UP/DOWN on this
+            // candle, i.e. the Nth consecutive close outside the zone) with the
+            // overall bias agreeing. A continuation read.
+            {
+                const imb = candle.imbalanceState;
+                const prevImbState = candles[i - 1]?.imbalanceState?.state;
+                if (imb && imb.state !== prevImbState) {
+                    if (imb.state === "IMBALANCE_UP" && imb.bias === "BULLISH") {
+                        candle.conditions_met.push("BULLISH_VALUE_ACCEPTED");
+                    } else if (imb.state === "IMBALANCE_DOWN" && imb.bias === "BEARISH") {
+                        candle.conditions_met.push("BEARISH_VALUE_ACCEPTED");
+                    }
+                }
+            }
+
+            // IMBALANCE DETECTED - this candle's imbalance score (change z-score
+            // 35 + volume z-score 30 + close beyond the zone in its own direction
+            // 35) reached the threshold; see getCandleImbalance. Tagged on EVERY
+            // qualifying candle, so a push shows as a cluster that ends at its
+            // most imbalanced candle. Named by the candle's direction (ICT-style:
+            // an up push is a bullish imbalance, the void sits below price).
+            {
+                const ci = candle.imbalanceState?.candleImbalance;
+                if (ci?.detected) {
+                    candle.conditions_met.push(ci.direction === "BULLISH" ? "BULLISH_IMBALANCE_DETECTED" : "BEARISH_IMBALANCE_DETECTED");
+                }
+            }
 
             // const confirmedAnchors = getLiquidityHeatmapAnchors(movingCandles);
             // for (const { gi, anchor } of confirmedAnchors) {
@@ -631,6 +681,53 @@ export class SimulationUtilityV2 {
 
             const activePocAvwaps = currentPocAvwapValues(candles, pocAvwapAnchors, i);
             candle.priceAction = getPriceAction(movingCandles, activePocAvwaps);
+            // Breakout of CONFIRMED swing structure - getPriceAction leaves
+            // these blank; see getBreakoutEvents for the definition.
+            {
+                const { breakout, failedBreakout } = getBreakoutEvents(movingCandles, lastSwingHighPrice, lastSwingLowPrice);
+                candle.priceAction.breakout = breakout;
+                candle.priceAction.failedBreakout = failedBreakout;
+            }
+
+            if(candle.priceZone){
+                if(candle.close > candle.priceZone.upper){
+                    candle.conditions_met.push("ABOVE_ZONE");
+
+                    if(candle.outsidePriceZoneMetrics!.fromUpperPct > 1){
+                        candle.conditions_met.push("GOOD_DISTANCE_ABOVE_ZONE");
+                    }
+                }
+
+                // Any TREND_SETTER among the candles of the CURRENT zone so far
+                // (this candle included). A zone's candles are contiguous, so
+                // walk back only until the zone changes instead of scanning the
+                // whole history every candle. Zones are compared by value:
+                // candles restored from IndexedDB each hold their own copy.
+                const zone = candle.priceZone;
+                let priceZoneHasTrendSetterCandle = false;
+                for (let k = movingCandles.length - 1; k >= 0; k--) {
+                    const pz = movingCandles[k].priceZone;
+                    if (!pz || pz.upper !== zone.upper || pz.lower !== zone.lower || pz.mid !== zone.mid) break;
+                    if (movingCandles[k].conditions_met?.includes("TREND_SETTER")) {
+                        priceZoneHasTrendSetterCandle = true;
+                        break;
+                    }
+                }
+                if(priceZoneHasTrendSetterCandle){
+                    candle.conditions_met.push("ZONE_HAS_TREND_SETTER");
+                }
+            }
+
+            if(candle.candleStructure.closeAtrAbsChange > 1){
+                candle.conditions_met.push("VOLATILE_ABS_ATR_CHANGE");
+            }
+
+            if(movingCandles.length > 10){
+                var hasRecentStrongPriceAction = movingCandles.slice(-6).filter(c => c.priceAction.strongAction).length >= 1;
+                if(hasRecentStrongPriceAction){
+                    candle.conditions_met.push("RECENT_STRONG_PRICE_ACTION");
+                }
+            }
 
             // Playback snapshot — records, into extras (no new interface
             // fields), what the tracker's state looked like AS OF this

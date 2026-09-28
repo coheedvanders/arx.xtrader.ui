@@ -502,6 +502,22 @@
                   <title>{{ visibleConditions(c.candle.conditions_met).join(', ') }}</title>
                 </circle>
 
+                <!-- Candle pattern marker (candleStructure.patterns): a small
+                     diamond above the condition dot, coloured by the patterns'
+                     bias; hover lists them. Filtered like Conditions Met. -->
+                <rect
+                  v-if="visiblePatterns(c.candle.candleStructure?.patterns).length > 0"
+                  class="candle-pattern-marker"
+                  :class="patternMarkerClass(visiblePatterns(c.candle.candleStructure?.patterns))"
+                  :x="candleX(c.gi) - 3"
+                  :y="priceToY(c.candle.high) - 21"
+                  width="6"
+                  height="6"
+                  :transform="`rotate(45 ${candleX(c.gi)} ${priceToY(c.candle.high) - 18})`"
+                >
+                  <title>{{ visiblePatterns(c.candle.candleStructure?.patterns).join(', ') }}</title>
+                </rect>
+
                 <!-- Volume spike: yellow dot below the low, like the old
                      CandleEntryVisualizerComponent (candleStructure.volumeSpike). -->
                 <circle
@@ -1984,6 +2000,15 @@
             <div class="condition-filter-head">
               <span>Only notice:</span>
               <span class="condition-filter-hint">{{ conditionFilter.length === 0 ? 'all (non-trend)' : `${conditionFilter.length} selected` }}</span>
+              <span class="condition-filter-operator" title="OR: a candle with ANY selected condition gets the dot. AND: only a candle with ALL selected conditions does.">
+                <button
+                  v-for="op in (['OR', 'AND'] as const)"
+                  :key="op"
+                  class="chip"
+                  :class="{ active: conditionFilterOperator === op }"
+                  @click="conditionFilterOperator = op"
+                >{{ op }}</button>
+              </span>
               <button v-if="conditionFilter.length > 0" class="chip" @click="conditionFilter = []">Clear</button>
             </div>
             <div class="condition-filter-list">
@@ -2003,6 +2028,34 @@
               placeholder="Add condition name, Enter"
               @keydown.enter.stop="addConditionFilterFromInput"
             />
+          </div>
+
+          <!-- Candle Patterns filter: nothing picked = every pattern gets the
+               diamond; anything picked = only those (OR / AND, as above). -->
+          <div v-if="showCandlePatterns" class="condition-filter">
+            <div class="condition-filter-head">
+              <span>Patterns:</span>
+              <span class="condition-filter-hint">{{ patternFilter.length === 0 ? 'all' : `${patternFilter.length} selected` }}</span>
+              <span class="condition-filter-operator" title="OR: a candle with ANY selected pattern gets the diamond. AND: only a candle with ALL selected patterns does.">
+                <button
+                  v-for="op in (['OR', 'AND'] as const)"
+                  :key="op"
+                  class="chip"
+                  :class="{ active: patternFilterOperator === op }"
+                  @click="patternFilterOperator = op"
+                >{{ op }}</button>
+              </span>
+              <button v-if="patternFilter.length > 0" class="chip" @click="patternFilter = []">Clear</button>
+            </div>
+            <div class="condition-filter-list">
+              <button
+                v-for="p in CANDLE_PATTERN_OPTIONS"
+                :key="p"
+                class="chip"
+                :class="[{ active: patternFilter.includes(p) }, `pattern-chip-${CANDLE_PATTERN_BIAS[p].toLowerCase()}`]"
+                @click="togglePatternFilter(p)"
+              >{{ p }}</button>
+            </div>
           </div>
         </div>
       </div>
@@ -2094,6 +2147,10 @@
           <div v-if="!batchDownloadInProgress && batchDownloadMissing.length" class="batch-download-missing">
             ⚠ No cached data found for: {{ batchDownloadMissing.join(', ') }}
           </div>
+          <label class="batch-download-slim" title="Drops openInterest / longShort (always empty in backtests) and every 'reasons' text array, and writes compact JSON. Roughly 40% smaller before zipping.">
+            <input type="checkbox" v-model="batchDownloadSlim" :disabled="batchDownloadInProgress" />
+            Slim export (for analysis)
+          </label>
           <div class="batch-download-actions">
             <button class="preview-order-btn" :disabled="batchDownloadInProgress" @click="batchDownloadListed">Download listed</button>
             <button class="preview-order-btn" :disabled="batchDownloadInProgress" @click="batchDownloadAll">Download ALL ({{ chocoMintoStore.futureSymbols.length }} symbols)</button>
@@ -2116,6 +2173,7 @@ import type {
   LiquidityHeatmapAnchor,
 } from "@/core/interfacesv2";
 import type { PriceZone } from "@/core/interfaces";
+import { CANDLE_PATTERN_BIAS, type CandlePattern } from "@/utility/v2/analysis/candlePatterns";
 import { klineDbUtilityV2 } from "@/utility/v2/klineDbUtilityV2";
 import { getLiqudationHeatmap, type LiquidationHeatmapCell } from "@/utility/v2/analysis/liquidationHeatmap";
 import { predictMovement, recomputeLevelAtPrice, type MovementPrediction, type PredictedLevel } from "@/utility/v2/analysis/predictMovement";
@@ -2143,7 +2201,7 @@ import { useChocoMintoStore } from "@/stores/chocoMintoStore";
 import TestPositionViewComponent from "./TestPositionViewComponent.vue";
 import CapturedDataViewComponent from "./CaptureDataViewComponent.vue";
 import WispMonitorComponent from "./WispMonitorComponent.vue";
-import JSZip from "jszip";
+import { downloadSymbolInfoZip } from "@/utility/v2/symbolInfoExport";
 
 // ── Dynamic candle detail renderer ─────────────────────────────────────
 // Intentionally driven by the runtime object rather than CandleInfo's type
@@ -2718,38 +2776,20 @@ function parseSymbolList(input: string): string[] {
  * Missing symbols (no cached data) are collected and surfaced rather
  * than silently dropped, so a typo or an un-cached symbol doesn't just
  * disappear from the result with no explanation.
+ *
+ * The zip building/splitting lives in downloadSymbolInfoZip (shared with
+ * V2MintMain's auto capture).
  */
 async function batchDownloadSymbols(symbols: string[]) {
   if (!symbols.length || batchDownloadInProgress.value) return;
   batchDownloadInProgress.value = true;
   batchDownloadMissing.value = [];
-  const zip = new JSZip();
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-
   try {
-    for (let i = 0; i < symbols.length; i++) {
-      const symbol = symbols[i];
-      batchDownloadProgress.value = { current: i + 1, total: symbols.length, symbol };
-      const info = await klineDbUtilityV2.getSymbolInfo(symbol);
-      if (!info) {
-        batchDownloadMissing.value.push(symbol);
-        continue;
-      }
-      zip.file(`symbolInfo-${symbol}-${stamp}.json`, JSON.stringify(info, null, 2));
-    }
-
-    const foundCount = symbols.length - batchDownloadMissing.value.length;
-    if (foundCount === 0) return; // nothing to download — leave the missing-symbols warning visible
-
-    const blob = await zip.generateAsync({ type: "blob" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `symbolInfo-batch-${stamp}.zip`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const { missing } = await downloadSymbolInfoZip(symbols, {
+      slim: batchDownloadSlim.value,
+      onProgress: (current, total, symbol) => { batchDownloadProgress.value = { current, total, symbol }; },
+    });
+    batchDownloadMissing.value = missing;
   } finally {
     batchDownloadInProgress.value = false;
     batchDownloadProgress.value = null;
@@ -4472,6 +4512,24 @@ watch(conditionFilter, (val) => {
 }, { deep: true });
 const conditionFilterInput = ref("");
 
+/** How selected conditions combine: OR = any of them, AND = all of them on the same candle. Persisted. */
+const CONDITION_FILTER_OPERATOR_KEY = "cev2.conditionFilterOperator";
+function loadConditionFilterOperator(): "OR" | "AND" {
+  try {
+    return localStorage.getItem(CONDITION_FILTER_OPERATOR_KEY) === "AND" ? "AND" : "OR";
+  } catch {
+    return "OR";
+  }
+}
+const conditionFilterOperator = ref<"OR" | "AND">(loadConditionFilterOperator());
+watch(conditionFilterOperator, (val) => {
+  try {
+    localStorage.setItem(CONDITION_FILTER_OPERATOR_KEY, val);
+  } catch {
+    // ignore — persistence is a nice-to-have
+  }
+});
+
 /** Every condition present on the current chart, plus any filtered ones not seen here (so they can still be un-picked). */
 const conditionFilterOptions = computed(() => {
   const set = new Set<string>(conditionFilter.value);
@@ -4494,10 +4552,67 @@ function addConditionFilterFromInput() {
 }
 
 /** Which of a candle's conditions earn the white dot, given the toggle and filter. */
+/** Candle pattern diamond (candleStructure.patterns). Off by default. Persisted. */
+const showCandlePatterns = persistedBooleanRef("showCandlePatterns", false);
+const CANDLE_PATTERN_OPTIONS = Object.keys(CANDLE_PATTERN_BIAS) as CandlePattern[];
+
+/** Patterns to ONLY notice. Empty = every pattern. Persisted as JSON. */
+const PATTERN_FILTER_KEY = "cev2.patternFilter";
+const PATTERN_FILTER_OPERATOR_KEY = "cev2.patternFilterOperator";
+const patternFilter = ref<string[]>((() => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PATTERN_FILTER_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === "string") : [];
+  } catch {
+    return [];
+  }
+})());
+watch(patternFilter, (val) => {
+  try { localStorage.setItem(PATTERN_FILTER_KEY, JSON.stringify(val)); } catch { /* nice-to-have */ }
+}, { deep: true });
+const patternFilterOperator = ref<"OR" | "AND">((() => {
+  try { return localStorage.getItem(PATTERN_FILTER_OPERATOR_KEY) === "AND" ? "AND" : "OR"; } catch { return "OR"; }
+})());
+watch(patternFilterOperator, (val) => {
+  try { localStorage.setItem(PATTERN_FILTER_OPERATOR_KEY, val); } catch { /* nice-to-have */ }
+});
+
+function togglePatternFilter(p: string) {
+  patternFilter.value = patternFilter.value.includes(p)
+    ? patternFilter.value.filter(x => x !== p)
+    : [...patternFilter.value, p];
+}
+
+/** Which of a candle's patterns earn the diamond, given the toggle and filter. */
+function visiblePatterns(patterns: string[] | undefined | null): string[] {
+  if (!showCandlePatterns.value || !patterns?.length) return [];
+  if (patternFilter.value.length === 0) return patterns;
+  const matched = patterns.filter(p => patternFilter.value.includes(p));
+  if (patternFilterOperator.value === "AND") {
+    return patternFilter.value.every(f => matched.includes(f)) ? matched : [];
+  }
+  return matched;
+}
+
+/** Green when the shown patterns lean bullish, red bearish, grey mixed/neutral. */
+function patternMarkerClass(patterns: string[]): string {
+  let score = 0;
+  for (const p of patterns) {
+    const b = CANDLE_PATTERN_BIAS[p as CandlePattern];
+    if (b === "BULLISH") score++; else if (b === "BEARISH") score--;
+  }
+  return score > 0 ? "pattern-bullish" : score < 0 ? "pattern-bearish" : "pattern-neutral";
+}
+
 function visibleConditions(conditions: string[] | undefined | null): string[] {
   if (!showConditionsMet.value) return [];
   if (conditionFilter.value.length === 0) return nonTrendConditions(conditions);
-  return (conditions ?? []).filter(c => conditionFilter.value.includes(c));
+  const matched = (conditions ?? []).filter(c => conditionFilter.value.includes(c));
+  if (conditionFilterOperator.value === "AND") {
+    // Every selected condition must be on this candle.
+    return conditionFilter.value.every(f => matched.includes(f)) ? matched : [];
+  }
+  return matched;
 }
 
 /** Yellow volume-spike dot (candleStructure.volumeSpike). Off by default. Persisted. */
@@ -4510,19 +4625,17 @@ const showChangeZScore = persistedBooleanRef("showChangeZScore", false);
 const showAtrExtension = persistedBooleanRef("showAtrExtension", false);
 
 /**
- * close ± candle.atr in the candle's direction (bull adds, bear subtracts),
- * ported from the old SimulationUtility's close_atr_adjusted. Null when
- * there's no ATR, the candle is a doji, or the extension is under 1% of
- * price (the old visualizer hid those too).
+ * The ATR-extended close, read from runAnalysis's own
+ * candleStructure.closeAtrAdjusted / closeAtrAbsChange (v1's
+ * close_atr_adjusted / close_atr_abs_change) so the chart always shows
+ * exactly what the data says. Null when the extension is under 1% of price
+ * (the old visualizer hid those too) - which includes dojis (change 0) -
+ * or when the candle was analyzed before these fields existed.
  */
 function atrExtension(candle: CandleInfo | undefined): number | null {
-  if (!candle || !Number.isFinite(candle.atr) || candle.atr <= 0) return null;
-  let adjusted: number;
-  if (candle.close > candle.open) adjusted = candle.close + candle.atr;
-  else if (candle.close < candle.open) adjusted = candle.close - candle.atr;
-  else return null;
-  const absChangePct = Math.abs(((candle.close - adjusted) / adjusted) * 100);
-  return absChangePct >= 1 ? adjusted : null;
+  const cs = candle?.candleStructure;
+  if (!cs || !Number.isFinite(cs.closeAtrAdjusted) || !Number.isFinite(cs.closeAtrAbsChange)) return null;
+  return cs.closeAtrAbsChange >= 1 ? cs.closeAtrAdjusted : null;
 }
 
 // "See Toggles" modal — the chart overlay toggles live here instead of as
@@ -4535,11 +4648,12 @@ const CHART_TOGGLES: { label: string; title: string; state: Ref<boolean> }[] = [
   { label: "Trend", state: showTrendPanels, title: "Trend clouds (see trendState.ts) — hover a cloud to see its start/end confirmation lines. Also adds a draggable playback scrubber (starts at the current candle) showing what the cloud actually looked like at any earlier point, before hindsight filled it in." },
   { label: "LH Anchors", state: showLHAnchors, title: "Liquidity heatmap anchors: START/END of each trend segment (swing structure), auto-anchors the heatmap over every confirmed segment" },
   { label: "Trend POC AVWAP", state: showTrendPocAvwap, title: "Auto-anchors AVWAP to every TREND_START/TREND_SETTER candle across the last 2 trend segments — each completed trend contributes 2 anchors (its pivot and its confirmation), the current ongoing one contributes just its pivot so far." },
+  { label: "Candle Patterns", state: showCandlePatterns, title: "Diamond above candles with a named candlestick pattern (candleStructure.patterns): green bullish, red bearish, grey neutral. Pick patterns below to ONLY notice those." },
   { label: "Conditions Met", state: showConditionsMet, title: "White dot above candles with a conditions_met entry. Pick conditions below to ONLY notice those; pick none to see every non-trend condition." },
   { label: "Volume Spike", state: showVolumeSpike, title: "Yellow dot below candles whose volume is >= 1.8x the prior 20 candles' average AND >= their max" },
   { label: "Change Z Score", state: showChangeZScore, title: "Light blue dot below candles whose |open->close %| z-score (vs the last 50 candles) is above 3" },
-  { label: "ATR Extension", state: showAtrExtension, title: "Box from close to close ± ATR in the candle's direction (bull up, bear down), like the old visualizer. Only shown when the extension is at least 1% of price." },
-  { label: "Price Zone", state: showPriceZones, title: "Session price zones (00/06/12/18): the zone built from the last 24 candles at each session start, with its mid line" },
+  { label: "ATR Extension", state: showAtrExtension, title: "Box from close to candleStructure.closeAtrAdjusted (close ± ATR in the candle direction, like the old visualizer). Shown when candleStructure.closeAtrAbsChange >= 1%. Needs data analyzed after these fields were added." },
+  { label: "Price Zone", state: showPriceZones, title: "Session price zones (00/06/12/18 PHT): the zone built from the last 24 candles at each session start, with its mid line" },
 ];
 const activeToggleCount = computed(() => CHART_TOGGLES.filter(t => t.state.value).length);
 
@@ -7034,6 +7148,7 @@ const batchDownloadInput = persistedStringRef("markedForDownload", "");
 const batchDownloadInProgress = ref(false);
 const batchDownloadProgress = ref<{ current: number; total: number; symbol: string } | null>(null);
 const batchDownloadMissing = ref<string[]>([]);
+const batchDownloadSlim = ref(true);
 
 // Clicking a test position in the modal switches this viewer to that
 // symbol. This component doesn't own its own symbol — it's a prop — so
@@ -7971,12 +8086,20 @@ width: 30rem;
     font-weight: 700;
     pointer-events: none;
 }
+.candle-pattern-marker { stroke: rgba(0, 0, 0, 0.4); stroke-width: 0.5; pointer-events: auto; }
+.candle-pattern-marker.pattern-bullish { fill: #22c55e; }
+.candle-pattern-marker.pattern-bearish { fill: #ef4444; }
+.candle-pattern-marker.pattern-neutral { fill: #9ca3af; }
+.pattern-chip-bullish { border-left: 3px solid #22c55e; }
+.pattern-chip-bearish { border-left: 3px solid #ef4444; }
+.pattern-chip-neutral { border-left: 3px solid #9ca3af; }
 .condition-met-dot {
     fill: #ffffff;
     pointer-events: auto;
 }
 .volume-spike-dot { fill: #fbbf24; opacity: 0.9; pointer-events: auto; }
 .change-zscore-dot { fill: #3bd1ff; opacity: 0.9; pointer-events: auto; }
+.batch-download-slim { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 8px 0; }
 .atr-extensions { pointer-events: none; }
 .atr-extension-rect { fill: #000; stroke: #808080; stroke-width: 1; opacity: 0.25; }
 .price-zones { pointer-events: none; }
@@ -7990,6 +8113,7 @@ width: 30rem;
 .condition-filter { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
 .condition-filter-head { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .condition-filter-hint { font-size: 11px; opacity: 0.6; }
+.condition-filter-operator { display: inline-flex; gap: 4px; }
 .condition-filter-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 220px; overflow-y: auto; }
 .condition-filter-input { background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 4px; color: inherit; padding: 6px 8px; font-size: 12px; }
 

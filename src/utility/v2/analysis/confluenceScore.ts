@@ -3277,6 +3277,11 @@ function buildBasicCandleStructure(
         // other history-dependent flags above.
         volumeSpike: false,
         changePercentageZScore: 0,
+
+        closeAtrAdjusted: close,
+        closeAtrAbsChange: 0,
+
+        patterns: [],
     }
 }
 

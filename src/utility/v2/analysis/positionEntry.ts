@@ -172,8 +172,20 @@ export function checkPositionEntry(
     allowLong: boolean = true,
     allowShort: boolean = true
 ): PositionEntry | null {
-    void candles; void reversingDirection; void reversingSegmentStartGi;
-    void allowShort;
+    void reversingDirection; void reversingSegmentStartGi;
+
+    // ── SHORT: HH confirmed while stretched above the session zone ──
+    // All four tags on THIS candle (all pushed by runAnalysis at this step):
+    //   CONFIRMATION_HH          this candle confirms a higher-high swing
+    //   ABOVE_ZONE               close > priceZone.upper
+    //   GOOD_DISTANCE_ABOVE_ZONE close > 1% above priceZone.upper
+    //   VOLATILE_ABS_ATR_CHANGE  candleStructure.closeAtrAbsChange > 1
+    // Checked before the LONG entry, and gated by allowShort only - the
+    // LONG entry's own allowLong gate must not block it.
+    if (allowShort) {
+        const short = checkHhAboveZoneShort(candle, candles, gi, margin, leverage);
+        if (short) return short;
+    }
 
     // `trigger` is still "POTENTIAL_REVERSAL", which the old reversal entry also
     // used. Exports cannot be separated by entry while that is true; a distinct
@@ -242,6 +254,92 @@ export function checkPositionEntry(
     }
 
     return null;
+}
+
+const HH_ABOVE_ZONE_SHORT_CONDITIONS = [
+    "CONFIRMATION_HH",
+    "ABOVE_ZONE",
+    "GOOD_DISTANCE_ABOVE_ZONE",
+    "VOLATILE_ABS_ATR_CHANGE",
+    "RECENT_STRONG_PRICE_ACTION",
+    "ZONE_HAS_TREND_SETTER"
+] as const;
+
+/** Minimum reward:risk for checkHhAboveZoneShort - TP distance must be >= 1.5x the SL distance. */
+const HH_ABOVE_ZONE_SHORT_MIN_REWARD_RISK = 1.5;
+
+/**
+ * SHORT when the candle carries every HH_ABOVE_ZONE_SHORT_CONDITIONS tag.
+ *
+ *   TP = close - ATR, but never past the zone: if that lands below
+ *        priceZone.upper, TP = priceZone.upper instead.
+ *   SL = high of the swing candle this candle confirmed - the candle whose
+ *        marketStructure.confirmedOpenTime is THIS candle's openTime.
+ *
+ * Causal: that swing candle is gi-2 (runAnalysis confirms fractal swings
+ * two candles late) and its marketStructure was written at this step, so
+ * only candles <= gi are read.
+ *
+ * Returns null (no trade) when a level is missing or on the wrong side of
+ * entry - e.g. the close is already above the swing high it just
+ * confirmed, which leaves no stop above entry. buildPositionEntry refuses
+ * those rather than trading an undefined risk.
+ */
+function checkHhAboveZoneShort(
+    candle: CandleInfo,
+    candles: CandleInfo[],
+    gi: number,
+    margin: number,
+    leverage: number
+): PositionEntry | null {
+    const conditions = candle.conditions_met ?? [];
+    if (!HH_ABOVE_ZONE_SHORT_CONDITIONS.every(c => conditions.includes(c))) return null;
+
+    const zone = candle.priceZone;
+    if (!zone || !(candle.atr > 0)) return null;
+
+    // The confirmed swing: search back from gi only (never past it), for the
+    // candle whose HH confirmation is stamped with this candle's openTime.
+    let swing: CandleInfo | null = null;
+    for (let k = gi - 1; k >= Math.max(0, gi - 10); k--) {
+        const ms = candles[k]?.marketStructure;
+        if (ms && ms.label === "HH" && ms.confirmedOpenTime === candle.openTime) {
+            swing = candles[k];
+            break;
+        }
+    }
+    if (!swing) return null;
+
+    let tp = zone.upper;
+    //if (tp < zone.upper) tp = zone.upper;
+    const sl = swing.high;
+
+    // Reward:risk gate - the TP side must be at least 1.5x the SL side.
+    // SHORT: reward = entry - tp, risk = sl - entry. A level on the wrong
+    // side gives a non-positive reward or risk and is rejected here too.
+    const entry = candle.close;
+    const reward = entry - tp;
+    const risk = sl - entry;
+    if (!(reward > 0) || !(risk > 0) || reward < HH_ABOVE_ZONE_SHORT_MIN_REWARD_RISK * risk) return null;
+
+    return buildPositionEntry(
+        {
+            side: "SHORT",
+            sl,
+            tp,
+            reason: {
+                trigger: "HH_ABOVE_ZONE_FADE",
+                reversingDirection: "UP",
+                segmentLow: tp,
+                segmentHigh: sl,
+                segmentMid: (sl + tp) / 2,
+                broaderMoveAtr: null, exhaustionWickRatio: null, trendZScoreAvg: null,
+                summary: `HH confirmed ${((candle.close - zone.upper) / candle.close * 100).toFixed(2)}% above zone upper ${zone.upper}; `
+                    + `tp = zone upper ${tp}, sl = confirmed HH swing high ${sl}, R:R ${(reward / risk).toFixed(2)}`,
+            },
+        },
+        candle, gi, margin, leverage
+    );
 }
 
 /**

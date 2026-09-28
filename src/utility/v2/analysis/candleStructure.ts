@@ -1,5 +1,6 @@
 import type { CandleInfo, CandleStructure, MARKET_DIRECTION } from "@/core/interfacesv2";
 import { CandleAnalyzerV2 } from "../candleAnalyzerV2";
+import { detectCandlePatterns } from "./candlePatterns";
 
 /* ============================================================
  * CONFIGURATION
@@ -98,6 +99,22 @@ interface DirectionFlags {
     isBullish: boolean;
     isBearish: boolean;
     isDoji: boolean;
+}
+
+/**
+ * v1's close_atr_adjusted / close_atr_abs_change (SimulationUtility): the
+ * close pushed one ATR further in the candle's own direction - bull adds
+ * ATR, bear subtracts it - and that move as an absolute % of the adjusted
+ * price. A doji (close == open) has no direction, so it is not extended:
+ * adjusted = close, change 0.
+ */
+function computeAtrAdjustedClose(candle: CandleInfo, isBullish: boolean, isBearish: boolean): { closeAtrAdjusted: number; closeAtrAbsChange: number } {
+    const atr = candle.atr > 0 ? candle.atr : 0;
+    const closeAtrAdjusted = isBullish ? candle.close + atr : isBearish ? candle.close - atr : candle.close;
+    const closeAtrAbsChange = closeAtrAdjusted !== 0
+        ? Math.abs(((candle.close - closeAtrAdjusted) / closeAtrAdjusted) * 100)
+        : 0;
+    return { closeAtrAdjusted, closeAtrAbsChange };
 }
 
 function computeDirection(candle: CandleInfo, bodyRatio: number): DirectionFlags {
@@ -396,6 +413,10 @@ export function getCandleStructure(
 
             volumeSpike: CandleAnalyzerV2.hasVolumeSpike(candles, CONFIG.VOLUME_SPIKE_LOOKBACK),
             changePercentageZScore: CandleAnalyzerV2.getCandleChangeZScore(candles, CONFIG.CHANGE_ZSCORE_LENGTH),
+
+            ...computeAtrAdjustedClose(candle, directionFlags.isBullish, directionFlags.isBearish),
+
+            patterns: detectCandlePatterns(candles),
         };
     }
 
@@ -484,6 +505,10 @@ export function getCandleStructure(
             // needs the (history-dependent) spike check - set below.
             volumeSpike: false,
             changePercentageZScore: 0,
+
+            ...computeAtrAdjustedClose(candle, directionFlags.isBullish, directionFlags.isBearish),
+
+            patterns: [],
         };
 
         results.push(structure);
@@ -493,6 +518,7 @@ export function getCandleStructure(
     if (last) {
         last.volumeSpike = CandleAnalyzerV2.hasVolumeSpike(candles, CONFIG.VOLUME_SPIKE_LOOKBACK);
         last.changePercentageZScore = CandleAnalyzerV2.getCandleChangeZScore(candles, CONFIG.CHANGE_ZSCORE_LENGTH);
+        last.patterns = detectCandlePatterns(candles);
     }
     return last;
 }

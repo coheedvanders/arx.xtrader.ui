@@ -16,21 +16,39 @@
         <ButtonComponent v-if="!isBotEnabled" @click="startChoco" color="primary" rounded class="mr-sm">start choco</ButtonComponent>
         <ButtonComponent v-else @click="isBotEnabled = false" color="danger" rounded class="mr-sm">stop choco</ButtonComponent>
 
-        <ButtonComponent v-if="!isBotEnabled" @click="runManualSimulation" :disabled="isSteppingCandle" rounded class="mr-sm">run all simulation</ButtonComponent>
+        <ButtonComponent v-if="!isBotEnabled" @click="runManualSimulation" :disabled="isSteppingCandle || isCapturing" rounded class="mr-sm">run all simulation</ButtonComponent>
 
-        <!-- Start date and next. The scan builds each symbol's window ENDING at
-             the start date, so "next" appends the candle after it and re-runs
+        <!-- Start date and next. The scan builds each symbol's window STARTING at
+             the start date (500 candles forward), so "next" appends the candle after it and re-runs
              the same analysis on the shifted window. The display below is
              untouched: stepping writes through the same store the initial scan
              writes through. -->
         <label class="ml-sm mr-sm">
-            start date
-            <input type="datetime-local" v-model="simulationStartTime" :disabled="isSteppingCandle" />
+            start date (PHT)
+            <input type="datetime-local" v-model="simulationStartTime" :disabled="isSteppingCandle || isCapturing" />
         </label>
 
         <ButtonComponent @click="stepNextCandle" :disabled="!canStepCandle" rounded class="mr-sm">
             {{ isSteppingCandle ? stepProgressMessage : 'next' }}
         </ButtonComponent>
+
+        <!-- Auto capture: the whole [start, end] range per symbol, nothing
+             dropped (unlike "next", which keeps the window at 500), stored
+             in IndexedDB for export/analysis. The first stored candle is
+             the one opening at the start date. -->
+        <label class="ml-sm mr-sm">
+            end date (PHT)
+            <input type="datetime-local" v-model="simulationEndTime" :disabled="isCapturing" />
+        </label>
+        <ButtonComponent v-if="!isCapturing" @click="autoCapture" :disabled="!canAutoCapture" rounded class="mr-sm">auto capture</ButtonComponent>
+        <ButtonComponent v-else @click="stopCaptureRequested = true" :disabled="stopCaptureRequested" color="danger" rounded class="mr-sm">
+            {{ stopCaptureRequested ? 'stopping…' : `stop capture (${capturedSymbolCount}/${chocoMintoStore.futureSymbols.length})` }}
+        </ButtonComponent>
+        <label class="mr-sm" title="When the capture finishes (or is stopped), download every captured symbol as slim, split zips - same as the chart's Download ALL">
+            <input type="checkbox" v-model="autoDownloadAfterCapture" :disabled="isCapturing" />
+            auto download
+        </label>
+        <span class="mr-sm" v-if="captureSummary">{{ captureSummary }}</span>
 
         <span class="mr-sm" v-if="steppedCandleCount > 0">
             +{{ steppedCandleCount }} candle{{ steppedCandleCount === 1 ? '' : 's' }}
@@ -229,6 +247,7 @@ import RiskMeasureComponent from '../RiskMeasureComponent.vue';
 import MarketScannerComponent from './MarketScannerComponent.vue';
 import { SimulationUtilityV2 } from '@/utility/v2/simulationUtilityV2.ts';
 import { klineDbUtilityV2 } from '@/utility/v2/klineDbUtilityV2.ts';
+import { downloadSymbolInfoZip } from '@/utility/v2/symbolInfoExport';
 import { scanForInterestingSymbols, storeInterestingSymbols } from '@/utility/v2/analysis/symbolInterest';
 
 const chocoMintoStore = useChocoMintoStore();
@@ -291,11 +310,34 @@ const simulationReport = ref<SimulationReport[]>([])
 const simulationStartTime = ref(localStorage.getItem('simulation-start-time') ?? '');
 watch(simulationStartTime, (val) => localStorage.setItem('simulation-start-time', val));
 
-const simulationStartMs = computed(() => {
-    if (!simulationStartTime.value) return 0;
-    const ms = new Date(simulationStartTime.value).getTime();
+/**
+ * datetime-local strings ("2026-01-01T00:00") are read as PHT (UTC+8), not
+ * the browser's timezone, so a date typed here means the same candle on any
+ * machine. 0 when empty/invalid.
+ */
+function phtInputToMs(value: string): number {
+    if (!value) return 0;
+    const withSeconds = value.length === 16 ? `${value}:00` : value;
+    const ms = new Date(`${withSeconds}+08:00`).getTime();
     return Number.isFinite(ms) ? ms : 0;
-});
+}
+
+const simulationStartMs = computed(() => phtInputToMs(simulationStartTime.value));
+
+const simulationEndTime = ref(localStorage.getItem('simulation-end-time') ?? '');
+watch(simulationEndTime, (val) => localStorage.setItem('simulation-end-time', val));
+const simulationEndMs = computed(() => phtInputToMs(simulationEndTime.value));
+
+// Auto capture state. capturedRun blocks "next" afterwards: next trims every
+// window back to MAX_INIT_CANDLES and writes it to IndexedDB, which would
+// overwrite the captured range. A fresh "run all simulation" clears it.
+const isCapturing = ref(false);
+const stopCaptureRequested = ref(false);
+const capturedSymbolCount = ref(0);
+const capturedRun = ref(false);
+const captureSummary = ref('');
+const autoDownloadAfterCapture = ref(localStorage.getItem('auto-download-after-capture') !== 'false');
+watch(autoDownloadAfterCapture, (val) => localStorage.setItem('auto-download-after-capture', String(val)));
 
 // Candles advanced by "next" since the last full scan, and where the walk has
 // reached. Reset by runManualSimulation, because a fresh scan rebuilds every
@@ -466,8 +508,85 @@ function symbolBasket_OnCompleted(){
     }
 }
 
+const canAutoCapture = computed(() =>
+    !isSteppingCandle.value
+    && !isCapturing.value
+    && simulationStartMs.value > 0
+    && simulationEndMs.value > simulationStartMs.value
+    && chocoMintoStore.futureSymbols.length > 0
+);
+
+/**
+ * Captures [start, end] for every symbol across all four scanner batches at
+ * once (each processes its own symbols one at a time - see
+ * MarketScannerComponent.autoCaptureRange). Replaces whatever IndexedDB held,
+ * the same way "run all simulation" does.
+ */
+async function autoCapture() {
+    if (!canAutoCapture.value) return;
+    isCapturing.value = true;
+    stopCaptureRequested.value = false;
+    capturedSymbolCount.value = 0;
+    captureSummary.value = '';
+    steppedCandleCount.value = 0;
+    steppedToOpenTime.value = null;
+
+    try {
+        chocoMintoStore.isManualSimulation = true;
+        UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE.value = "clearing previously captured data...";
+        await klineDbUtilityV2.clearAllSymbolInfo();
+        UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE.value = "";
+        await nextTick();
+
+        const scanners = ((marketScannerRef.value ?? []) as any[]).filter(
+            (scanner) => scanner && typeof scanner.autoCaptureRange === 'function'
+        );
+        const startedAt = Date.now();
+        const results = await Promise.all(scanners.map((scanner) => scanner.autoCaptureRange(
+            simulationStartMs.value,
+            simulationEndMs.value,
+            () => stopCaptureRequested.value,
+            () => { capturedSymbolCount.value++; }
+        )));
+
+        const captured = results.reduce((sum, r) => sum + (r?.captured ?? 0), 0);
+        const candles = results.reduce((sum, r) => sum + (r?.candles ?? 0), 0);
+        const stopped = results.some((r) => r?.stopped);
+        const minutes = ((Date.now() - startedAt) / 60000).toFixed(1);
+        capturedRun.value = captured > 0;
+        captureSummary.value = `${stopped ? 'stopped' : 'captured'}: ${captured} symbols, ${candles.toLocaleString()} candles, ${minutes} min`;
+        notificationStore.showNotification(
+            stopped ? "warning" : "success", "top-right",
+            stopped ? "Auto capture stopped" : "Auto capture complete",
+            captureSummary.value
+        );
+
+        if (autoDownloadAfterCapture.value && captured > 0) {
+            // Everything captured is in IndexedDB now; export it with the
+            // same slim, split-zip download the chart's "Download ALL" uses.
+            // Symbols that were not captured (stopped early, no data) are
+            // simply absent from the zips.
+            const symbols = chocoMintoStore.futureSymbols.map((f) => f.symbol);
+            const summary = captureSummary.value;
+            const { parts } = await downloadSymbolInfoZip(symbols, {
+                slim: true,
+                onProgress: (current, total) => { captureSummary.value = `${summary} · zipping ${current}/${total}`; },
+            });
+            captureSummary.value = `${summary} · downloaded ${parts} zip${parts === 1 ? '' : 's'}`;
+        }
+    } catch (error) {
+        console.error("autoCapture", error);
+        notificationStore.showNotification("danger", "top-right", "Auto capture failed", String(error));
+    } finally {
+        isCapturing.value = false;
+        stopCaptureRequested.value = false;
+    }
+}
+
 const canStepCandle = computed(() =>
     !isSteppingCandle.value
+    && !isCapturing.value
+    && !capturedRun.value
     && chocoMintoStore.isManualSimulation
     && Array.isArray(marketScannerRef.value)
     && marketScannerRef.value.length > 0
@@ -529,6 +648,8 @@ async function runManualSimulation() {
     // counter no longer describes anything.
     steppedCandleCount.value = 0;
     steppedToOpenTime.value = null;
+    capturedRun.value = false;
+    captureSummary.value = '';
 
     // UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE.value = "ANALYZING MAIN MARKETS"
     // await analyzeMainMarkets();

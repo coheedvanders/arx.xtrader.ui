@@ -1,5 +1,6 @@
 import type { LiquidationHeatmapResult } from "@/utility/v2/analysis/liquidationHeatmap"
 import type { PriceZone, VolumeProfile } from "./interfaces"
+import type { ImbalanceZone } from "@/utility/v2/analysis/imbalance"
 
 export type MARKET_INTERVAL = "15m" | "1h" | "4h" | "1d";
 
@@ -401,11 +402,163 @@ export interface CandleInfo {
     // any candle with no entry active or being resolved on it.
     positionEntry: PositionEntry | null
 
-    // Session-based price zone (00/06/12/18 local), same as the old
+    // Session-based price zone (00/06/12/18 PHT / UTC+8), same as the old
     // SimulationUtility: built at each session boundary from the last 24
     // candles via PriceZoneUtility.generatePrizeZone, then shared by every
     // candle in that session. Null before the first boundary.
     priceZone: PriceZone | null
+
+    // Close vs priceZone in symbol-independent units. Null when there is
+    // no zone yet or ATR is unusable. See priceZoneMetrics.ts.
+    outsidePriceZoneMetrics: OutsidePriceZoneMetrics | null
+
+    // Auction-style balance / imbalance of price vs the session priceZone
+    // (treated as value) and vs the previous session's zone and prices.
+    // Null until a zone exists. See imbalanceState.ts.
+    imbalanceState: ImbalanceState | null
+}
+
+/**
+ * BALANCE        close inside the current zone (two-sided trade around value)
+ * PROBING_UP/DN  closed outside, not yet accepted (fewer than ACCEPT closes in a row)
+ * IMBALANCE_UP/DN accepted outside: ACCEPT+ consecutive closes beyond the zone (initiative, value migrating)
+ * REJECTED_UP/DN a probe beyond the zone failed back inside on this candle (responsive activity)
+ */
+export type IMBALANCE_STATE =
+    | 'BALANCE'
+    | 'PROBING_UP'
+    | 'PROBING_DOWN'
+    | 'IMBALANCE_UP'
+    | 'IMBALANCE_DOWN'
+    | 'REJECTED_UP'
+    | 'REJECTED_DOWN'
+
+export interface CandleImbalance {
+    /** The candle's own direction (BULLISH = close > open). */
+    direction: 'BULLISH' | 'BEARISH'
+    /** 0-100: change z (35) + volume z (30) + distance beyond the zone (35). */
+    score: number
+    /** candleStructure.changePercentageZScore, floored at 0. */
+    changeZ: number
+    /** volumeState.dynamicZScore, floored at 0. */
+    volumeZ: number
+    /** Close beyond the zone IN the candle's direction, in ATR (above upper for BULLISH, below lower for BEARISH); 0 inside. */
+    distanceAtr: number
+    /** score >= the detection threshold. */
+    detected: boolean
+}
+
+export interface DisplacementLeg {
+    /** BULLISH = up leg (ICT BISI, the void sits BELOW price); BEARISH = down leg (SIBI, void ABOVE price). */
+    direction: 'BULLISH' | 'BEARISH'
+    /** Candles in the leg, this one included. */
+    candles: number
+    /** (close - first candle's open) in the leg's direction, in this candle's ATR. */
+    moveAtr: number
+    /** The void: the leg's full price range. */
+    low: number
+    high: number
+    /** openTime of the leg's first candle. */
+    startOpenTime: number
+    /** Fair value gaps confirmed inside the leg. */
+    fairValueGaps: number
+    /** Where this candle's close sits vs the session zone. */
+    vsZone: 'ABOVE' | 'BELOW' | 'INSIDE'
+}
+
+/** Current zone vs previous zone, in Market Profile value-area terms. */
+export type VALUE_AREA_RELATION =
+    | 'HIGHER'              // current zone entirely above previous
+    | 'OVERLAPPING_HIGHER'  // overlaps, but shifted up
+    | 'INSIDE'              // current zone within previous (contraction)
+    | 'OUTSIDE'             // current zone engulfs previous (expansion)
+    | 'OVERLAPPING_LOWER'
+    | 'LOWER'
+    | 'UNKNOWN'             // no previous zone yet
+
+export interface ImbalanceState {
+    state: IMBALANCE_STATE
+    /** Net read of every component below. */
+    bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL'
+    /** -100 (strong bearish imbalance) .. +100 (strong bullish imbalance). */
+    score: number
+
+    // ── current zone ──
+    location: 'ABOVE' | 'BELOW' | 'INSIDE'
+    /** Consecutive closes outside on the current side, this one included (0 inside). */
+    closesOutside: number
+    /** closesOutside >= the acceptance threshold. */
+    accepted: boolean
+    /** Candles of the current zone so far, this one included. */
+    sessionCandles: number
+    /** Share of this zone's closes so far above upper / below lower (0..1). One-sided = imbalance. */
+    sessionShareAbove: number
+    sessionShareBelow: number
+
+    // ── previous zone ──
+    valueRelation: VALUE_AREA_RELATION
+    /** (zone.mid - prevZone.mid) / ATR. Positive = value migrating up. null without a previous zone. */
+    valueShiftAtr: number | null
+    /** Overlap of the two zones as a share of the narrower one (0..1). null without a previous zone. */
+    zoneOverlap: number | null
+    /** (close - prevZone.lower) / prevZone width. null without a previous zone. */
+    positionInPrevZone: number | null
+    /** Previous session's closes above / below ITS zone, net: +1 all above .. -1 all below. null without one. */
+    prevSessionBias: number | null
+    /** Close vs the previous session's traded high / low (the prices, not the zone): ABOVE the high, BELOW the low, or INSIDE. */
+    vsPrevSessionRange: 'ABOVE' | 'BELOW' | 'INSIDE' | null
+
+    /** 3-candle fair value gap confirmed on this candle (imbalance.ts), if any. */
+    fairValueGap: ImbalanceZone | null
+
+    /**
+     * Liquidity void / displacement leg ending on this candle: 3+ consecutive
+     * same-direction candles with real bodies, closing in the outer part of
+     * their range, each barely overlapping the one before. The leg's
+     * [low, high] is the imbalance price later tends to return to.
+     * null when this candle is not the end of such a leg.
+     */
+    displacement: DisplacementLeg | null
+
+    /**
+     * THIS candle's imbalance: how abnormal its move and volume are and how
+     * far it closed beyond the zone in its own direction, scored 0-100.
+     * Drives BULLISH/BEARISH_IMBALANCE_DETECTED. null on a doji or before
+     * the inputs exist.
+     */
+    candleImbalance: CandleImbalance | null
+
+    reasons: string[]
+}
+
+export interface OutsidePriceZoneMetrics {
+    /** Where the close is relative to [lower, upper]. */
+    position: 'ABOVE' | 'BELOW' | 'INSIDE'
+    /** (close - lower) / (upper - lower). 0..1 inside, < 0 below, > 1 above. */
+    positionInZone: number
+
+    /** close - upper, in ATR / % of price. Positive = above the upper boundary. */
+    fromUpperAtr: number
+    fromUpperPct: number
+    /** close - lower, in ATR / % of price. Negative = below the lower boundary. */
+    fromLowerAtr: number
+    fromLowerPct: number
+
+    /** Distance beyond the nearest boundary (0 inside; + above, - below), in ATR / % of price / zone widths. */
+    outsideAtr: number
+    outsidePct: number
+    outsideZoneWidths: number
+
+    /** How far this candle's high / low wicked beyond upper / lower, in ATR (0 if it didn't). */
+    wickAboveAtr: number
+    wickBelowAtr: number
+
+    /** Zone size: (upper - lower) in ATR / % of price. */
+    zoneWidthAtr: number
+    zoneWidthPct: number
+
+    /** Consecutive closes outside on the same side, this one included (0 when inside). Resets on a new zone. */
+    candlesOutside: number
 }
 
 // Captures WHY an entry actually fired, in structured, analyzable form
@@ -441,7 +594,9 @@ export interface PositionEntryReason {
      *                       it.
      *     *  Note: simulationSummary.ts duplicates `closeReason`, not this field, so
      *  adding a trigger here needs no change there. Check before assuming. */
-    trigger: "POTENTIAL_REVERSAL" | "EXTENSION_FADE" | "BREAKOUT_FADE" | "CROSS_SECTIONAL"
+    // HH_ABOVE_ZONE_FADE: SHORT on CONFIRMATION_HH + ABOVE_ZONE + GOOD_DISTANCE_ABOVE_ZONE
+    // + VOLATILE_ABS_ATR_CHANGE (checkHhAboveZoneShort in positionEntry.ts).
+    trigger: "POTENTIAL_REVERSAL" | "EXTENSION_FADE" | "BREAKOUT_FADE" | "CROSS_SECTIONAL" | "HH_ABOVE_ZONE_FADE"
     reversingDirection: "UP" | "DOWN"
     segmentLow: number
     segmentHigh: number
@@ -682,6 +837,16 @@ export interface CandleStructure {
     // candles (itself included). 0 until 50 candles exist.
     // See CandleAnalyzerV2.getCandleChangeZScore.
     changePercentageZScore: number
+
+    // v1's close_atr_adjusted: close + ATR on a bullish candle, close - ATR
+    // on a bearish one, close itself on a doji.
+    closeAtrAdjusted: number
+    // v1's close_atr_abs_change: |close - closeAtrAdjusted| / closeAtrAdjusted * 100.
+    closeAtrAbsChange: number
+
+    // Named candlestick patterns on this candle (DOJI, HAMMER,
+    // BULLISH_ENGULFING, MORNING_STAR, ...). See candlePatterns.ts.
+    patterns: string[]
 }
 
 export interface CandleAnchor {

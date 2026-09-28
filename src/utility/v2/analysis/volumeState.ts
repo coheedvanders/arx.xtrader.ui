@@ -156,20 +156,34 @@ function getTrendZScore(
     movingCandles: CandleInfo[],
     currentCandle: CandleInfo,
     currentVolume: number,
-    previousStats?: TrendVolumeRunningStats
+    previousStats?: TrendVolumeRunningStats,
+    asOfTrendStartGi?: number | null
 ): { trendZScore: number; newStats: TrendVolumeRunningStats | null } {
-
-    const trendState = currentCandle.trendState;
-
-    if (!trendState) {
-        return { trendZScore: 0, newStats: null };
-    }
 
     const currentGlobalIndex = movingCandles.length - 1;
 
-    const trendStartGi = Math.max(0, trendState.startGi);
+    // Preferred: the as-of trend's pivot, passed by runAnalysis from the
+    // trend tracker. That is known on EVERY candle once a direction exists,
+    // including pullback candles - reading candle.trendState instead left
+    // this at 0 on ~89% of candles, because trendState is only set on a
+    // candle that extends or commits the trend at its own step.
+    // Fallback (no caller passes it): the old candle.trendState read.
+    let rawStartGi: number;
+    let rawEndGi: number;
+    if (asOfTrendStartGi !== undefined) {
+        if (asOfTrendStartGi === null) return { trendZScore: 0, newStats: null };
+        rawStartGi = asOfTrendStartGi;
+        rawEndGi = currentGlobalIndex;
+    } else {
+        const trendState = currentCandle.trendState;
+        if (!trendState) return { trendZScore: 0, newStats: null };
+        rawStartGi = trendState.startGi;
+        rawEndGi = trendState.endGi;
+    }
+
+    const trendStartGi = Math.max(0, rawStartGi);
     const trendEndGiExclusive =
-        Math.min(trendState.endGi, currentGlobalIndex) - 1;
+        Math.min(rawEndGi, currentGlobalIndex) - 1;
 
     if (trendEndGiExclusive < trendStartGi) {
         return { trendZScore: 0, newStats: null };
@@ -223,7 +237,9 @@ function getTrendZScore(
 
 export function getVolumeState(
     movingCandles: CandleInfo[],
-    previousTrendVolumeStats?: TrendVolumeRunningStats
+    previousTrendVolumeStats?: TrendVolumeRunningStats,
+    /** As-of trend pivot index (see getTrendZScore). null = no trend known yet. Omit for the old candle.trendState behaviour. */
+    asOfTrendStartGi?: number | null
 ): VolumeState {
 
     if (!movingCandles.length) {
@@ -275,9 +291,12 @@ export function getVolumeState(
      * This prevents a volume spike from increasing its
      * own reference average.
      */
+    // Only the tail is ever read (lookback <= MAX_LOOKBACK, plus the last 3
+    // for getAdaptiveLookback), so copy just that instead of the whole
+    // history - on a long captured run a full copy per candle is O(n^2).
     const previousCandles =
         movingCandles.slice(
-            0,
+            Math.max(0, movingCandles.length - 1 - (CONFIG.MAX_LOOKBACK + 3)),
             movingCandles.length - 1
         );
 
@@ -388,7 +407,7 @@ export function getVolumeState(
             : 0;
 
     const { trendZScore, newStats: trendVolumeRunningStats } =
-        getTrendZScore(movingCandles, currentCandle, currentVolume, previousTrendVolumeStats);
+        getTrendZScore(movingCandles, currentCandle, currentVolume, previousTrendVolumeStats, asOfTrendStartGi);
 
     const previousVolume =
         previousCandles[
