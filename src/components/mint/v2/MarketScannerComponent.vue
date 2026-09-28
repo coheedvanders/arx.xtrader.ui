@@ -101,6 +101,16 @@ const props = defineProps<{
     maxOpenPositions: number;
     newCandleTriggerKey: string;
     positionDurationMedian: number;
+    /**
+     * Epoch ms the scan's window should END at, or 0 for "the most recent
+     * candles" - which is what this component did before the prop existed, so
+     * leaving the start date empty is provably unchanged behaviour.
+     *
+     * The parent has always passed this; it was never declared here, so it was
+     * silently ignored and every scan read the latest 500 candles whatever date
+     * was set.
+     */
+    simulationStart?: number;
 }>();
 
 const emit = defineEmits(['onCompleted']);
@@ -114,6 +124,12 @@ const visitedSymbols = ref<Set<string>>(new Set());
 
 async function runInitialScan() {
     console.log("runInitialScan", props.futureSymbols.length);
+
+    // A fresh scan rebuilds every window from the start date, so both the
+    // windows and the candles buffered against them are from the wrong place in
+    // history.
+    stepBuffers.clear();
+    symbolWindows.clear();
 
     // var mainMarkets = [
     //     (await klineDbUtilityV2.getSymbolInfo("BTCUSDT"))!,
@@ -146,7 +162,7 @@ async function runInitialScan() {
             }
 
             futureSymbol.status = "constructing info";
-            var symbolInfo = await SimulationUtilityV2.constructSymbolInfo(futureSymbol.symbol,props.maxInitCandles)
+            var symbolInfo = await constructWindow(futureSymbol.symbol);
 
             currentFutureSumbol.value = futureSymbol;
             futureSymbol.status = "processing";
@@ -154,6 +170,13 @@ async function runInitialScan() {
             await SimulationUtilityV2.runMarketAnalysis(symbolInfo,[]);
 
             klineDbUtilityV2.storeSymbolInfo(symbolInfo);
+
+            // Kept in memory so "next" does not have to read it back out of
+            // IndexedDB. That read was the slow part of a step: a 500-candle
+            // SymbolInfo carrying every derived field, deserialized once per
+            // symbol per press. The rolling lab holds its windows in memory for
+            // exactly this reason.
+            symbolWindows.set(symbolInfo.name, symbolInfo);
 
             setRecentFutureCandleData(symbolInfo.candle_15m);
 
@@ -184,7 +207,244 @@ async function runInitialScan() {
 }
 
 
-async function onNewCandleSpawned() {
+const FIFTEEN_MIN_MS = 15 * 60 * 1000;
+
+/**
+ * How many candles one refill pulls ahead of the walk.
+ *
+ * Purely a latency setting - a step consumes ONE candle, and refetching per
+ * symbol per press would make every "next" 300-odd REST round trips. It cannot
+ * change results: the candles fetched are the same candles in the same order
+ * either way.
+ */
+const STEP_FETCH_AHEAD = 200;
+
+/** Candles fetched ahead of the walk, per symbol, consumed one per step. */
+const stepBuffers = new Map<string, CandleInfo[]>();
+
+/**
+ * Builds one symbol's initial window.
+ *
+ * With no start date this is exactly the old call, so nothing changes. With one,
+ * the window ENDS at that date - the last candle of the window is the candle at
+ * the start date - so the first "next" advances past it. A window that started
+ * there instead would put the scan 500 candles into the future of the date that
+ * was typed.
+ */
+async function constructWindow(symbol: string): Promise<SymbolInfo> {
+    const startMs = props.simulationStart ?? 0;
+    if (!startMs) {
+        return await SimulationUtilityV2.constructSymbolInfo(symbol, props.maxInitCandles);
+    }
+    const from = startMs - props.maxInitCandles * FIFTEEN_MIN_MS;
+    const raw = await KlineUtility.getRecentKlinesByRange(symbol, props.interval, props.maxInitCandles, from, startMs);
+    // Built here rather than by calling constructSymbolInfo and overwriting its
+    // candles, which would spend a second REST call fetching a window that is
+    // then thrown away. The empty arrays are what constructSymbolInfo sets too.
+    return {
+        name: symbol,
+        candle_15m: SimulationUtilityV2.mapToInfo(raw),
+        candle_1h: [], candle_4h: [], candle_1d: [],
+        oi_15m: [], oi_1h: [], oi_4h: [], oi_1d: [],
+        ls_15m: [], ls_1h: [], ls_4h: [], ls_1d: [],
+        trendstats_15m: null,
+    };
+}
+
+/**
+ * Windows held in memory between steps, keyed by symbol.
+ *
+ * Populated by runInitialScan. A step reads from here rather than from
+ * IndexedDB; the store is still written (fire and forget) so the chart dialog
+ * shows the stepped state.
+ */
+const symbolWindows = new Map<string, SymbolInfo>();
+
+/** How many refill fetches run at once. Binance allows 2,400 request weight per
+ *  minute per IP and a 200-candle klines call costs 2, so a batch of ~84 symbols
+ *  refilling costs ~168 - nowhere near the limit. 6 matches the lab's own
+ *  initialization concurrency; going high enough to trip the limit earns a 418. */
+const STEP_FETCH_CONCURRENCY = 6;
+
+/** Symbols processed between yields back to the browser. Without this the whole
+ *  batch runs in one synchronous block: the four batches cannot interleave and
+ *  the page cannot repaint, so a press looks like a freeze. */
+const YIELD_EVERY_SYMBOLS = 10;
+
+/**
+ * Advances every scanned symbol in this batch by exactly ONE candle.
+ *
+ * TWO PHASES, and the split is the point. Phase 1 makes sure every symbol has
+ * its next candle in memory, fetching only the symbols whose buffer has run dry,
+ * and fetching those in parallel. Phase 2 then walks the symbols with no network
+ * and no IndexedDB reads at all: take the candle from the buffer, shift the
+ * in-memory window, re-run the same analysis the initial scan runs, and write the
+ * stats through the same two functions. That is why the display does not change -
+ * nothing new reports anything.
+ *
+ * Interleaved, the way it was before, a press cost one REST round trip plus one
+ * IndexedDB read per symbol, serialized. Now a press costs at most
+ * ceil(symbols / 6) round trips, and only on the one press in every
+ * STEP_FETCH_AHEAD that actually runs dry.
+ *
+ * runMarketAnalysis re-derives every field on the whole window on every call, so
+ * a shifted window needs no special handling - nothing is carried between calls
+ * to get wrong. It is also the floor on how fast a press can be: every scanned
+ * symbol has to be re-derived for its stats to update, and unlike the rolling lab
+ * there is nothing here that can be skipped.
+ */
+async function stepNextCandle(): Promise<{ advanced: number; lastOpenTime: number | null }> {
+    // ── phase 1: every symbol's next candle, into memory, in parallel ────
+    const pending: FuturesSymbol[] = [];
+    for (const futureSymbol of props.futureSymbols) {
+        const window = await resolveWindow(futureSymbol.symbol);
+        if (!window || !window.candle_15m.length) continue;
+        pending.push(futureSymbol);
+    }
+
+    const needsFetch = pending.filter(fs => !hasNextCandle(fs.symbol));
+    if (needsFetch.length) {
+        let cursor = 0;
+        let done = 0;
+        const worker = async (): Promise<void> => {
+            while (true) {
+                const i = cursor++;
+                if (i >= needsFetch.length) return;
+                const symbol = needsFetch[i].symbol;
+                try {
+                    await refillBuffer(symbol);
+                } catch (error) {
+                    console.error("refillBuffer", symbol, error);
+                }
+                done++;
+                progressCounter.value = done;
+            }
+        };
+        await Promise.all(
+            Array.from({ length: Math.min(STEP_FETCH_CONCURRENCY, needsFetch.length) }, worker)
+        );
+    }
+
+    // ── phase 2: process, no network, no IndexedDB reads ────────────────
+    let advanced = 0;
+    let lastOpenTime: number | null = null;
+
+    for (let i = 0; i < pending.length; i++) {
+        const futureSymbol = pending[i];
+        progressCounter.value = i + 1;
+        try {
+            const symbolInfo = symbolWindows.get(futureSymbol.symbol);
+            if (!symbolInfo) continue;
+
+            const nextCandle = takeNextCandle(futureSymbol.symbol, symbolInfo.candle_15m);
+            if (!nextCandle) { futureSymbol.status = "no further candle"; continue; }
+
+            symbolInfo.candle_15m.push(nextCandle);
+            while (symbolInfo.candle_15m.length > props.maxInitCandles) symbolInfo.candle_15m.shift();
+
+            currentFutureSumbol.value = futureSymbol;
+
+            await SimulationUtilityV2.runMarketAnalysis(symbolInfo, []);
+
+            // NOT awaited, matching runInitialScan. The chart dialog reads this
+            // back, so it has to be written; nothing in the step path reads it,
+            // so waiting for the write would only slow the press down.
+            klineDbUtilityV2.storeSymbolInfo(symbolInfo);
+            setRecentFutureCandleData(symbolInfo.candle_15m);
+            updateStoreFutureSymbolSimulationStats(symbolInfo.name, symbolInfo.candle_15m);
+
+            advanced++;
+            lastOpenTime = Math.max(lastOpenTime ?? 0, nextCandle.openTime);
+
+            if (chocoMintoStore.isManualSimulation) {
+                const storeFutureSymbol = chocoMintoStore.futureSymbols.find(f => f.symbol === futureSymbol.symbol);
+                if (storeFutureSymbol) {
+                    futureSymbol.status =
+                        `${storeFutureSymbol.simulationStats.won}/` +
+                        `${storeFutureSymbol.simulationStats.loss}/` +
+                        `${storeFutureSymbol.simulationStats.open}-` +
+                        `${storeFutureSymbol.simulationStats.mid}`;
+                }
+            }
+        } catch (error) {
+            console.error("stepNextCandle", futureSymbol.symbol, error);
+        }
+
+        if ((i + 1) % YIELD_EVERY_SYMBOLS === 0) {
+            await new Promise(resolve => setTimeout(resolve, 0));
+        }
+    }
+
+    progressCounter.value = 0;
+    return { advanced, lastOpenTime };
+}
+
+/**
+ * This symbol's window, from memory, falling back to IndexedDB once.
+ *
+ * The fallback covers a reload after a scan: the store still has the windows but
+ * this component's Map is empty. It happens at most once per symbol per session,
+ * not once per press.
+ */
+async function resolveWindow(symbol: string): Promise<SymbolInfo | null> {
+    const held = symbolWindows.get(symbol);
+    if (held) return held;
+    const stored = await klineDbUtilityV2.getSymbolInfo(symbol);
+    // No stored window means this symbol was never scanned (skipped as not
+    // interesting, or the scan has not run). Stepping it would have to invent a
+    // window, so it is left alone.
+    if (!stored || !stored.candle_15m.length) return null;
+    symbolWindows.set(symbol, stored);
+    return stored;
+}
+
+/** Whether the buffer already holds a candle after the window's last one. */
+function hasNextCandle(symbol: string): boolean {
+    const window = symbolWindows.get(symbol)?.candle_15m;
+    if (!window || !window.length) return false;
+    const lastOpenTime = window[window.length - 1].openTime;
+    return (stepBuffers.get(symbol) ?? []).some(c => c.openTime > lastOpenTime);
+}
+
+/**
+ * Fetches the next batch of candles for one symbol into its buffer.
+ *
+ * Anything at or before where the window already sits is overlap and is dropped.
+ * Continuity itself is checked at consumption time - see takeNextCandle.
+ */
+async function refillBuffer(symbol: string): Promise<void> {
+    const window = symbolWindows.get(symbol)?.candle_15m;
+    if (!window || !window.length) return;
+    const lastOpenTime = window[window.length - 1].openTime;
+    const raw = await KlineUtility.getRecentKlinesByRange(
+        symbol, props.interval, STEP_FETCH_AHEAD, lastOpenTime + FIFTEEN_MIN_MS
+    );
+    stepBuffers.set(symbol, SimulationUtilityV2.mapToInfo(raw).filter(c => c.openTime > lastOpenTime));
+}
+
+/**
+ * Takes the next candle off the buffer. SYNCHRONOUS - phase 1 has already put it
+ * there, so phase 2 never waits on the network.
+ *
+ * CONTINUITY IS CHECKED, NOT ASSUMED. The candle must open exactly one interval
+ * after the one already held; a genuine gap returns null rather than being
+ * stitched, because a window with a hole in it produces ATR, trend and structure
+ * values for a price series that never existed.
+ */
+function takeNextCandle(symbol: string, window: CandleInfo[]): CandleInfo | null {
+    const lastOpenTime = window[window.length - 1].openTime;
+    const buffer = (stepBuffers.get(symbol) ?? []).filter(c => c.openTime > lastOpenTime);
+    stepBuffers.set(symbol, buffer);
+
+    if (!buffer.length) return null;
+    if (buffer[0].openTime !== lastOpenTime + FIFTEEN_MIN_MS) {
+        console.warn(
+            `${symbol}: candle gap - expected ${new Date(lastOpenTime + FIFTEEN_MIN_MS).toISOString()},`
+            + ` got ${new Date(buffer[0].openTime).toISOString()}. Not stepping this symbol.`
+        );
+        return null;
+    }
+    return buffer.shift() ?? null;
 }
 
 function updateStoreFutureSymbolSimulationStats(symbol:string, candles:CandleInfo[]){
@@ -252,7 +512,7 @@ async function showEntryHistoryModal(futureSymbol: FuturesSymbol) {
 
 defineExpose({
     runInitialScan,
-    onNewCandleSpawned
+    stepNextCandle
 });
 </script>
 

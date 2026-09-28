@@ -16,7 +16,26 @@
         <ButtonComponent v-if="!isBotEnabled" @click="startChoco" color="primary" rounded class="mr-sm">start choco</ButtonComponent>
         <ButtonComponent v-else @click="isBotEnabled = false" color="danger" rounded class="mr-sm">stop choco</ButtonComponent>
 
-        <ButtonComponent v-if="!isBotEnabled" @click="runManualSimulation" rounded class="mr-sm">run all simulation</ButtonComponent>
+        <ButtonComponent v-if="!isBotEnabled" @click="runManualSimulation" :disabled="isSteppingCandle" rounded class="mr-sm">run all simulation</ButtonComponent>
+
+        <!-- Start date and next. The scan builds each symbol's window ENDING at
+             the start date, so "next" appends the candle after it and re-runs
+             the same analysis on the shifted window. The display below is
+             untouched: stepping writes through the same store the initial scan
+             writes through. -->
+        <label class="ml-sm mr-sm">
+            start date
+            <input type="datetime-local" v-model="simulationStartTime" :disabled="isSteppingCandle" />
+        </label>
+
+        <ButtonComponent @click="stepNextCandle" :disabled="!canStepCandle" rounded class="mr-sm">
+            {{ isSteppingCandle ? stepProgressMessage : 'next' }}
+        </ButtonComponent>
+
+        <span class="mr-sm" v-if="steppedCandleCount > 0">
+            +{{ steppedCandleCount }} candle{{ steppedCandleCount === 1 ? '' : 's' }}
+            <template v-if="steppedToOpenTime"> · {{ new Date(steppedToOpenTime).toLocaleString() }}</template>
+        </span>
 
         <ButtonComponent @click="UI_SHOW_TRADE_REPLAY = true" color="ghost" rounded class="mr-sm">view trade replay</ButtonComponent>
         <ButtonComponent @click="UI_SHOW_ROLLING_SIMULATION = true" color="ghost" rounded class="mr-sm">run rolling simulation</ButtonComponent>
@@ -60,7 +79,7 @@
                 :new-candle-trigger-key="onNewCandleBasketTriggerKey"
                 :position-duration-median="POSITION_DURATION_MEDIAN"
                 :max-open-positions="MAX_OPEN_POSITIONS"
-                :simulation-start="simulationStartTime"
+                :simulation-start="simulationStartMs"
                 @on-completed="symbolBasket_OnCompleted"
                 />
 
@@ -263,7 +282,29 @@ const selectedSymbolCandleEntries = ref<CandleEntry[]>([])
 const selectedSymbol = ref("")
 
 const simulationReport = ref<SimulationReport[]>([])
-const simulationStartTime = ref("1/1/2026");
+
+// The scan's start date. Was hardcoded "1/1/2026" and passed to
+// MarketScannerComponent, which never declared the prop - so it did nothing and
+// every scan used the most recent 500 candles. Now a datetime-local string,
+// persisted so it survives a reload, converted to epoch ms for the scanner.
+// Empty still means "most recent candles", which is exactly the old behaviour.
+const simulationStartTime = ref(localStorage.getItem('simulation-start-time') ?? '');
+watch(simulationStartTime, (val) => localStorage.setItem('simulation-start-time', val));
+
+const simulationStartMs = computed(() => {
+    if (!simulationStartTime.value) return 0;
+    const ms = new Date(simulationStartTime.value).getTime();
+    return Number.isFinite(ms) ? ms : 0;
+});
+
+// Candles advanced by "next" since the last full scan, and where the walk has
+// reached. Reset by runManualSimulation, because a fresh scan rebuilds every
+// window from the start date again.
+const steppedCandleCount = ref(0);
+const steppedToOpenTime = ref<number | null>(null);
+const isSteppingCandle = ref(false);
+const stepProgressMessage = ref('next');
+
 const simulationRunningBalance = ref(300)
 
 const completionCount = ref(0);
@@ -277,7 +318,6 @@ const tabs = [
     { id: 2, label: 'Hits' },
     { id: 3, label: 'Simulation Result' },
     { id: 4, label: 'Risk' },
-    
 ]
 
 const manualSimulationStats = computed(() => {
@@ -426,7 +466,70 @@ function symbolBasket_OnCompleted(){
     }
 }
 
+const canStepCandle = computed(() =>
+    !isSteppingCandle.value
+    && chocoMintoStore.isManualSimulation
+    && Array.isArray(marketScannerRef.value)
+    && marketScannerRef.value.length > 0
+);
+
+/**
+ * Advances every symbol's window by exactly one candle and re-runs the analysis.
+ *
+ * ALL FOUR BATCHES AT ONCE. Each batch owns a disjoint slice of the symbol list
+ * (chocoMintoStore.splitFutureSymbols) and touches only its own symbols' store
+ * entries, so there is nothing for them to contend over. Run sequentially they
+ * simply added up - four times the fetch latency and four times the wait before
+ * the display finished updating.
+ *
+ * They interleave rather than truly parallelize: JavaScript is one thread, so the
+ * analysis still runs one symbol at a time. What overlaps is the waiting - the
+ * REST fetches, and the yields each batch takes every few symbols.
+ *
+ * A scanner that has not scanned yet steps nothing and reports 0 - pressing
+ * "next" before "run all simulation" is a no-op rather than an error.
+ */
+async function stepNextCandle() {
+    if (!canStepCandle.value) return;
+    isSteppingCandle.value = true;
+    stepProgressMessage.value = 'stepping…';
+    try {
+        const scanners = (marketScannerRef.value as any[]).filter(
+            (scanner) => scanner && typeof scanner.stepNextCandle === 'function'
+        );
+        const results = await Promise.all(
+            scanners.map((scanner) => scanner.stepNextCandle())
+        );
+
+        let advanced = 0;
+        let reachedOpenTime: number | null = null;
+        for (const result of results) {
+            advanced += result?.advanced ?? 0;
+            if (result?.lastOpenTime != null) {
+                reachedOpenTime = Math.max(reachedOpenTime ?? 0, result.lastOpenTime);
+            }
+        }
+        if (advanced > 0) {
+            steppedCandleCount.value++;
+            steppedToOpenTime.value = reachedOpenTime;
+        } else {
+            notificationStore.showNotification(
+                "warning", "top-right", "Nothing to step",
+                "No symbol had a next candle available. Run the scan first, or the windows have caught up to now."
+            );
+        }
+    } finally {
+        isSteppingCandle.value = false;
+        stepProgressMessage.value = 'next';
+    }
+}
+
 async function runManualSimulation() {
+    // A fresh scan rebuilds every window from the start date, so the step
+    // counter no longer describes anything.
+    steppedCandleCount.value = 0;
+    steppedToOpenTime.value = null;
+
     // UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE.value = "ANALYZING MAIN MARKETS"
     // await analyzeMainMarkets();
 

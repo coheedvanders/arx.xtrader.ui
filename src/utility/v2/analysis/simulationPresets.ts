@@ -70,34 +70,6 @@ export interface SimulationSettings {
     positionCapCeiling: number;
 
     maxPositionDurationCandles: number;
-    minRewardRisk: number;
-    minRiskPercent: number;
-    allowLong: boolean;
-    allowShort: boolean;
-
-    allowReversalEntry: boolean;
-    allowExtensionEntry: boolean;
-    extensionRr3: boolean;
-
-    breakoutFadeEnabled: boolean;
-    breakoutFadeAllowLong: boolean;
-    breakoutFadeAllowShort: boolean;
-    breakoutFadeMinAtrPercent: number;
-    breakoutFadeMinRelVolume: number;
-    breakoutFadeMaxFeeRisk: number;
-
-    directionBalanceEnabled: boolean;
-    directionBalanceTolerance: number;
-    directionBalanceMaxPerDay: number;
-    directionBalanceFraction: number;
-
-    crossSectionEnabled: boolean;
-    crossSectionLookback: number;
-    crossSectionHold: number;
-    crossSectionFraction: number;
-    crossSectionStopAtr: number;
-    crossSectionRiskFraction: number;
-    crossSectionMaxLeverage: number;
 
     initConcurrency: number;
     yieldEverySymbols: number;
@@ -137,100 +109,48 @@ const HISTORICAL: SimulationSettings = {
     positionCapFloor: 3,
     positionCapCeiling: 100,
     maxPositionDurationCandles: 250,
-    minRewardRisk: 3,
-    minRiskPercent: 0,
-    allowLong: true,
-    allowShort: false,
-    allowReversalEntry: true,
-    allowExtensionEntry: true,
-    extensionRr3: false,
-    breakoutFadeEnabled: false,
-    breakoutFadeAllowLong: true,
-    breakoutFadeAllowShort: true,
-    breakoutFadeMinAtrPercent: 0.012,
-    breakoutFadeMinRelVolume: 2.5,
-    breakoutFadeMaxFeeRisk: 0.25,
-    directionBalanceEnabled: false,
-    directionBalanceTolerance: 4,
-    directionBalanceMaxPerDay: 0,
-    directionBalanceFraction: 0.2,
-    crossSectionEnabled: false,
-    crossSectionLookback: 96,
-    crossSectionHold: 384,
-    crossSectionFraction: 0.10,
-    crossSectionStopAtr: 30,
-    crossSectionRiskFraction: 0.5,
-    crossSectionMaxLeverage: 20,
     initConcurrency: 6,
     yieldEverySymbols: 120,
 };
 
 /**
- * The control run: the breakout-fade entry, balanced, both sides.
+ * The archive window, which is the only range anything here has been measured
+ * over: 2026-01-01 -> 02-06, 299 usable symbols, 3,560 contiguous candles each.
  *
- * Expected result is about -0.0117R per trade — near flat and NOT profitable.
- * That is the point of running it. A result near -0.18R instead means the
- * direction-balance rule is not biting, which is a wiring problem rather than a
- * market one, and is worth knowing before anything else is measured.
- *
- * The window is pinned to the one the archive covers, so the run can be compared
- * against the offline numbers directly.
+ * Pinned because a configuration without its window is not reproducible - the
+ * same settings over a different range are a different experiment, and every
+ * number this project has produced is attached to a window.
  */
-const CONTROL: SimulationSettings = {
+const ARCHIVE_WINDOW: SimulationSettings = {
     ...HISTORICAL,
     endDateTime: "2026-02-06T00:00",
-    allowShort: true,                 // the balance needs both sides
-    allowReversalEntry: false,
-    allowExtensionEntry: false,
-    breakoutFadeEnabled: true,
-    directionBalanceEnabled: true,
-    // The global R:R gate does not reach this entry - its config has no such
-    // field - so 3 here is harmless and left alone rather than set to a number
-    // that would only be meaningful for the entries that are off.
-    positionCapRatio: 0.20,
-    positionCapCeiling: 50,
 };
 
 /**
- * The cross-sectional book. The one configuration with a measured signal, and
- * still a hypothesis.
- *
- * THE CAP IS THE PART THAT MATTERS. A decile of ~290 eligible symbols is ~58
- * legs. At ratio 0.20 with 200 equity and margin 1 the cap is 40, so only 20 of
- * the 29 pairs fit and the book is two-thirds of the one that was measured.
- * 0.35 gives 70. The book stays balanced when the cap binds - it opens in pairs -
- * so a truncated run is still a valid measurement, just a smaller one.
- *
- * Every per-symbol entry is off because one position per symbol is the lab's
- * invariant: an entry that takes a symbol first takes it out of the book.
+ * A short range for checking a new entry does anything at all before spending
+ * an hour on it. One week is enough to see whether it fires, at what rate, and
+ * whether the positions it opens are shaped the way they were intended - and
+ * not remotely enough to say whether it works.
  */
-const CROSS_SECTIONAL: SimulationSettings = {
+const SMOKE_TEST: SimulationSettings = {
     ...HISTORICAL,
-    endDateTime: "2026-02-06T00:00",
-    allowShort: true,                 // required; the balance is the mechanism
-    allowReversalEntry: false,
-    allowExtensionEntry: false,
-    breakoutFadeEnabled: false,
-    directionBalanceEnabled: false,   // the book is balanced by construction
-    crossSectionEnabled: true,
-    positionCapRatio: 0.35,
-    positionCapCeiling: 80,
+    endDateTime: "2026-01-08T00:00",
 };
 
 export const BUILT_IN_PRESETS: readonly SimulationPreset[] = [
     {
-        name: "Control — breakout fade, balanced",
-        description: "Run A. Both sides, direction-balanced. Expect ≈ −0.0117R per trade: near flat, not profitable. A result near −0.18R means the balance rule is not biting.",
-        settings: CONTROL, builtIn: true, savedAt: 0,
+        name: "Archive window",
+        description: "2026-01-01 → 02-06. The range the archive covers and the only one any measurement here refers to. Use it for anything meant to be compared against an earlier run.",
+        settings: ARCHIVE_WINDOW, builtIn: true, savedAt: 0,
     },
     {
-        name: "Cross-sectional book",
-        description: "Run B. Market-neutral ranked book, 4-day hold, 30-ATR stop, leverage derived from a 0.5 risk budget. Cap raised to fit ~58 legs. The only configuration with a measured signal, and still a hypothesis.",
-        settings: CROSS_SECTIONAL, builtIn: true, savedAt: 0,
+        name: "Smoke test — one week",
+        description: "2026-01-01 → 01-08. Does the entry fire at all, at what rate, and are its positions shaped as intended? Far too short to say whether it works.",
+        settings: SMOKE_TEST, builtIn: true, savedAt: 0,
     },
     {
-        name: "Historical (pre-2026-09-27)",
-        description: "What the lab did before the archive research: long only, segment entry on, no balance. Here to be compared against, not to be rerun hopefully.",
+        name: "Full range",
+        description: "2026-01-01 → 02-28. Runs past the archive, so the later part is fetched live and has no archived candles to check against.",
         settings: HISTORICAL, builtIn: true, savedAt: 0,
     },
 ];

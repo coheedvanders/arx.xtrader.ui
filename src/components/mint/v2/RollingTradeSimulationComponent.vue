@@ -869,144 +869,6 @@
                                 <label class="settings-field">start date/time
                                     <input type="datetime-local" v-model="startDateTimeInput" :disabled="isRunning" class="datetime-input" />
                                 </label>
-                                <label class="settings-field settings-check">reversal entry (POTENTIAL_REVERSAL)
-                                    <input type="checkbox" v-model="allowReversalEntryInput" :disabled="isRunning" />
-                                </label>
-                                <details class="settings-field hint settings-why">
-                                    <summary>why</summary>
-                                    Off by default since 2026-09-27. On the archive dataset (299 symbols,
-                                    2026-01-01 → 02-06, 34 days of entries) neither this trigger nor the
-                                    extension fade separates from a random entry on its own side mix —
-                                    fade minus continue never exceeds |t| 1.5 for any detector. In the
-                                    live run it took 640 in-window trades at a 17.0% win rate for
-                                    −0.3101R each, net of fees and funding, −68.02.
-                                </details>
-                                <label class="settings-field settings-check">extension-fade entry
-                                    <input type="checkbox" v-model="allowExtensionEntryInput" :disabled="isRunning" />
-                                </label>
-                                <label class="settings-field settings-check settings-sub">└ use 1:3 levels (stop 3 ATR, target 9 ATR)
-                                    <input type="checkbox" v-model="extensionRr3Input" :disabled="isRunning || !allowExtensionEntryInput" />
-                                </label>
-                                <details class="settings-field hint settings-why">
-                                    <summary>why</summary>
-                                    Fade a close beyond the prior 96-candle extreme. The historical
-                                    levels are 3 ATR both ways, which is R:R 1.0 and therefore needs a
-                                    win rate above 50% — it measured 44.2% over 988 in-window trades
-                                    (−0.1142R each, −88.45 net). The min R:R gate now applies to this
-                                    entry too, so with it left at 3 the historical levels are rejected
-                                    and this entry takes NOTHING unless the 1:3 box above is ticked.
-                                    That is the rule working. The 1:3 geometry itself is untested —
-                                    whether it clears its 25% breakeven cannot be worked out from any
-                                    run made with 3/3 levels.
-                                </details>
-                                <label class="settings-field settings-check">breakout-fade entry
-                                    <input type="checkbox" v-model="breakoutFadeEnabledInput" :disabled="isRunning" />
-                                </label>
-                                <label class="settings-field settings-check settings-sub">└ allow long
-                                    <input type="checkbox" v-model="breakoutFadeAllowLongInput" :disabled="isRunning || !breakoutFadeEnabledInput" />
-                                </label>
-                                <label class="settings-field settings-check settings-sub">└ allow short
-                                    <input type="checkbox" v-model="breakoutFadeAllowShortInput" :disabled="isRunning || !breakoutFadeEnabledInput" />
-                                </label>
-                                <label class="settings-field settings-sub">└ min ATR % of price
-                                    <InputComponent v-model.number="breakoutFadeMinAtrPercentInput" :disabled="isRunning || !breakoutFadeEnabledInput" />
-                                </label>
-                                <label class="settings-field settings-sub">└ min relative volume
-                                    <InputComponent v-model.number="breakoutFadeMinRelVolumeInput" :disabled="isRunning || !breakoutFadeEnabledInput" />
-                                </label>
-                                <label class="settings-field settings-sub">└ max fee / R
-                                    <InputComponent v-model.number="breakoutFadeMaxFeeRiskInput" :disabled="isRunning || !breakoutFadeEnabledInput" />
-                                </label>
-                                <details class="settings-field hint settings-why">
-                                    <summary>why</summary>
-                                    The 96-candle extreme event rebuilt on 37 days of data instead of 38
-                                    hours. Fading it IS the better side — exhaustion measured +0.3479
-                                    ± 0.0791 contrasting up against down within each day — but the effect
-                                    is about the size of the fee: no (target, stop, expiry) cell is
-                                    positive, best −0.052R, and the best balanced configuration is
-                                    −0.0117R. It is a worked control, not a candidate.
-                                    <strong>It has its own long/short toggles on purpose</strong>: its
-                                    result needs both sides, and long-only is −0.1838R against −0.0117R
-                                    balanced. The two threshold inputs are arbitrary in magnitude
-                                    (t 1.26 and t 0.93 — not significant) and kept for the cost argument
-                                    under them.
-                                </details>
-                                <label class="settings-field settings-check">direction balance (per UTC day)
-                                    <input type="checkbox" v-model="directionBalanceEnabledInput" :disabled="isRunning" />
-                                </label>
-                                <label class="settings-field settings-sub">└ tolerance
-                                    <InputComponent v-model.number="directionBalanceToleranceInput" :disabled="isRunning || !directionBalanceEnabledInput" />
-                                </label>
-                                <label class="settings-field settings-sub">└ tolerance as a fraction of the day (0 = off)
-                                    <InputComponent v-model.number="directionBalanceFractionInput" :disabled="isRunning || !directionBalanceEnabledInput" />
-                                </label>
-                                <label class="settings-field settings-sub">└ max accepted per day (0 = off)
-                                    <InputComponent v-model.number="directionBalanceMaxPerDayInput" :disabled="isRunning || !directionBalanceEnabledInput" />
-                                </label>
-                                <details class="settings-field hint settings-why">
-                                    <summary>why</summary>
-                                    A veto on the side about to open, consulted at the candle the
-                                    simulation has reached. The largest fixable factor found: the fade
-                                    event family has 12,855 downside events against 9,473 upside, and
-                                    fading a downside event is a LONG — so an unfiltered book is
-                                    structurally net long and then earns the market's drift on top of
-                                    whatever the signal is worth. Balanced, −0.1094R becomes −0.0117R,
-                                    trading a third of the volume.
-                                    <strong>Tolerance 0 means OFF, not perfect balance</strong> — the
-                                    first trade of any day makes the difference 1, so 0 is unsatisfiable.
-                                    Applies to the per-symbol entries only; the cross-sectional book
-                                    opens pairs and is already balanced.
-                                </details>
-                                <label class="settings-field settings-check">cross-sectional book
-                                    <input type="checkbox" v-model="crossSectionEnabledInput" :disabled="isRunning" />
-                                </label>
-                                <details class="settings-field hint settings-why">
-                                    <summary>why</summary>
-                                    The only entry here with a measured signal, and it is a
-                                    <em>hypothesis</em>, not a calibration. Rank every eligible symbol by
-                                    trailing return, go long the top decile against short the bottom
-                                    decile in equal number, hold, exit at the close with no target.
-                                    Market-neutral by construction, so the window's −23.7% drift cancels
-                                    inside every rebalance. Measured on 299 archived symbols,
-                                    2026-01-01 → 02-06: forward +0.4397R, reversed −0.5147R, shuffled
-                                    ranks +0.0357R, and 98% of 96 rebalance clock times positive. It
-                                    rests on ~8–9 independent four-day periods in one window, so the
-                                    honest t is about +0.9 — one run of this is not confirmation.
-                                    Needs shorts enabled; the balance is the whole point.
-                                </details>
-                                <label class="settings-field settings-sub">└ rank lookback (candles)
-                                    <InputComponent v-model.number="crossSectionLookbackInput" :disabled="isRunning || !crossSectionEnabledInput" />
-                                </label>
-                                <label class="settings-field settings-sub">└ hold (candles)
-                                    <InputComponent v-model.number="crossSectionHoldInput" :disabled="isRunning || !crossSectionEnabledInput" />
-                                </label>
-                                <label class="settings-field settings-sub">└ fraction each side
-                                    <InputComponent v-model.number="crossSectionFractionInput" :disabled="isRunning || !crossSectionEnabledInput" />
-                                </label>
-                                <label class="settings-field settings-sub">└ stop (ATR)
-                                    <InputComponent v-model.number="crossSectionStopAtrInput" :disabled="isRunning || !crossSectionEnabledInput" />
-                                </label>
-                                <label class="settings-field settings-sub">└ risk per position (fraction of margin)
-                                    <InputComponent v-model.number="crossSectionRiskFractionInput" :disabled="isRunning || !crossSectionEnabledInput" />
-                                </label>
-                                <label class="settings-field settings-sub">└ leverage ceiling
-                                    <InputComponent v-model.number="crossSectionMaxLeverageInput" :disabled="isRunning || !crossSectionEnabledInput" />
-                                </label>
-                                <details class="settings-field hint settings-why">
-                                    <summary>why</summary>
-                                    <strong>Leverage is derived, not set.</strong> Every number behind
-                                    this book is per unit of risk, so each leg gets the leverage that
-                                    makes a 30-ATR stop cost exactly this fraction of its margin —
-                                    a volatile symbol gets less, a quiet one more, up to the ceiling.
-                                    Any fraction below 1 also keeps the stop strictly inside liquidation.
-                                    A fixed 5x was tried first and was wrong: on real candles the widest
-                                    30-ATR stop was 70.9% of price against a 20% liquidation distance, so
-                                    those legs would have been liquidated rather than stopped. For
-                                    reference, 6–9 ATR stops keep only about a fifth of the measured
-                                    edge, which is why the stop is wide and the leverage low rather than
-                                    the reverse. These positions carry their own leverage and duration
-                                    cap, so the global settings above do not apply to them.
-                                </details>
                                 <label class="settings-field">end date/time (optional)
                                     <input type="datetime-local" v-model="endDateTimeInput" :disabled="isRunning" class="datetime-input" />
                                 </label>
@@ -1066,16 +928,7 @@
 
                             <div class="settings-group">
                                 <h4 class="settings-title">Position</h4>
-                                <label class="settings-field">min reward:risk to enter
-                                    <InputComponent v-model.number="minRewardRiskInput" :disabled="isRunning" />
-                                </label>
-                                <details class="settings-field hint settings-why">
-                                    <summary>why</summary>
-                                    Rejects an entry whose planned (tp−entry)÷(entry−sl) is below this.
-                                    Breakeven R:R at a win rate p is (1−p)÷p — at the 34.4% observed,
-                                    that is 1.91, so 2.0 asks each trade to clear its own breakeven.
-                                    0 disables.
-                                </details>
+
                                 <label class="settings-field">symbols initialized in parallel
                                     <InputComponent v-model.number="initConcurrencyInput" :disabled="isRunning" />
                                 </label>
@@ -1097,27 +950,11 @@
                                     Higher = fewer pauses handed back to the browser, so slightly faster
                                     but a less responsive tab. Worth minutes over a full run, not hours.
                                 </details>
-                                <label class="settings-field">min stop distance (fraction of price)
-                                    <InputComponent v-model.number="minRiskPercentInput" :disabled="isRunning" />
-                                </label>
-                                <details class="settings-field hint settings-why">
-                                    <summary>why</summary>
-                                    0.01 = stop at least 1% from price. The round-trip fee is fixed on
-                                    notional while R is the stop distance, so fee÷R diverges as the stop
-                                    tightens — 42 of 5,375 measured candidates had fee &gt; 1R and could
-                                    not profit at all (mostly USDCUSDT, worst 615R). 0 disables.
-                                </details>
+
                                 <label class="settings-field">position candle life
                                     <InputComponent v-model.number="maxPositionDurationInput" :disabled="isRunning" />
                                 </label>
-                                <label class="settings-field settings-check">
-                                    <input type="checkbox" v-model="allowLongInput" :disabled="isRunning" />
-                                    trade LONG
-                                </label>
-                                <label class="settings-field settings-check">
-                                    <input type="checkbox" v-model="allowShortInput" :disabled="isRunning" />
-                                    trade SHORT
-                                </label>
+
                             </div>
 
                             <div class="settings-group">
@@ -1250,18 +1087,7 @@ import { KlineUtility } from '@/utility/klineUtility';
 import { BinanceMarginUtility } from '@/utility/binanceMarginUtility';
 import { estimateCompletion, FIFTEEN_MIN_MS, type CompletionEstimate } from '@/utility/v2/analysis/completionEstimate';
 import { evaluatePriceVolumeInterest } from '@/utility/v2/analysis/priceVolumeInterest';
-import { forceClosePosition, createCrossSectionalPosition, EXTENSION_LEVELS, EXTENSION_LEVELS_RR3 } from '@/utility/v2/analysis/positionEntry';
-import { BREAKOUT_FADE_LEVELS } from '@/utility/v2/analysis/breakoutFadeEntry';
-import {
-    newDirectionBalanceState, rollDirectionBalanceDay, decideDirectionBalance,
-    commitDirectionBalance, recordDirectionBalanceRefusal,
-    DIRECTION_BALANCE_MEASURED, type DirectionBalanceConfig,
-} from '@/utility/v2/analysis/directionBalance';
-import {
-    selectBook, pairLegs, simpleAtr, trailingReturn, planCrossSectionOpens,
-    leverageForRiskBudget, CROSS_SECTION_DEFAULTS,
-    type CrossSectionObservation,
-} from '@/utility/v2/analysis/crossSectionalMomentum';
+import { forceClosePosition } from '@/utility/v2/analysis/positionEntry';
 import { buildSimulationSummary, type SimulationSummary } from '@/utility/v2/analysis/simulationSummary';
 import {
     auditPositionWindows, checkWindowIntegrity, type WindowIntegrityReport,
@@ -1323,14 +1149,11 @@ watch(marginInput, (value) => {
     localStorage.setItem(MARGIN_STORAGE_KEY, String(value));
 });
 
-const ALLOW_LONG_STORAGE_KEY = 'rolling-simulation-allow-long';
-const ALLOW_SHORT_STORAGE_KEY = 'rolling-simulation-allow-short';
 // Default LONG on / SHORT off: across two full backtests SHORT produced
 // -16.54 and +0.67 net respectively - i.e. nothing or slightly negative
 // after fees - despite a higher win rate, while LONG carried effectively
 // all the profit. Defaulting SHORT off reflects that measured result;
 // the toggle is here so it can be re-tested rather than silently dropped.
-const allowLongInput = ref(localStorage.getItem(ALLOW_LONG_STORAGE_KEY) !== 'false');
 // SHORT NOW DEFAULTS ON, changed 2026-09-27. It defaulted OFF on the finding
 // that "SHORT contributes nothing", which was measured on the contaminated
 // engine. On the archive - 299 symbols, 15m, 2026-01-01 -> 02-06, a -23.7%
@@ -1341,9 +1164,6 @@ const allowLongInput = ref(localStorage.getItem(ALLOW_LONG_STORAGE_KEY) !== 'fal
 // does not claim shorts are profitable; it declines to bet on the direction
 // before the entry has been given a chance to choose it.
 // An existing stored preference still wins - only the fallback changed.
-const allowShortInput = ref(localStorage.getItem(ALLOW_SHORT_STORAGE_KEY) !== 'false');
-watch(allowLongInput, (v) => localStorage.setItem(ALLOW_LONG_STORAGE_KEY, String(v)));
-watch(allowShortInput, (v) => localStorage.setItem(ALLOW_SHORT_STORAGE_KEY, String(v)));
 
 // ── Dynamic margin per position ──────────────────────────────────────────
 // Scales position SIZE with the account instead of holding it fixed:
@@ -1406,10 +1226,6 @@ function computeMarginForBalance(balanceValue: number): number {
 // was 25.7% of trades and contributed -9,738 net against a +767 total,
 // and the effect was monotonic within each third of the run, so it is not
 // a time artifact. 0 disables the filter.
-const MIN_RR_KEY = 'rolling-simulation-min-reward-risk';
-const storedMinRr = Number(localStorage.getItem(MIN_RR_KEY));
-const minRewardRiskInput = ref(Number.isFinite(storedMinRr) && storedMinRr >= 0 ? storedMinRr : 2.0);
-watch(minRewardRiskInput, (v) => localStorage.setItem(MIN_RR_KEY, String(v)));
 
 // Minimum stop distance as a fraction of entry price. The round-trip taker
 // fee is fixed on notional while R is the stop distance, so
@@ -1418,10 +1234,6 @@ watch(minRewardRiskInput, (v) => localStorage.setItem(MIN_RR_KEY, String(v)));
 // profit whatever price did (almost all USDCUSDT, worst 615R). 0.01 = stop
 // at least 1% away = fee <= 0.10R at 0.05% taker. Only the fee>1R exclusion
 // is proven by arithmetic; the exact floor below that is a judgement call.
-const MIN_RISK_PCT_KEY = 'rolling-simulation-min-risk-percent';
-const storedMinRisk = Number(localStorage.getItem(MIN_RISK_PCT_KEY));
-const minRiskPercentInput = ref(Number.isFinite(storedMinRisk) && storedMinRisk >= 0 ? storedMinRisk : 0.01);
-watch(minRiskPercentInput, (v) => localStorage.setItem(MIN_RISK_PCT_KEY, String(v)));
 
 // Position candle-life cap - not persisted (unlike balance/margin above),
 // scoped to this run only.
@@ -1460,200 +1272,10 @@ const maxPositionDurationInput = ref(250);
 // possible: the same range can be re-run after a code change and the two
 // results are comparable, which an open-ended run can never be because it
 // ends at a different place every day.
-// EXTENSION FADE entry, off by default.
-//
-// A second, independent entry: fade a candle that CLOSES beyond the extreme of
-// the prior 96 candles. It inherits the allow long / allow short toggles below
-// - one toggle, one meaning, whichever entry is firing.
-//
-// WHAT THIS ENTRY ACTUALLY MEASURED, corrected 2026-09-27. The +0.473R / +0.393R
-// figures this comment used to carry came from offline datasets that span
-// 38 HOURS of eligible entry time, not the five days their row counts implied -
-// see positionEntry.ts's status block for the arithmetic. On the rolling run
-// over 2026-01-01 -> 02-27 it took 988 in-window trades at a 44.2% win rate
-// for -0.1142R each and -88.45 net. At R:R 1.0 it needs a >50% win rate.
-const EXTENSION_ENTRY_KEY = 'rolling-simulation-allow-extension-entry';
-const allowExtensionEntryInput = ref(localStorage.getItem(EXTENSION_ENTRY_KEY) === '1');
-watch(allowExtensionEntryInput, (v) => localStorage.setItem(EXTENSION_ENTRY_KEY, v ? '1' : '0'));
-
-// Use the 1:3 extension geometry (stop 3 ATR, target 9 ATR) instead of the
-// historical 3/3.
-//
-// Off by default so an existing run reproduces. Note the interaction, which is
-// deliberate and will otherwise look like a bug: with the R:R gate now applied
-// to BOTH entries, the historical 3/3 levels are R:R 1.0 and are REJECTED by
-// any minRewardRisk above 1. So extension-fade on + min R:R 3 + this off takes
-// zero extension trades. That is the rule working, not a fault.
-const EXTENSION_RR3_KEY = 'rolling-simulation-extension-rr3';
-const extensionRr3Input = ref(localStorage.getItem(EXTENSION_RR3_KEY) === '1');
-watch(extensionRr3Input, (v) => localStorage.setItem(EXTENSION_RR3_KEY, v ? '1' : '0'));
-
-// POTENTIAL_REVERSAL entry, ON by default - it is the incumbent, so leaving it
-// on is the behaviour every earlier run had.
-//
-// Turning it OFF is, as of 2026-09-27, the only change to this engine with
-// evidence behind it. Over the in-window part of the 2026-01-01 -> 02-27 run it
-// took 652 trades at a 17.0% win rate for -0.2341R each, t -2.16 clustered on
-// entry day, -61.51 net. Removing it takes the run's in-window loss from
-// -149.96 to -88.45. That is loss reduction. The remainder still loses.
-// DEFAULTS OFF as of 2026-09-27. Leaving a measured loser on by default is
-// worse than changing a default: on the archive dataset neither this trigger nor
-// the extension fade separates from a random entry on its own side mix, and in
-// the live run this one took 640 in-window trades at a 17.0% win rate for
-// -0.3101R each, -68.02 net. An existing stored preference still wins.
-const REVERSAL_ENTRY_KEY = 'rolling-simulation-allow-reversal-entry';
-const allowReversalEntryInput = ref(localStorage.getItem(REVERSAL_ENTRY_KEY) === '1');
-watch(allowReversalEntryInput, (v) => localStorage.setItem(REVERSAL_ENTRY_KEY, v ? '1' : '0'));
-
-/**
- * The EntryOptions object handed to runMarketAnalysis.
- *
- * Built in ONE place so the warm-up path and the shift path cannot drift apart.
- * They took different arguments once already and the run that produced was
- * not reproducible from its own settings.
- */
-function entryOptions(): EntryOptions {
-    return {
-        allowReversalEntry: allowReversalEntryInput.value,
-        // The cross-sectional book is deliberately NOT here. runAnalysis decides
-        // per symbol and cannot see a ranking, so that entry is opened by the lab
-        // after the shift loop instead - see rebalanceCrossSection.
-        extensionLevels: extensionRr3Input.value ? EXTENSION_LEVELS_RR3 : EXTENSION_LEVELS,
-        breakoutFade: breakoutFadeEnabledInput.value ? breakoutFadeConfig() : null,
-        // LEAN WHENEVER THE REVERSAL ENTRY IS OFF, which is the exact condition
-        // under which the heavy per-candle derivation has no consumer. Not a
-        // setting: it is a consequence of what is enabled, and exposing it would
-        // only create a way to pick the slow-and-identical combination by hand.
-        // runAnalysis refuses lean + reversal outright, so this cannot go wrong
-        // quietly.
-        derive: allowReversalEntryInput.value ? 'full' : 'lean',
-        // PURE PREDICATE, as the parameter requires: it reads the day's running
-        // counts and does not touch them. The commit happens in processSymbolTick
-        // once a position actually exists, because several further gates can still
-        // refuse a candidate after this one passes.
-        //
-        // The refusal counter IS incremented here, and it double-counts: two entry
-        // checks asking about the same candidate both record a refusal. It is an
-        // upper bound on refused candidates, not a count of them, and is exported
-        // as such.
-        canOpenSide: directionBalanceEnabledInput.value
-            ? (side: 'LONG' | 'SHORT') => {
-                const decision = decideDirectionBalance(
-                    directionBalanceState, side, directionBalanceConfig());
-                if (!decision.allowed) {
-                    recordDirectionBalanceRefusal(directionBalanceState, decision.reason);
-                }
-                return decision.allowed;
-            }
-            : undefined,
-    };
-}
-
-// CROSS-SECTIONAL BOOK — off by default, because it is a hypothesis, not a
-// calibration. The numbers behind it: rank by trailing 96-candle return, long the
-// top decile against the bottom decile, hold 384 candles, exit at the close, no
-// target. Measured on 299 archived symbols over 2026-01-01 -> 02-06:
-//   forward +0.4397R   reversed -0.5147R   shuffled ranks +0.0357R
-// and 98% of 96 distinct rebalance clock times give a positive mean. It rests on
-// ~8-9 INDEPENDENT four-day periods in one window, so the honest t is about +0.9.
-// Do not read a single run of this as confirmation.
-// BREAKOUT_FADE — the rebuilt close-beyond-the-prior-extreme entry, measured over
-// 37 days instead of 38 hours. Off by default: its best direction-balanced
-// configuration is -0.0117R, so it is a worked control, not a candidate.
-//
-// It carries its OWN long/short toggles rather than inheriting the global ones,
-// because its measured result depends on taking BOTH sides: long-only is -0.1838R
-// against -0.0117R balanced. Inheriting a long-only toggle would turn one into the
-// other without saying so.
-const BF_ENABLED_KEY = 'rolling-simulation-breakout-fade';
-const breakoutFadeEnabledInput = ref(localStorage.getItem(BF_ENABLED_KEY) === '1');
-watch(breakoutFadeEnabledInput, v => localStorage.setItem(BF_ENABLED_KEY, v ? '1' : '0'));
-const breakoutFadeAllowLongInput = ref(true);
-const breakoutFadeAllowShortInput = ref(true);
-// ARBITRARY IN MAGNITUDE, principled only in direction - both were the only cuts
-// that survived train -> test in the same direction, at t 1.26 and t 0.93, which
-// is not significant. They are kept for the cost argument underneath them.
-const breakoutFadeMinAtrPercentInput = ref(0.012);
-const breakoutFadeMinRelVolumeInput = ref(2.5);
-// fee/R above this cannot be paid for by an ATR-scaled move at any win rate.
-// USDCUSDT reached 140 in a real run because no guard was set.
-const breakoutFadeMaxFeeRiskInput = ref(0.25);
-
-/** Assembled in one place so the warm-up and shift paths cannot diverge. */
-function breakoutFadeConfig() {
-    return {
-        ...BREAKOUT_FADE_LEVELS,
-        minAtrPercent: breakoutFadeMinAtrPercentInput.value,
-        minRelVolume: breakoutFadeMinRelVolumeInput.value,
-        maxFeeRiskRatio: breakoutFadeMaxFeeRiskInput.value,
-        allowLong: breakoutFadeAllowLongInput.value,
-        allowShort: breakoutFadeAllowShortInput.value,
-    };
-}
-
-// DIRECTION BALANCE — a portfolio veto on the side about to open, worth ~0.17R per
-// trade and the largest fixable factor found. Off by default so an existing run
-// reproduces; `tolerance: 0` in the module means OFF, not "perfectly balanced".
-//
-// It applies to the PER-SYMBOL entries only. The cross-sectional book is balanced
-// by construction - it opens LONG/SHORT pairs - so running both rules over it
-// would refuse legs for an imbalance that cannot occur.
-const DB_ENABLED_KEY = 'rolling-simulation-direction-balance';
-const directionBalanceEnabledInput = ref(localStorage.getItem(DB_ENABLED_KEY) === '1');
-watch(directionBalanceEnabledInput, v => localStorage.setItem(DB_ENABLED_KEY, v ? '1' : '0'));
-const directionBalanceToleranceInput = ref(DIRECTION_BALANCE_MEASURED.tolerance);
-const directionBalanceMaxPerDayInput = ref(DIRECTION_BALANCE_MEASURED.maxPerDay);
-const directionBalanceFractionInput = ref(DIRECTION_BALANCE_MEASURED.toleranceFraction);
-/** Reset per UTC day by rollDirectionBalanceDay at the top of each tick. */
-let directionBalanceState = newDirectionBalanceState(0);
-
-function directionBalanceConfig(): DirectionBalanceConfig {
-    return {
-        tolerance: directionBalanceToleranceInput.value,
-        maxPerDay: directionBalanceMaxPerDayInput.value,
-        toleranceFraction: directionBalanceFractionInput.value,
-    };
-}
 
 /** Filled at initialization by checkWindowIntegrity; exported with the run. */
 const windowIntegrityReport = shallowRef<WindowIntegrityReport | null>(null);
 
-const XS_ENABLED_KEY = 'rolling-simulation-cross-sectional';
-const crossSectionEnabledInput = ref(localStorage.getItem(XS_ENABLED_KEY) === '1');
-watch(crossSectionEnabledInput, v => localStorage.setItem(XS_ENABLED_KEY, v ? '1' : '0'));
-
-// Every default below is the value the result was measured at. They are not
-// tuned optima - the decile profile and the lookback sweep were both flat enough
-// that nearby values behave the same, which is the reason there is nothing here
-// worth optimising.
-const crossSectionLookbackInput = ref(96);     // 24h on 15m
-const crossSectionHoldInput = ref(384);        // 4 days; the result is specific to it
-const crossSectionFractionInput = ref(0.10);   // top/bottom decile each side
-// STOP WIDTH AND LEVERAGE ARE NOT INDEPENDENT, and a fixed pair of them is wrong.
-// This was first wired as a fixed 5x with a 30-ATR stop, on the median ATR of
-// 0.659% of price making a 30-ATR move 19.8% and so reachable inside 5x's 20%
-// liquidation distance. The median was the wrong statistic: on real archive
-// candles the widest 30-ATR stop in one book was 70.9% of price - three and a half
-// times past its own liquidation point - so those legs would have been liquidated
-// rather than stopped, at the whole margin, and the run would have read as a
-// failing strategy instead of a sizing bug.
-//
-// Every measurement behind this book is in R, i.e. per unit of RISK, so the
-// deployable form is constant risk per position: leverage falls as volatility
-// rises, and is DERIVED per leg rather than set.
-//
-//   lossAtStop = margin * leverage * stopAtr * (atr/price) = margin * riskFraction
-//
-// so riskFraction is the knob and leverage follows. Any value below 1 also puts
-// the stop strictly inside liquidation by construction.
-const crossSectionStopAtrInput = ref(30);
-/** Fraction of a position's margin lost if its stop is hit. Must be < 1. */
-const crossSectionRiskFractionInput = ref(0.5);
-/** Ceiling for low-volatility symbols, where the formula would ask for more. */
-const crossSectionMaxLeverageInput = ref(20);
-
-const crossSectionRebalances = ref(0);
-const crossSectionLegsOpened = ref(0);
 /** Tick index of the last rebalance; null until the first one fires. */
 let lastCrossSectionRebalanceCandle: number | null = null;
 
@@ -1734,30 +1356,6 @@ const SETTING_REFS: RefsFor<SimulationSettings> = {
     positionCapFloor: positionCapFloorInput,
     positionCapCeiling: positionCapCeilingInput,
     maxPositionDurationCandles: maxPositionDurationInput,
-    minRewardRisk: minRewardRiskInput,
-    minRiskPercent: minRiskPercentInput,
-    allowLong: allowLongInput,
-    allowShort: allowShortInput,
-    allowReversalEntry: allowReversalEntryInput,
-    allowExtensionEntry: allowExtensionEntryInput,
-    extensionRr3: extensionRr3Input,
-    breakoutFadeEnabled: breakoutFadeEnabledInput,
-    breakoutFadeAllowLong: breakoutFadeAllowLongInput,
-    breakoutFadeAllowShort: breakoutFadeAllowShortInput,
-    breakoutFadeMinAtrPercent: breakoutFadeMinAtrPercentInput,
-    breakoutFadeMinRelVolume: breakoutFadeMinRelVolumeInput,
-    breakoutFadeMaxFeeRisk: breakoutFadeMaxFeeRiskInput,
-    directionBalanceEnabled: directionBalanceEnabledInput,
-    directionBalanceTolerance: directionBalanceToleranceInput,
-    directionBalanceMaxPerDay: directionBalanceMaxPerDayInput,
-    directionBalanceFraction: directionBalanceFractionInput,
-    crossSectionEnabled: crossSectionEnabledInput,
-    crossSectionLookback: crossSectionLookbackInput,
-    crossSectionHold: crossSectionHoldInput,
-    crossSectionFraction: crossSectionFractionInput,
-    crossSectionStopAtr: crossSectionStopAtrInput,
-    crossSectionRiskFraction: crossSectionRiskFractionInput,
-    crossSectionMaxLeverage: crossSectionMaxLeverageInput,
     initConcurrency: initConcurrencyInput,
     yieldEverySymbols,
 };
@@ -2618,25 +2216,8 @@ async function downloadFullRunData() {
             settings: {
                 startDateTimeInput: startDateTimeInput.value,
                 endDateTimeInput: endDateTimeInput.value,
-                allowExtensionEntry: allowExtensionEntryInput.value,
-                extensionLevels: extensionRr3Input.value ? 'RR3_3_9' : 'HISTORICAL_3_3',
-                allowReversalEntry: allowReversalEntryInput.value,
-                breakoutFade: breakoutFadeEnabledInput.value ? breakoutFadeConfig() : null,
-                directionBalance: directionBalanceEnabledInput.value ? directionBalanceConfig() : null,
-                crossSectional: crossSectionEnabledInput.value ? {
-                    lookback: crossSectionLookbackInput.value,
-                    hold: crossSectionHoldInput.value,
-                    fraction: crossSectionFractionInput.value,
-                    stopAtr: crossSectionStopAtrInput.value,
-                    riskFraction: crossSectionRiskFractionInput.value,
-                    maxLeverage: crossSectionMaxLeverageInput.value,
-                } : null,
                 windowSize: WINDOW_SIZE,
-                minRewardRisk: minRewardRiskInput.value,
-                minRiskPercent: minRiskPercentInput.value,
                 maxPositionDurationCandles: maxPositionDurationInput.value,
-                allowLong: allowLongInput.value,
-                allowShort: allowShortInput.value,
             },
             // Stated rather than implied: the skip optimization means analysis
             // did not run on every symbol-tick, so candles without a signal
@@ -2862,29 +2443,8 @@ function currentCapThisTick(): number {
     return Math.max(positionCapFloorInput.value, Math.min(positionCapCeilingInput.value, raw));
 }
 
-/**
- * Is ANY per-symbol entry enabled at all?
- *
- * WHY THIS IS THE FIRST CHECK. `shouldAllowNewEntry` decides whether a symbol
- * gets the full 500-candle analysis pass, which is ~97% of this simulation's
- * runtime. It did not previously know which entries were switched on, so a run
- * with every per-symbol entry OFF still answered "yes" for every symbol the
- * interest filter liked - and then ran the whole derivation for an entry that
- * could not fire. A cross-sectional-only run pays that on every tick for nothing:
- * its book is opened by the lab after the shift loop, not by runAnalysis.
- *
- * The cross-sectional book is deliberately NOT counted here. It does not create
- * positions through runAnalysis, so it never needs this gate to open.
- */
-function anyPerSymbolEntryEnabled(): boolean {
-    return allowReversalEntryInput.value
-        || allowExtensionEntryInput.value
-        || breakoutFadeEnabledInput.value;
-}
 
 function shouldAllowNewEntry(state: SymbolRollingState): boolean {
-    // Cheapest check first, and the one that can rule out the entire pass.
-    if (!anyPerSymbolEntryEnabled()) return false;
     const cap = currentCapThisTick();
     if (openPositionCountThisTick >= cap) return false;
     // Remembered so the snapshot can record the cap that actually PERMITTED
@@ -2970,14 +2530,11 @@ async function initializeSymbol(symbol: string, startTimestamp: number): Promise
     // position creation is suppressed.
     const { openPosition } = await SimulationUtilityV2.runMarketAnalysis(
         symbolInfo, [], null, maxPositionDurationInput.value, effectiveMargin.value,
-        false, allowLongInput.value, allowShortInput.value, minRewardRiskInput.value, minRiskPercentInput.value,
+        false, true, true,
         // Warm-up opens nothing (allowNewEntry is false), but the index is
         // passed anyway so this call can never behave differently from the
         // shift path if that flag is ever changed.
-        candles.length - 1,
-        allowExtensionEntryInput.value,
-        // Same object shape as the shift path - see entryOptions().
-        entryOptions()
+        candles.length - 1
     );
 
     return {
@@ -3262,7 +2819,7 @@ async function shiftSymbolWindow(symbol: string, state: SymbolRollingState): Pro
     const analysisStartedAt = performance.now();
     const { openPosition } = await SimulationUtilityV2.runMarketAnalysis(
         symbolInfo, [], state.openPosition, maxPositionDurationInput.value, marginThisTick,
-        allowEntryThisSymbol, allowLongInput.value, allowShortInput.value, minRewardRiskInput.value, minRiskPercentInput.value,
+        allowEntryThisSymbol, true, true,
         // THE FIX. A new position may only be created at the candle the
         // simulation has actually reached. Without this, runAnalysis's
         // re-walk of the whole 500-candle window could create an entry at
@@ -3276,9 +2833,7 @@ async function shiftSymbolWindow(symbol: string, state: SymbolRollingState): Pro
         // position could open AND resolve inside the window interior
         // without ever being seen - the source of the vanishing open
         // counts and the unattributed funding.
-        state.window.length - 1,
-        allowExtensionEntryInput.value,
-        entryOptions()
+        state.window.length - 1
     );
 
     timeAnalysisMs += performance.now() - analysisStartedAt;
@@ -3309,9 +2864,6 @@ async function shiftSymbolWindow(symbol: string, state: SymbolRollingState): Pro
         // veto and still be refused by the R:R gate, the fee guard or the level
         // geometry, and counting those would make the book look more balanced
         // than it is.
-        if (directionBalanceEnabledInput.value) {
-            commitDirectionBalance(directionBalanceState, openPosition.side);
-        }
         remainingBudgetThisTick -= marginThisTick;
         openPositionCountThisTick += 1;
         // The tightest cap that actually permitted an open this tick.
@@ -3326,204 +2878,7 @@ async function shiftSymbolWindow(symbol: string, state: SymbolRollingState): Pro
     return true;
 }
 
-/**
- * Reads the state of every symbol's window into the shared stats /
- * open-positions / snapshot tracking, for one tick. By default reads each
- * symbol's own LAST candle (the main shift loop's use case - every symbol
- * has just been advanced to the same new point in time). When
- * indexOverride is given (used to walk the STATIC initial 500-candle
- * window before any shifting begins), reads that specific index instead,
- * and validates the candle's own openTime actually matches nowTimestamp
- * before processing it - necessary because a symbol with incomplete early
- * history (recently listed) won't have real data at that index for an
- * early tick, and must be skipped for that tick rather than incorrectly
- * attributed to it.
- */
-/**
- * CROSS-SECTIONAL REBALANCE — the one entry with a measured signal, wired in.
- *
- * =====================================================================
- * WHY IT CANNOT GO THROUGH runAnalysis
- * =====================================================================
- * Every other entry is decided inside `runAnalysis`, one symbol at a time. This
- * one cannot be: a symbol is a LONG or a SHORT purely because of how it ranks
- * against the other 298, so NO position can be created until every symbol's
- * state for this candle is known. That makes it a two-pass tick, and the second
- * pass belongs here for the same reason the position cap does - it is
- * per-portfolio, not per-symbol.
- *
- * =====================================================================
- * WHERE IT SITS IN THE TICK, AND WHY EXACTLY THERE
- * =====================================================================
- * After the shift loop, after accrueFunding, after checkLiquidation, before
- * recordTick. Each of those is load-bearing:
- *
- *   after the shift loop   every window has advanced to this candle, so the
- *                          cross-section is taken at one instant.
- *   after accrueFunding    funding uses a half-open (previousTick, currentTick]
- *                          window, so a position opened here is correctly NOT
- *                          charged for a settlement it was not open for.
- *   after checkLiquidation the liquidation test must see the book as it was
- *                          DURING the tick, not with this tick's new margin
- *                          already committed.
- *   before recordTick      recordTick reads each symbol's LAST candle for a
- *                          `positionEntry`, so a new position must be attached
- *                          to that candle first or it is invisible to the ledger
- *                          and to the integrity counter.
- *
- * INVARIANT 1 HOLDS. Positions are created only at the candle the simulation has
- * actually reached - `state.window[state.window.length - 1]` - never at a past
- * index. INVARIANT 2 HOLDS: the gate below reads the running within-tick totals
- * (`remainingBudgetThisTick`, `openPositionCountThisTick`, `marginThisTick`),
- * never `balance` or `openPositionsDisplay`.
- *
- * =====================================================================
- * ATR IS RECOMPUTED, NOT READ
- * =====================================================================
- * `candle.atr` is attached by the analysis pass, and the lab SKIPS that pass for
- * any symbol with no open position and no permission to open one - which is most
- * symbols on most ticks, and precisely the symbols a ranking needs. So the ATR
- * here comes from `simpleAtr` over raw OHLC at the lab's own period of 8.
- *
- * =====================================================================
- * PAIRS, NOT LEGS
- * =====================================================================
- * The cap and the budget can stop the book partway through. Opened in list order,
- * a truncated book is whichever half came first - a directional bet, which is the
- * exact thing this approach exists to remove. So legs open in LONG/SHORT pairs
- * and a pair is skipped unless BOTH legs fit. A book cut off at any point is
- * still balanced.
- */
-function crossSectionObservations(): CrossSectionObservation[] {
-    // NOTE, because it is a real difference from every other entry: the
-    // price/volume interest gate in shouldAllowNewEntry is NOT applied here, and
-    // that is deliberate. It is a per-symbol "is this worth trading now" filter
-    // with admittedly uncalibrated thresholds, and applying it would remove
-    // symbols from the RANKING - which changes every remaining symbol's
-    // percentile and quietly stops the book being a cross-section of the market.
-    // The cap and the budget still bind, and they bind on pairs, so the book
-    // shrinks without tilting.
-    const out: CrossSectionObservation[] = [];
-    const lookback = Math.max(2, Math.floor(crossSectionLookbackInput.value) || 96);
-    for (const [symbol, state] of symbolStates) {
-        // One position per symbol is the lab's own invariant, so a symbol already
-        // holding something cannot take a leg. It is still excluded from the
-        // ranking rather than ranked and skipped later, because ranking a symbol
-        // that cannot be traded shifts every other symbol's percentile.
-        if (state.openPosition) continue;
-        const w = state.window;
-        const gi = w.length - 1;
-        if (gi < lookback) continue;
-        const highs = w.map(c => c.high);
-        const lows = w.map(c => c.low);
-        const closes = w.map(c => c.close);
-        const atr = simpleAtr(highs, lows, closes, gi);
-        if (atr == null) continue;
-        out.push({
-            symbol,
-            price: w[gi].close,
-            atr,
-            trailingReturn: trailingReturn(closes, gi, lookback),
-        });
-    }
-    return out;
-}
 
-/** Opens the book for this tick. Returns how many legs were opened. */
-function rebalanceCrossSection(currentSimTime: number): number {
-    const observations = crossSectionObservations();
-    const book = selectBook(observations, {
-        ...CROSS_SECTION_DEFAULTS,
-        fraction: crossSectionFractionInput.value,
-    });
-    if (!book.formed) {
-        statusMessage.value = `cross-sectional rebalance skipped: only ${book.eligible} eligible symbols`;
-        return 0;
-    }
-
-    const stopAtr = crossSectionStopAtrInput.value;
-    const riskFraction = crossSectionRiskFractionInput.value;
-    const maxLeverage = crossSectionMaxLeverageInput.value;
-    const hold = Math.floor(crossSectionHoldInput.value);
-    const pairs = pairLegs(book);
-    let opened = 0;
-    // How many pairs the portfolio can fund and hold, decided by arithmetic that
-    // lives in its own tested function rather than inline here - the balance
-    // property is what makes this approach market-neutral, so it is worth being
-    // able to test.
-    const affordable = planCrossSectionOpens({
-        pairsAvailable: pairs.length,
-        cap: currentCapThisTick(),
-        openCount: openPositionCountThisTick,
-        budget: remainingBudgetThisTick,
-        margin: marginThisTick,
-    });
-
-    for (const pair of pairs.slice(0, affordable)) {
-        // Re-checked per pair as well: the running totals move as pairs open, and
-        // `affordable` was computed before any of them did. BOTH legs or neither.
-        const cap = currentCapThisTick();
-        if (openPositionCountThisTick + 2 > cap) break;
-        if (remainingBudgetThisTick < 2 * marginThisTick) break;
-
-        const built: Array<{ state: SymbolRollingState; symbol: string; position: PositionEntry }> = [];
-        let ok = true;
-        for (const leg of [pair.long, pair.short]) {
-            const state = symbolStates.get(leg.symbol);
-            if (!state || state.openPosition || !state.window.length) { ok = false; break; }
-            const gi = state.window.length - 1;
-            // Derived per leg, not configured: a volatile symbol gets less
-            // leverage so its 30-ATR stop costs the same fraction of margin as a
-            // quiet symbol's, and stays inside liquidation. Returns null when the
-            // stop cannot be made reachable at all, which refuses the pair.
-            const legLeverage = leverageForRiskBudget(
-                leg.atr, leg.price, stopAtr, riskFraction, maxLeverage);
-            if (legLeverage == null) { ok = false; break; }
-            const position = createCrossSectionalPosition({
-                side: leg.side,
-                candle: state.window[gi],
-                gi,
-                atr: leg.atr,
-                margin: marginThisTick,
-                leverage: legLeverage,
-                stopAtr,
-                holdCandles: hold,
-                trailingReturn: leg.trailingReturn,
-                rankPercentile: leg.rankPercentile,
-            });
-            // A 30-ATR stop can fall below zero on a low-priced asset, and the
-            // factory refuses rather than clamping. Refusing ONE leg has to
-            // refuse the pair, or the book tilts.
-            if (!position) { ok = false; break; }
-            built.push({ state, symbol: leg.symbol, position });
-        }
-        if (!ok || built.length !== 2) continue;
-
-        for (const b of built) {
-            b.state.openPosition = b.position;
-            // recordTick reads the LAST candle for a positionEntry. Without this
-            // the position exists but never reaches the ledger, the snapshot or
-            // the funding attribution - the same lossy path
-            // unrecordedResolutionCount exists to catch.
-            b.state.window[b.state.window.length - 1].positionEntry = b.position;
-            remainingBudgetThisTick -= marginThisTick;
-            openPositionCountThisTick += 1;
-            enforcedCapThisTick = Math.min(enforcedCapThisTick, cap);
-            // The symbol may have been SKIPPED this tick, in which case its
-            // candle was archived raw. Re-archiving now records the entry.
-            archiveCandles(b.symbol, [compactCandle(
-                b.state.window[b.state.window.length - 1], b.state.window,
-                b.state.window.length - 1)]);
-            opened += 1;
-        }
-    }
-
-    crossSectionRebalances.value += 1;
-    crossSectionLegsOpened.value += opened;
-    statusMessage.value = `cross-sectional rebalance at ${new Date(currentSimTime).toLocaleString()}: `
-        + `${book.eligible} eligible, ${pairs.length} pairs available, ${affordable} affordable, ${opened} legs opened`;
-    return opened;
-}
 
 function recordTick(nowTimestamp: number, settledKeys: Set<string>, indexOverride?: number) {
     const stillOpenRows: OpenPositionRow[] = [];
@@ -4190,7 +3545,6 @@ async function runRollingSimulation() {
             // neutralises is the day's drift. Rolled BEFORE any symbol is
             // processed so every candidate this tick is measured against the same
             // day's counts.
-            directionBalanceState = rollDirectionBalanceDay(directionBalanceState, currentSimTime);
 
             let anyAdvanced = false;
             let symbolsAdvancedThisTick = 0;
@@ -4242,17 +3596,6 @@ async function runRollingSimulation() {
             // DURING the tick), but before recordTick (which reads each
             // symbol's last candle for a positionEntry). See
             // rebalanceCrossSection's own note.
-            if (crossSectionEnabledInput.value) {
-                const hold = Math.max(1, Math.floor(crossSectionHoldInput.value) || 1);
-                const due = lastCrossSectionRebalanceCandle == null
-                    || (candlesProcessedSoFar - lastCrossSectionRebalanceCandle) >= hold;
-                if (due) {
-                    const xsStartedAt = performance.now();
-                    rebalanceCrossSection(currentSimTime);
-                    timeCrossSectionMs += performance.now() - xsStartedAt;
-                    lastCrossSectionRebalanceCandle = candlesProcessedSoFar;
-                }
-            }
 
             // Open pnl computed fresh here, not read from stats - see
             // computeCurrentOpenPnl for why that distinction matters.
@@ -4477,10 +3820,6 @@ function buildExportPayload() {
             positionCapFloor: positionCapFloorInput.value,
             positionCapCeiling: positionCapCeilingInput.value,
             maxPositionDurationCandles: maxPositionDurationInput.value,
-            minRewardRisk: minRewardRiskInput.value,
-            minRiskPercent: minRiskPercentInput.value,
-            allowLong: allowLongInput.value,
-            allowShort: allowShortInput.value,
             // Recorded because it affects wall-clock only, never results -
             // and having it in the file is what lets that claim be checked
             // rather than trusted.
@@ -4488,19 +3827,6 @@ function buildExportPayload() {
             // Which entry produced the run. Absent from an export means the
             // run predates this flag, NOT that the entry was off - worth
             // knowing before comparing two files.
-            allowExtensionEntry: allowExtensionEntryInput.value,
-            extensionLevels: extensionRr3Input.value ? 'RR3_3_9' : 'HISTORICAL_3_3',
-            allowReversalEntry: allowReversalEntryInput.value,
-            breakoutFade: breakoutFadeEnabledInput.value ? breakoutFadeConfig() : null,
-            directionBalance: directionBalanceEnabledInput.value ? directionBalanceConfig() : null,
-            crossSectional: crossSectionEnabledInput.value ? {
-                lookback: crossSectionLookbackInput.value,
-                hold: crossSectionHoldInput.value,
-                fraction: crossSectionFractionInput.value,
-                stopAtr: crossSectionStopAtrInput.value,
-                riskFraction: crossSectionRiskFractionInput.value,
-                maxLeverage: crossSectionMaxLeverageInput.value,
-            } : null,
             initConcurrency: initConcurrencyInput.value,
             yieldEverySymbols: yieldEverySymbols.value,
             // Full rule objects plus a readable form of each, so an
@@ -4623,19 +3949,6 @@ function buildExportPayload() {
                 msPerCandle: candlesProcessedSoFar
                     ? +(timeWalkMs / candlesProcessedSoFar).toFixed(1) : 0,
             },
-            crossSectionRebalances: crossSectionRebalances.value,
-            crossSectionLegsOpened: crossSectionLegsOpened.value,
-            // Direction balance, as of the LAST UTC day walked - the state resets
-            // daily, so this is a sample rather than a run total. refusedForBalance
-            // is an UPPER BOUND on refused candidates: two entry checks asking
-            // about the same candidate both record one.
-            directionBalanceLastDay: directionBalanceEnabledInput.value ? {
-                longs: directionBalanceState.longs,
-                shorts: directionBalanceState.shorts,
-                accepted: directionBalanceState.accepted,
-                refusedForBalance: directionBalanceState.refusedForBalance,
-                refusedForCap: directionBalanceState.refusedForCap,
-            } : null,
             // Funding charged to the account vs funding attributed to
             // individual positions. A gap means positions were mis-tracked.
             fundingChargedToAccount: stats.value.totalFundingPaid,
