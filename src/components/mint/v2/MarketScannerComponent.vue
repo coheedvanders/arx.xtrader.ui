@@ -15,16 +15,33 @@
                 />
             </div>
 
+            <!-- Filters: show only symbols with an open position / a closed
+                 position / a won position. Checked boxes are OR'd; none
+                 checked shows everything. Counts are this batch's matches. -->
+            <div class="scanner-filters">
+                <label :class="{ 'scanner-filter-active': filterOpen }">
+                    <input type="checkbox" v-model="filterOpen" /> open ({{ filterCounts.open }})
+                </label>
+                <label :class="{ 'scanner-filter-active': filterClosed }">
+                    <input type="checkbox" v-model="filterClosed" /> closed ({{ filterCounts.closed }})
+                </label>
+                <label :class="{ 'scanner-filter-active': filterWon }">
+                    <input type="checkbox" v-model="filterWon" /> won ({{ filterCounts.won }})
+                </label>
+            </div>
+
             <!-- Symbols -->
             <div class="scanner-list">
                 <div
-                    v-for="futureSymbol in futureSymbols"
+                    v-for="futureSymbol in filteredSymbols"
                     :key="futureSymbol.symbol"
                     class="scanner-row"
                     :class="{
                         'scanner-row-visited': visitedSymbols.has(futureSymbol.symbol),
-                        'scanner-row-processing': futureSymbol.status === 'processing',
-                        'scanner-row-hit': futureSymbol.conditionMet
+                        'scanner-row-processing': statusOf(futureSymbol) === 'processing',
+                        'scanner-row-hit': conditionOf(futureSymbol),
+                        'scanner-row-position-opened': futureSymbol.positionInteraction === 'OPENED',
+                        'scanner-row-position-closed': futureSymbol.positionInteraction === 'CLOSED'
                     }"
                     @click="showEntryHistoryModal(futureSymbol)"
                 >
@@ -39,16 +56,16 @@
                     <!-- Condition -->
                     <div class="scanner-condition">
                         <span
-                            v-if="futureSymbol.conditionMet"
+                            v-if="conditionOf(futureSymbol)"
                             class="condition-badge"
                         >
-                            {{ futureSymbol.conditionMet }}
+                            {{ conditionOf(futureSymbol) }}
                         </span>
                     </div>
 
                     <!-- Status -->
                     <div class="scanner-status">
-                        {{ futureSymbol.status }}
+                        {{ statusOf(futureSymbol) }}
                     </div>
                 </div>
 
@@ -57,6 +74,12 @@
                     class="scanner-empty"
                 >
                     No symbols
+                </div>
+                <div
+                    v-else-if="filteredSymbols.length === 0"
+                    class="scanner-empty"
+                >
+                    No symbols match the filter
                 </div>
             </div>
 
@@ -75,7 +98,7 @@
 import CardBodyComponent from '@/components/shared/card/CardBodyComponent.vue';
 import CardComponent from '@/components/shared/card/CardComponent.vue';
 import type { Candle, FuturesSymbol, SimulationStats } from '@/core/interfaces';
-import { ref } from 'vue';
+import { computed, reactive, ref } from 'vue';
 import { useChocoMintoStore } from '@/stores/chocoMintoStore';
 import ProgressBarComponent from '@/components/shared/ProgressBarComponent.vue';
 import DialogComponent from '@/components/shared/dialog/DialogComponent.vue';
@@ -84,7 +107,9 @@ import type { CandleInfo, SymbolInfo, PositionEntry } from '@/core/interfacesv2'
 import { KlineUtility } from '@/utility/klineUtility';
 import { klineDbUtilityV2 } from '@/utility/v2/klineDbUtilityV2';
 import { CandleAnalyzerV2 } from '@/utility/v2/candleAnalyzerV2';
-import { SimulationUtilityV2 } from '@/utility/v2/simulationUtilityV2';
+import { SimulationUtilityV2, type AnalysisCarry } from '@/utility/v2/simulationUtilityV2';
+import { forceClosePosition } from '@/utility/v2/analysis/positionEntry';
+import { setDisplayPreparer, type PositionInteraction } from '@/utility/v2/liveDisplay';
 import CandleVisualizerV2Component from './CandleVisualizerV2Component.vue';
 import { getStoredInterestingSymbols } from '@/utility/v2/analysis/symbolInterest';
 
@@ -116,137 +141,123 @@ const props = defineProps<{
 const emit = defineEmits(['onCompleted']);
 
 const progressCounter = ref(0);
+
+// Row filters (see the template). Read from each symbol's simulationStats,
+// which every scan / "next" keeps up to date - in a live run, from its ledger.
+const filterOpen = ref(false);
+const filterClosed = ref(false);
+const filterWon = ref(false);
+const hasOpen = (fs: FuturesSymbol) => (fs.simulationStats?.open ?? 0) > 0;
+const hasClosed = (fs: FuturesSymbol) => ((fs.simulationStats?.won ?? 0) + (fs.simulationStats?.loss ?? 0) + (fs.simulationStats?.mid ?? 0)) > 0;
+const hasWon = (fs: FuturesSymbol) => (fs.simulationStats?.won ?? 0) > 0;
+const filterCounts = computed(() => ({
+    open: props.futureSymbols.filter(hasOpen).length,
+    closed: props.futureSymbols.filter(hasClosed).length,
+    won: props.futureSymbols.filter(hasWon).length,
+}));
+const filteredSymbols = computed(() => {
+    if (!filterOpen.value && !filterClosed.value && !filterWon.value) return props.futureSymbols;
+    return props.futureSymbols.filter(fs =>
+        (filterOpen.value && hasOpen(fs)) || (filterClosed.value && hasClosed(fs)) || (filterWon.value && hasWon(fs)));
+});
 const showEntryHistory = ref(false);
 const selectedSymbol = ref("");
 
 const currentFutureSumbol = ref<FuturesSymbol>();
 const visitedSymbols = ref<Set<string>>(new Set());
 
-async function runInitialScan() {
-    console.log("runInitialScan", props.futureSymbols.length);
-
-    // A fresh scan rebuilds every window from the start date, so both the
-    // windows and the candles buffered against them are from the wrong place in
-    // history.
-    stepBuffers.clear();
-    symbolWindows.clear();
-
-    // var mainMarkets = [
-    //     (await klineDbUtilityV2.getSymbolInfo("BTCUSDT"))!,
-    //     (await klineDbUtilityV2.getSymbolInfo("ETHUSDT"))!,
-    //     (await klineDbUtilityV2.getSymbolInfo("SOLUSDT"))!,
-    // ]
-
-    // A blank/empty stored list means "run everything" - same feature,
-    // same loop, same progress bar (bounds stay against the full
-    // futureSymbols array either way; only the per-symbol work below is
-    // skipped for symbols not on the list, matching MarketScanner's own
-    // "only loop/run those that are interesting" requirement without
-    // needing a separate progress-bar total).
-    const interestingSymbols = getStoredInterestingSymbols();
-    const interestFilter = interestingSymbols.length > 0 ? new Set(interestingSymbols) : null;
-
-    for (let i = 0; i < props.futureSymbols.length; i++) {
-        try {
-            
-            const futureSymbol = props.futureSymbols[i];
-
-            //TARGET SYMBOL ANALYSIS
-            //if (futureSymbol.symbol != "LTCUSDT") continue;
-
-            progressCounter.value = i + 1;
-
-            if (interestFilter && !interestFilter.has(futureSymbol.symbol)) {
-                futureSymbol.status = "skipped (not interesting)";
-                continue;
-            }
-
-            futureSymbol.status = "constructing info";
-            var symbolInfo = await constructWindow(futureSymbol.symbol);
-
-            currentFutureSumbol.value = futureSymbol;
-            futureSymbol.status = "processing";
-
-            await SimulationUtilityV2.runMarketAnalysis(symbolInfo,[]);
-
-            klineDbUtilityV2.storeSymbolInfo(symbolInfo);
-
-            // Kept in memory so "next" does not have to read it back out of
-            // IndexedDB. That read was the slow part of a step: a 500-candle
-            // SymbolInfo carrying every derived field, deserialized once per
-            // symbol per press. The rolling lab holds its windows in memory for
-            // exactly this reason.
-            symbolWindows.set(symbolInfo.name, symbolInfo);
-
-            setRecentFutureCandleData(symbolInfo.candle_15m);
-
-            updateStoreFutureSymbolSimulationStats(symbolInfo.name,symbolInfo.candle_15m);
-
-            await new Promise(resolve => setTimeout(resolve, 400));
-
-            if (chocoMintoStore.isManualSimulation) {
-                const storeFutureSymbol = chocoMintoStore.futureSymbols.find(f => f.symbol === futureSymbol.symbol);
-
-                if (storeFutureSymbol) {
-                    futureSymbol.status =
-                        `${storeFutureSymbol.simulationStats.won}/` +
-                        `${storeFutureSymbol.simulationStats.loss}/` +
-                        `${storeFutureSymbol.simulationStats.open}-` +
-                        `${storeFutureSymbol.simulationStats.mid}`;
-                }
-            } else {
-                futureSymbol.status = "-";
-            }
-        } catch (error) {
-            console.error("initializeFutureSymbolData", error);
-        }
-    }
-
-    emit('onCompleted');
-    progressCounter.value = 0
-}
-
-
 const FIFTEEN_MIN_MS = 15 * 60 * 1000;
 
-/**
- * How many candles one refill pulls ahead of the walk.
- *
- * Purely a latency setting - a step consumes ONE candle, and refetching per
- * symbol per press would make every "next" 300-odd REST round trips. It cannot
- * change results: the candles fetched are the same candles in the same order
- * either way.
- */
-const STEP_FETCH_AHEAD = 200;
-
-/** Candles fetched ahead of the walk, per symbol, consumed one per step. */
-const stepBuffers = new Map<string, CandleInfo[]>();
+/** How many period fetches run at once (one 500-candle klines call per symbol). */
+const PERIOD_FETCH_CONCURRENCY = 6;
 
 /**
- * Builds one symbol's initial window.
+ * PERIODS - the trading model. From the start date, every `maxInitCandles`
+ * (500) candles is one PERIOD: the candles that are tradable together.
  *
- * With no start date this is exactly the old call, so nothing changes. With one,
- * the window STARTS at that date: its first candle is the one opening at the
- * start date, and it runs maxInitCandles forward (capped at now), so the data
- * begins where the date says - same as Auto Capture. "next" then continues
- * after the window's last candle. (It used to END at the start date, which put
- * the first candle ~5 days earlier.) The first ~200 candles are indicator
- * warm-up inside the window.
+ * A period begins with only its candle 0 revealed. "next" reveals one more
+ * candle; the analysis runs on that candle ONLY (resumed from the carry), and
+ * the result is identical to running runAnalysis once over every revealed
+ * candle (verified field-for-field, positions included). An entry can therefore
+ * only ever open on the newest revealed candle. When the period is fully
+ * revealed the next step is the NEXT PERIOD: whatever is still open is closed
+ * (PERIOD_END) at the period's last candle, and the following 500 candles start
+ * again from candle 0. Analysis starts fresh in every period - only the
+ * period's own candles exist for it.
+ *
+ * The ledger keeps every position since "run all simulation", across periods,
+ * so the stats count the whole run.
  */
-async function constructWindow(symbol: string): Promise<SymbolInfo> {
-    const startMs = props.simulationStart ?? 0;
-    if (!startMs) {
-        return await SimulationUtilityV2.constructSymbolInfo(symbol, props.maxInitCandles);
-    }
+interface PeriodState {
+    /** The whole period's candles, raw, fetched up front. */
+    all: CandleInfo[];
+    /** SymbolInfo whose candle_15m is the REVEALED prefix of `all`. */
+    symbolInfo: SymbolInfo;
+    carry: AnalysisCarry | null;
+    openPosition: PositionEntry | null;
+    ledger: PositionEntry[];
+    /** The stored copy (what the chart reads) is behind the revealed candles. */
+    dirty: boolean;
+}
+const periodStates = new Map<string, PeriodState>();
+
+/**
+ * The newest revealed candle's conditions per symbol, for the scanner rows.
+ * Kept HERE, not on the store's FuturesSymbol.conditionMet: they change on most
+ * symbols every step, and every write to a store symbol is snapshotted by the
+ * dev tools (~25 ms each) - a local reactive Map is not.
+ */
+const periodConditions = reactive(new Map<string, string>());
+/** True while this batch holds periods (so rows show periodConditions). */
+const periodMode = ref(false);
+
+/** Row status text in period mode - local for the same reason as periodConditions. */
+const periodStatus = reactive(new Map<string, string>());
+function setPeriodStatus(futureSymbol: FuturesSymbol, status: string) {
+    if (periodStatus.get(futureSymbol.symbol) !== status) periodStatus.set(futureSymbol.symbol, status);
+}
+/** The status text a row shows. */
+function statusOf(futureSymbol: FuturesSymbol): string {
+    return periodMode.value ? (periodStatus.get(futureSymbol.symbol) ?? "") : futureSymbol.status;
+}
+
+/** The conditions text a row shows. */
+function conditionOf(futureSymbol: FuturesSymbol): string {
+    return periodMode.value ? (periodConditions.get(futureSymbol.symbol) ?? "") : futureSymbol.conditionMet;
+}
+
+/** openTime of the current period's candle 0 (0 before the first scan). */
+const periodStartMs = ref(0);
+
+/** Drops every period this scanner holds (a fresh scan / capture rebuilds them). */
+function clearPeriods() {
+    for (const symbol of periodStates.keys()) setDisplayPreparer(symbol, null);
+    periodStates.clear();
+    periodConditions.clear();
+    periodStatus.clear();
+    periodMode.value = false;
+}
+
+/** The chart reads IndexedDB; a period window is only stored when it is looked at. */
+async function storeWindowForDisplay(symbol: string): Promise<void> {
+    const st = periodStates.get(symbol);
+    if (!st || !st.dirty) return;
+    await klineDbUtilityV2.storeSymbolInfo(st.symbolInfo);
+    st.dirty = false;
+}
+
+/** Fetches one symbol's period: up to maxInitCandles candles from startMs (never past now). */
+async function fetchPeriod(symbol: string, startMs: number): Promise<CandleInfo[]> {
     const to = Math.min(startMs + (props.maxInitCandles - 1) * FIFTEEN_MIN_MS, Date.now());
+    if (to < startMs) return [];
     const raw = (await KlineUtility.getRecentKlinesByRange(symbol, props.interval, props.maxInitCandles, startMs, to))
-        .filter(c => c.openTime >= startMs);
-    // Built here rather than by calling constructSymbolInfo and overwriting its
-    // candles, which would spend a second REST call fetching a window that is
-    // then thrown away. The empty arrays are what constructSymbolInfo sets too.
+        .filter(c => c.openTime >= startMs && c.openTime <= to);
+    return SimulationUtilityV2.mapToInfo(raw);
+}
+
+function emptySymbolInfo(name: string, candles: CandleInfo[]): SymbolInfo {
     return {
-        name: symbol,
-        candle_15m: SimulationUtilityV2.mapToInfo(raw),
+        name, candle_15m: candles,
         candle_1h: [], candle_4h: [], candle_1d: [],
         oi_15m: [], oi_1h: [], oi_4h: [], oi_1d: [],
         ls_15m: [], ls_1h: [], ls_4h: [], ls_1d: [],
@@ -254,204 +265,264 @@ async function constructWindow(symbol: string): Promise<SymbolInfo> {
     };
 }
 
+function setStatusFromStats(futureSymbol: FuturesSymbol) {
+    if (!chocoMintoStore.isManualSimulation) return;
+    const s = futureSymbol.simulationStats;
+    if (!s) return;
+    const status = `${s.won}/${s.loss}/${s.open}-${s.mid}`;
+    setPeriodStatus(futureSymbol, status);
+}
+
+/** Whether every symbol in this batch has revealed its whole period. */
+function periodFullyRevealed(): boolean {
+    for (const st of periodStates.values()) if (st.symbolInfo.candle_15m.length < st.all.length) return false;
+    return true;
+}
+
+/** How far the batch is into the period: the most candles any symbol has revealed. */
+function periodProgress(): { revealed: number; length: number } {
+    let revealed = 0;
+    for (const st of periodStates.values()) revealed = Math.max(revealed, st.symbolInfo.candle_15m.length);
+    return { revealed, length: props.maxInitCandles };
+}
+
 /**
- * Windows held in memory between steps, keyed by symbol.
- *
- * Populated by runInitialScan. A step reads from here rather than from
- * IndexedDB; the store is still written (fire and forget) so the chart dialog
- * shows the stepped state.
+ * Loads the period starting at `startMs` for every symbol and reveals its
+ * candle 0. `keepLedgers`: carry each symbol's ledger over (next period) or
+ * start fresh (a new scan).
  */
-const symbolWindows = new Map<string, SymbolInfo>();
+async function loadPeriod(startMs: number, keepLedgers: boolean): Promise<void> {
+    const ledgers = new Map<string, PositionEntry[]>();
+    if (keepLedgers) for (const [s, st] of periodStates) ledgers.set(s, st.ledger);
+    clearPeriods();
+    periodStartMs.value = startMs;
+    periodMode.value = true;
 
-/** How many refill fetches run at once. Binance allows 2,400 request weight per
- *  minute per IP and a 200-candle klines call costs 2, so a batch of ~84 symbols
- *  refilling costs ~168 - nowhere near the limit. 6 matches the lab's own
- *  initialization concurrency; going high enough to trip the limit earns a 418. */
-const STEP_FETCH_CONCURRENCY = 6;
+    const interestingSymbols = getStoredInterestingSymbols();
+    const interestFilter = interestingSymbols.length > 0 ? new Set(interestingSymbols) : null;
 
-/** Symbols processed between yields back to the browser. Without this the whole
- *  batch runs in one synchronous block: the four batches cannot interleave and
- *  the page cannot repaint, so a press looks like a freeze. */
-const YIELD_EVERY_SYMBOLS = 10;
-
-/**
- * Advances every scanned symbol in this batch by exactly ONE candle.
- *
- * TWO PHASES, and the split is the point. Phase 1 makes sure every symbol has
- * its next candle in memory, fetching only the symbols whose buffer has run dry,
- * and fetching those in parallel. Phase 2 then walks the symbols with no network
- * and no IndexedDB reads at all: take the candle from the buffer, shift the
- * in-memory window, re-run the same analysis the initial scan runs, and write the
- * stats through the same two functions. That is why the display does not change -
- * nothing new reports anything.
- *
- * Interleaved, the way it was before, a press cost one REST round trip plus one
- * IndexedDB read per symbol, serialized. Now a press costs at most
- * ceil(symbols / 6) round trips, and only on the one press in every
- * STEP_FETCH_AHEAD that actually runs dry.
- *
- * runMarketAnalysis re-derives every field on the whole window on every call, so
- * a shifted window needs no special handling - nothing is carried between calls
- * to get wrong. It is also the floor on how fast a press can be: every scanned
- * symbol has to be re-derived for its stats to update, and unlike the rolling lab
- * there is nothing here that can be skipped.
- */
-async function stepNextCandle(): Promise<{ advanced: number; lastOpenTime: number | null }> {
-    // ── phase 1: every symbol's next candle, into memory, in parallel ────
-    const pending: FuturesSymbol[] = [];
-    for (const futureSymbol of props.futureSymbols) {
-        const window = await resolveWindow(futureSymbol.symbol);
-        if (!window || !window.candle_15m.length) continue;
-        pending.push(futureSymbol);
-    }
-
-    const needsFetch = pending.filter(fs => !hasNextCandle(fs.symbol));
-    if (needsFetch.length) {
-        let cursor = 0;
-        let done = 0;
-        const worker = async (): Promise<void> => {
-            while (true) {
-                const i = cursor++;
-                if (i >= needsFetch.length) return;
-                const symbol = needsFetch[i].symbol;
-                try {
-                    await refillBuffer(symbol);
-                } catch (error) {
-                    console.error("refillBuffer", symbol, error);
+    let cursor = 0, done = 0;
+    const loading = new Set<string>();
+    const worker = async (): Promise<void> => {
+        while (true) {
+            const i = cursor++;
+            if (i >= props.futureSymbols.length) return;
+            const futureSymbol = props.futureSymbols[i];
+            if (futureSymbol.positionInteraction) futureSymbol.positionInteraction = null;
+            // A symbol listed twice is loaded once.
+            if (loading.has(futureSymbol.symbol)) { done++; continue; }
+            loading.add(futureSymbol.symbol);
+            try {
+                if (interestFilter && !interestFilter.has(futureSymbol.symbol)) {
+                    setPeriodStatus(futureSymbol, "skipped (not interesting)");
+                    continue;
                 }
+                const all = await fetchPeriod(futureSymbol.symbol, startMs);
+                if (!all.length) { setPeriodStatus(futureSymbol, "no candles in period"); continue; }
+
+                const window = [all[0]];
+                const symbolInfo = emptySymbolInfo(futureSymbol.symbol, window);
+                const { openPosition, carry } = await SimulationUtilityV2.runMarketAnalysis(
+                    symbolInfo, [], null, undefined, undefined, true, true, true, null
+                );
+                const ledger = ledgers.get(futureSymbol.symbol) ?? [];
+                periodStates.set(futureSymbol.symbol, { all, symbolInfo, carry, openPosition, ledger, dirty: true });
+                setDisplayPreparer(futureSymbol.symbol, () => storeWindowForDisplay(futureSymbol.symbol));
+                updateStoreFutureSymbolSimulationStats(futureSymbol.symbol, window, ledger, futureSymbol);
+                setStatusFromStats(futureSymbol);
+                if (!chocoMintoStore.isManualSimulation) setPeriodStatus(futureSymbol, "-");
+            } catch (error) {
+                console.error("loadPeriod", futureSymbol.symbol, error);
+                setPeriodStatus(futureSymbol, "period load failed");
+            } finally {
                 done++;
                 progressCounter.value = done;
             }
-        };
-        await Promise.all(
-            Array.from({ length: Math.min(STEP_FETCH_CONCURRENCY, needsFetch.length) }, worker)
-        );
+        }
+    };
+    try {
+        await Promise.all(Array.from({ length: PERIOD_FETCH_CONCURRENCY }, worker));
+    } finally {
+        progressCounter.value = 0;
     }
+}
 
-    // ── phase 2: process, no network, no IndexedDB reads ────────────────
-    let advanced = 0;
+/** "run all simulation": period 1, from the start date (or the latest full period without one). */
+async function runInitialScan() {
+    console.log("runInitialScan", props.futureSymbols.length);
+    let startMs = props.simulationStart ?? 0;
+    if (!startMs) {
+        // No start date: the most recent `maxInitCandles` closed candles.
+        const lastClosed = Math.floor(Date.now() / FIFTEEN_MIN_MS) * FIFTEEN_MIN_MS - FIFTEEN_MIN_MS;
+        startMs = lastClosed - (props.maxInitCandles - 1) * FIFTEEN_MIN_MS;
+    }
+    await loadPeriod(startMs, false);
+    emit('onCompleted');
+}
+
+/**
+ * The interaction a step produced on a symbol's newest candle: a position
+ * opened on it, or one closed on it (never both - no entry on a closing candle).
+ */
+function interactionOnNewest(futureSymbol: FuturesSymbol, candles: CandleInfo[]): PositionInteraction | null {
+    const newestIdx = candles.length - 1;
+    const newest = candles[newestIdx];
+    const pe = newest?.positionEntry;
+    if (!pe) return null;
+    const base = { symbol: futureSymbol.symbol, side: pe.side, entryPrice: pe.entryPrice, sl: pe.sl, tp: pe.tp, openTime: pe.openTime, candleOpenTime: newest.openTime };
+    if (pe.openTime === newest.openTime) return { ...base, kind: "OPENED" };
+    if (pe.status !== "OPEN" && pe.closeGi === newestIdx) {
+        return {
+            ...base, kind: "CLOSED", status: pe.status, closeReason: pe.closeReason ?? null,
+            exitPrice: pe.exitPrice ?? null,
+            netPnl: pe.pnl == null ? null : pe.pnl - (pe.entryFee ?? 0) - (pe.exitFee ?? 0),
+        };
+    }
+    return null;
+}
+
+/**
+ * Reveals up to `count` more candles of the current period for every symbol
+ * (Infinity = the rest of the period), analysing only the newly revealed
+ * candles. Interactions are reported for the LAST revealed candle (a single
+ * "next"), or counted across all of them (reveal all).
+ */
+async function revealCandles(count: number): Promise<{
+    advanced: number; lastOpenTime: number | null; interactions: PositionInteraction[];
+    openedCount: number; closedCount: number; periodComplete: boolean; revealed: number; periodLength: number;
+}> {
+    let advanced = 0, openedCount = 0, closedCount = 0;
     let lastOpenTime: number | null = null;
+    let lastYieldAt = performance.now();
+    const interactions: PositionInteraction[] = [];
+    for (const fs of props.futureSymbols) if (fs.positionInteraction) fs.positionInteraction = null;
 
-    for (let i = 0; i < pending.length; i++) {
-        const futureSymbol = pending[i];
-        progressCounter.value = i + 1;
+    const stepped = new Set<string>();
+    for (let i = 0; i < props.futureSymbols.length; i++) {
+        const futureSymbol = props.futureSymbols[i];
+        const st = periodStates.get(futureSymbol.symbol);
+        if (i % 25 === 0) progressCounter.value = i + 1;
+        // A symbol listed twice is revealed once per step.
+        if (!st || stepped.has(futureSymbol.symbol)) continue;
+        stepped.add(futureSymbol.symbol);
+        const window = st.symbolInfo.candle_15m;
+        const from = window.length;
+        const to = Math.min(st.all.length, from + count);
+        if (to <= from) continue;
         try {
-            const symbolInfo = symbolWindows.get(futureSymbol.symbol);
-            if (!symbolInfo) continue;
-
-            const nextCandle = takeNextCandle(futureSymbol.symbol, symbolInfo.candle_15m);
-            if (!nextCandle) { futureSymbol.status = "no further candle"; continue; }
-
-            symbolInfo.candle_15m.push(nextCandle);
-            while (symbolInfo.candle_15m.length > props.maxInitCandles) symbolInfo.candle_15m.shift();
-
+            const ledgerBefore = st.ledger.length;
+            const closedBefore = st.ledger.filter(p => p.status !== "OPEN").length;
+            for (let k = from; k < to; k++) window.push(st.all[k]);
             currentFutureSumbol.value = futureSymbol;
 
-            await SimulationUtilityV2.runMarketAnalysis(symbolInfo, []);
+            // Only the new candles are analysed (resume) - same result as one
+            // runAnalysis over the whole revealed window. Entries are allowed on
+            // every new candle: each is decided with only the candles up to it.
+            const before = st.openPosition;
+            const result = await SimulationUtilityV2.runMarketAnalysis(
+                st.symbolInfo, [], before, undefined, undefined, true, true, true, null,
+                st.carry ? { resume: st.carry } : {}
+            );
+            st.carry = result.carry;
+            st.openPosition = result.openPosition;
+            st.dirty = true;
 
-            // NOT awaited, matching runInitialScan. The chart dialog reads this
-            // back, so it has to be written; nothing in the step path reads it,
-            // so waiting for the write would only slow the press down.
-            klineDbUtilityV2.storeSymbolInfo(symbolInfo);
-            setRecentFutureCandleData(symbolInfo.candle_15m);
-            updateStoreFutureSymbolSimulationStats(symbolInfo.name, symbolInfo.candle_15m);
-
-            advanced++;
-            lastOpenTime = Math.max(lastOpenTime ?? 0, nextCandle.openTime);
-
-            if (chocoMintoStore.isManualSimulation) {
-                const storeFutureSymbol = chocoMintoStore.futureSymbols.find(f => f.symbol === futureSymbol.symbol);
-                if (storeFutureSymbol) {
-                    futureSymbol.status =
-                        `${storeFutureSymbol.simulationStats.won}/` +
-                        `${storeFutureSymbol.simulationStats.loss}/` +
-                        `${storeFutureSymbol.simulationStats.open}-` +
-                        `${storeFutureSymbol.simulationStats.mid}`;
-                }
+            // Every position that opened among the new candles joins the ledger.
+            const seen = new Set(st.ledger);
+            for (let k = from; k < to; k++) {
+                const pe = window[k].positionEntry;
+                if (pe && !seen.has(pe)) { st.ledger.push(pe); seen.add(pe); }
             }
+            openedCount += st.ledger.length - ledgerBefore;
+            closedCount += st.ledger.filter(p => p.status !== "OPEN").length - closedBefore;
+
+            // The newest candle's conditions, written once and only when they changed.
+            const conditions = (window[window.length - 1].conditions_met ?? []).filter(c => !c.includes("TREND_")).join(", ");
+            if (periodConditions.get(futureSymbol.symbol) !== conditions) periodConditions.set(futureSymbol.symbol, conditions);
+            updateStoreFutureSymbolSimulationStats(futureSymbol.symbol, window, st.ledger, futureSymbol);
+            setStatusFromStats(futureSymbol);
+
+            const interaction = to - from === 1 ? interactionOnNewest(futureSymbol, window) : null;
+            if (interaction) {
+                futureSymbol.positionInteraction = interaction.kind;
+                interactions.push(interaction);
+            }
+            advanced++;
+            lastOpenTime = Math.max(lastOpenTime ?? 0, window[window.length - 1].openTime);
         } catch (error) {
-            console.error("stepNextCandle", futureSymbol.symbol, error);
+            console.error("revealCandles", futureSymbol.symbol, error);
         }
 
-        if ((i + 1) % YIELD_EVERY_SYMBOLS === 0) {
-            await new Promise(resolve => setTimeout(resolve, 0));
+        if (performance.now() - lastYieldAt >= YIELD_INTERVAL_MS) {
+            await yieldToBrowser();
+            lastYieldAt = performance.now();
         }
     }
 
     progressCounter.value = 0;
-    return { advanced, lastOpenTime };
+    const { revealed, length } = periodProgress();
+    return { advanced, lastOpenTime, interactions, openedCount, closedCount, periodComplete: periodFullyRevealed(), revealed, periodLength: length };
+}
+
+/** Where this batch is in its period (for the page's period display / buttons). */
+function getPeriodInfo(): { startMs: number; revealed: number; length: number; complete: boolean; loaded: boolean } {
+    const { revealed, length } = periodProgress();
+    return { startMs: periodStartMs.value, revealed, length, complete: periodFullyRevealed(), loaded: periodStates.size > 0 };
+}
+
+/** "next": reveal one more candle of the current period. */
+async function stepNextCandle() {
+    return revealCandles(1);
+}
+
+/** "Reveal All Candles": the rest of the current period at once. */
+async function revealAllCandles() {
+    return revealCandles(Infinity);
 }
 
 /**
- * This symbol's window, from memory, falling back to IndexedDB once.
- *
- * The fallback covers a reload after a scan: the store still has the windows but
- * this component's Map is empty. It happens at most once per symbol per session,
- * not once per press.
+ * "Next Period": closes every position still open (PERIOD_END, at the period's
+ * last revealed candle), then loads the following period and reveals its
+ * candle 0. Returns what the closes were.
  */
-async function resolveWindow(symbol: string): Promise<SymbolInfo | null> {
-    const held = symbolWindows.get(symbol);
-    if (held) return held;
-    const stored = await klineDbUtilityV2.getSymbolInfo(symbol);
-    // No stored window means this symbol was never scanned (skipped as not
-    // interesting, or the scan has not run). Stepping it would have to invent a
-    // window, so it is left alone.
-    if (!stored || !stored.candle_15m.length) return null;
-    symbolWindows.set(symbol, stored);
-    return stored;
-}
-
-/** Whether the buffer already holds a candle after the window's last one. */
-function hasNextCandle(symbol: string): boolean {
-    const window = symbolWindows.get(symbol)?.candle_15m;
-    if (!window || !window.length) return false;
-    const lastOpenTime = window[window.length - 1].openTime;
-    return (stepBuffers.get(symbol) ?? []).some(c => c.openTime > lastOpenTime);
-}
-
-/**
- * Fetches the next batch of candles for one symbol into its buffer.
- *
- * Anything at or before where the window already sits is overlap and is dropped.
- * Continuity itself is checked at consumption time - see takeNextCandle.
- */
-async function refillBuffer(symbol: string): Promise<void> {
-    const window = symbolWindows.get(symbol)?.candle_15m;
-    if (!window || !window.length) return;
-    const lastOpenTime = window[window.length - 1].openTime;
-    const raw = await KlineUtility.getRecentKlinesByRange(
-        symbol, props.interval, STEP_FETCH_AHEAD, lastOpenTime + FIFTEEN_MIN_MS
-    );
-    stepBuffers.set(symbol, SimulationUtilityV2.mapToInfo(raw).filter(c => c.openTime > lastOpenTime));
-}
-
-/**
- * Takes the next candle off the buffer. SYNCHRONOUS - phase 1 has already put it
- * there, so phase 2 never waits on the network.
- *
- * CONTINUITY IS CHECKED, NOT ASSUMED. The candle must open exactly one interval
- * after the one already held; a genuine gap returns null rather than being
- * stitched, because a window with a hole in it produces ATR, trend and structure
- * values for a price series that never existed.
- */
-function takeNextCandle(symbol: string, window: CandleInfo[]): CandleInfo | null {
-    const lastOpenTime = window[window.length - 1].openTime;
-    const buffer = (stepBuffers.get(symbol) ?? []).filter(c => c.openTime > lastOpenTime);
-    stepBuffers.set(symbol, buffer);
-
-    if (!buffer.length) return null;
-    if (buffer[0].openTime !== lastOpenTime + FIFTEEN_MIN_MS) {
-        console.warn(
-            `${symbol}: candle gap - expected ${new Date(lastOpenTime + FIFTEEN_MIN_MS).toISOString()},`
-            + ` got ${new Date(buffer[0].openTime).toISOString()}. Not stepping this symbol.`
-        );
-        return null;
+async function startNextPeriod(): Promise<{ closed: PositionInteraction[]; periodStartMs: number }> {
+    const closed: PositionInteraction[] = [];
+    for (const futureSymbol of props.futureSymbols) {
+        const st = periodStates.get(futureSymbol.symbol);
+        if (!st?.openPosition || st.openPosition.status !== "OPEN") continue; // (a repeat finds it already closed)
+        const window = st.symbolInfo.candle_15m;
+        const lastIdx = window.length - 1;
+        forceClosePosition(st.openPosition, window[lastIdx], lastIdx, "PERIOD_END");
+        window[lastIdx].positionEntry = st.openPosition;
+        const interaction = interactionOnNewest(futureSymbol, window);
+        if (interaction) closed.push(interaction);
+        st.openPosition = null;
+        updateStoreFutureSymbolSimulationStats(futureSymbol.symbol, window, st.ledger, futureSymbol);
+        setStatusFromStats(futureSymbol);
     }
-    return buffer.shift() ?? null;
+    const nextStart = (periodStartMs.value || props.simulationStart || 0) + props.maxInitCandles * FIFTEEN_MIN_MS;
+    await loadPeriod(nextStart, true);
+    return { closed, periodStartMs: nextStart };
 }
 
-function updateStoreFutureSymbolSimulationStats(symbol:string, candles:CandleInfo[]){
-    var storeFutureSymbol = chocoMintoStore.futureSymbols.find(s => s.symbol == symbol);
+/** Yield to the browser at most this often while stepping (~a frame of work). */
+const YIELD_INTERVAL_MS = 50;
+
+/** One macrotask without setTimeout's ~4 ms clamp (MessageChannel), falling back to setTimeout. */
+function yieldToBrowser(): Promise<void> {
+    if (typeof MessageChannel === "undefined") return new Promise(resolve => setTimeout(resolve, 0));
+    return new Promise(resolve => {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = () => { channel.port1.close(); resolve(); };
+        channel.port2.postMessage(null);
+    });
+}
+
+/** `positions`, when given (a live run's ledger), is counted instead of the window's candles. */
+function updateStoreFutureSymbolSimulationStats(symbol:string, candles:CandleInfo[], positions?: PositionEntry[], target?: FuturesSymbol){
+    // `target`: the store's own object when the caller already has it - a batch's
+    // futureSymbols ARE the store's objects - so a step does not search 800+.
+    var storeFutureSymbol = target ?? chocoMintoStore.futureSymbols.find(s => s.symbol == symbol);
     if(storeFutureSymbol){
         // candle.positionEntry is the SAME mutated object reference on
         // every candle a position spans, from the candle it opened on
@@ -464,8 +535,8 @@ function updateStoreFutureSymbolSimulationStats(symbol:string, candles:CandleInf
         // summed 10 times. Dedupe to one entry per distinct position
         // (openGi) FIRST, then count/sum over that.
         const seenOpenGis = new Set<number>();
-        const distinctPositions: PositionEntry[] = [];
-        for (const c of candles) {
+        const distinctPositions: PositionEntry[] = positions ? [...positions] : [];
+        if (!positions) for (const c of candles) {
             const pe = c.positionEntry;
             if (pe && !seenOpenGis.has(pe.openGi)) {
                 seenOpenGis.add(pe.openGi);
@@ -496,7 +567,14 @@ function updateStoreFutureSymbolSimulationStats(symbol:string, candles:CandleInf
             wonPnl
         }
 
-        storeFutureSymbol.simulationStats = simulationStats;
+        // Only when something changed: every write to a store symbol is recorded
+        // by the dev tools (a snapshot of the whole store, ~25 ms per write), and
+        // on most steps most symbols' stats do not change at all.
+        const prev = storeFutureSymbol.simulationStats as unknown as Record<string, unknown> | undefined;
+        const next = simulationStats as unknown as Record<string, unknown>;
+        if (!prev || Object.keys(next).some(k => prev[k] !== next[k])) {
+            storeFutureSymbol.simulationStats = simulationStats;
+        }
     }
 }
 
@@ -508,6 +586,8 @@ function setRecentFutureCandleData(candles: CandleInfo[]){
 }
 
 async function showEntryHistoryModal(futureSymbol: FuturesSymbol) {
+    // In a live run the chart brings the window up to date itself before
+    // loading it (prepareSymbolForDisplay), whichever way it is opened.
     showEntryHistory.value = true;
     selectedSymbol.value = futureSymbol.symbol;
     visitedSymbols.value.add(futureSymbol.symbol);
@@ -558,8 +638,7 @@ async function autoCaptureRange(
     shouldStop: () => boolean,
     onSymbolDone?: () => void
 ): Promise<{ captured: number; candles: number; stopped: boolean }> {
-    stepBuffers.clear();
-    symbolWindows.clear();
+    clearPeriods();
 
     // The last CLOSED candle's openTime, on a 15m boundary. Unaligned (e.g.
     // now - 15m = 14:22:37), no candle could ever reach it, so every complete
@@ -664,6 +743,9 @@ async function autoCaptureRange(
 defineExpose({
     runInitialScan,
     stepNextCandle,
+    revealAllCandles,
+    startNextPeriod,
+    getPeriodInfo,
     autoCaptureRange
 });
 </script>
@@ -692,6 +774,28 @@ defineExpose({
     color: var(--text-secondary, #888);
     text-transform: uppercase;
     letter-spacing: 0.3px;
+}
+
+.scanner-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    margin-bottom: 6px;
+    font-size: 11px;
+}
+
+.scanner-filters label {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    cursor: pointer;
+    opacity: 0.75;
+    user-select: none;
+}
+
+.scanner-filters label.scanner-filter-active {
+    opacity: 1;
+    font-weight: 600;
 }
 
 .scanner-list {
@@ -738,6 +842,28 @@ defineExpose({
 
 .scanner-row-hit {
     background: rgba(128, 128, 128, 0.06);
+}
+
+/* A position OPENED on this symbol's newest candle on the last "next". */
+.scanner-row-position-opened {
+    background: rgba(76, 175, 80, 0.28);
+    box-shadow: inset 3px 0 0 #4caf50;
+}
+
+.scanner-row-position-opened .scanner-status-dot {
+    background: #4caf50;
+    box-shadow: 0 0 5px rgba(76, 175, 80, 0.8);
+}
+
+/* A position CLOSED on this symbol's newest candle on the last "next". */
+.scanner-row-position-closed {
+    background: rgba(229, 57, 53, 0.25);
+    box-shadow: inset 3px 0 0 #e53935;
+}
+
+.scanner-row-position-closed .scanner-status-dot {
+    background: #e53935;
+    box-shadow: 0 0 5px rgba(229, 57, 53, 0.8);
 }
 
 .scanner-symbol {

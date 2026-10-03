@@ -1,5 +1,6 @@
 import JSZip from "jszip";
 import { klineDbUtilityV2 } from "@/utility/v2/klineDbUtilityV2";
+import { prepareSymbolForDisplay } from "@/utility/v2/liveDisplay";
 
 /**
  * Zip export of stored SymbolInfo records (IndexedDB), shared by the chart's
@@ -93,6 +94,8 @@ export async function downloadSymbolInfoZip(symbols: string[], options: SymbolIn
         options.onProgress?.(i + 1, symbols.length, symbol);
         current = i + 1;
         report("reading");
+        // A live run stores windows lazily - bring this one up to date first.
+        await prepareSymbolForDisplay(symbol);
         const info = await klineDbUtilityV2.getSymbolInfo(symbol);
         if (!info) {
             missing.push(symbol);

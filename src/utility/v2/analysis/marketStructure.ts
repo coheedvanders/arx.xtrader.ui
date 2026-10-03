@@ -12,6 +12,14 @@
 import type { CandleInfo, MarketStructureLabel } from "@/core/interfacesv2";
 
 /**
+ * Classic 5-candle fractal (2 candles required on either side to confirm a
+ * swing) - a standard, conventional choice, not derived from anything in this
+ * data. Shared by runAnalysis and positionEntry's couldEnterAt pre-check, which
+ * must agree on it.
+ */
+export const MARKET_STRUCTURE_FRACTAL_WIDTH = 2;
+
+/**
  * Checks whether candles[idx] is a confirmed swing high or low, using
  * fractalWidth candles on EITHER side (the classic 2-sided fractal —
  * fractalWidth=2 is the standard 5-candle fractal, an arbitrary but

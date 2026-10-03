@@ -1,5 +1,5 @@
 <template>
-    <div class="text-center text-secondary">
+    <div class="text-center readable-text-muted">
         <label>v1.9 - test3</label>
     </div>
     <SymbolSocketComponent 
@@ -7,69 +7,118 @@
         :interval="KLINE_INTERVAL" 
         @on-new-candle="onNewCandle"/>
 
-    <div v-if="UI_STATE_INITIALIZING_FUTURE_SYMBOLS" class="text-center">
+    <div v-if="UI_STATE_INITIALIZING_FUTURE_SYMBOLS" class="text-center readable-text">
         {{ UI_STATE_INITIALIZING_FUTURE_SYMBOL_MESSAGE }}
     </div>
 
-    <div class="pa-md text-left">
-        
-        <ButtonComponent v-if="!isBotEnabled" @click="startChoco" color="primary" rounded class="mr-sm">start choco</ButtonComponent>
-        <ButtonComponent v-else @click="isBotEnabled = false" color="danger" rounded class="mr-sm">stop choco</ButtonComponent>
+    <!-- COMMAND AREA - three rows:
+         1. actions, grouped (Bot | Scan | Step | Capture | Tools);
+         2. the settings those actions read (dates, cost, toggles);
+         3. status, only while there is something to report.
+         Step (PERIODS of 500 candles from the start date): "next" reveals one
+         more candle of the period; "until pos int" = until a position opens or
+         closes; "run x×" = x candles; "Reveal All Candles" = the rest of the
+         period. When all 500 are revealed, "next" becomes "Next Period": open
+         positions close (PERIOD_END) and the next 500 start from candle 0.
+         Capture records the whole [start, end] range per symbol to IndexedDB. -->
+    <div class="command-area pa-md">
+        <div class="command-bar">
+            <div class="command-group">
+                <span class="command-label">Bot</span>
+                <ButtonComponent v-if="!isBotEnabled" @click="startChoco" color="primary" rounded>start choco</ButtonComponent>
+                <ButtonComponent v-else @click="isBotEnabled = false" color="danger" rounded>stop choco</ButtonComponent>
+            </div>
 
-        <ButtonComponent v-if="!isBotEnabled" @click="runManualSimulation" :disabled="isSteppingCandle || isCapturing" rounded class="mr-sm">run all simulation</ButtonComponent>
+            <div class="command-group">
+                <span class="command-label">Scan</span>
+                <ButtonComponent @click="runManualSimulation" :disabled="isBotEnabled || isSteppingCandle || isCapturing" rounded>run all simulation</ButtonComponent>
+            </div>
 
-        <!-- Start date and next. The scan builds each symbol's window STARTING at
-             the start date (500 candles forward), so "next" appends the candle after it and re-runs
-             the same analysis on the shifted window. The display below is
-             untouched: stepping writes through the same store the initial scan
-             writes through. -->
-        <label class="ml-sm mr-sm">
-            start date (PHT)
-            <input type="datetime-local" v-model="simulationStartTime" :disabled="isSteppingCandle || isCapturing" />
-        </label>
+            <div class="command-group">
+                <span class="command-label">Step</span>
+                <ButtonComponent @click="stepNextCandle" :disabled="!canStepCandle" rounded :color="periodComplete ? 'primary' : undefined"
+                    :title="periodComplete ? 'Close all open positions and load the next 500 candles from candle 0' : 'Reveal the next candle of this period'">
+                    {{ isSteppingCandle && !isAutoStepping ? stepProgressMessage : (periodComplete ? 'Next Period' : 'next') }}
+                </ButtonComponent>
+                <template v-if="!isAutoStepping">
+                    <ButtonComponent @click="stepUntilPositionInteraction" :disabled="!canStepCandle || periodComplete" rounded
+                        title="Keep pressing 'next' until a position opens or closes">
+                        until pos int
+                    </ButtonComponent>
+                    <ButtonComponent @click="stepTimes" :disabled="!canStepCandle || !validRunTimes || periodComplete" rounded
+                        title="Press 'next' this many times (set the count on the right)">
+                        run {{ validRunTimes ? runTimesInput : 'x' }}×
+                    </ButtonComponent>
+                    <input type="number" min="1" step="1" v-model.number="runTimesInput" :disabled="isSteppingCandle"
+                        class="command-number" title="How many times 'run x×' presses next" />
+                </template>
+                <ButtonComponent v-else @click="stopAutoStepRequested = true" :disabled="stopAutoStepRequested" color="danger" rounded>
+                    {{ stopAutoStepRequested ? 'stopping…' : `stop (${stepProgressMessage})` }}
+                </ButtonComponent>
+                <ButtonComponent @click="revealAllCandles" :disabled="!canStepCandle || periodComplete" rounded
+                    title="Reveal the rest of this period's 500 candles at once">
+                    Reveal All Candles
+                </ButtonComponent>
+            </div>
 
-        <ButtonComponent @click="stepNextCandle" :disabled="!canStepCandle" rounded class="mr-sm">
-            {{ isSteppingCandle ? stepProgressMessage : 'next' }}
-        </ButtonComponent>
+            <div class="command-group">
+                <span class="command-label">Capture</span>
+                <ButtonComponent v-if="!isCapturing" @click="autoCapture" :disabled="!canAutoCapture" rounded>auto capture</ButtonComponent>
+                <ButtonComponent v-else @click="stopCaptureRequested = true" :disabled="stopCaptureRequested" color="danger" rounded>
+                    {{ downloadProgress ? 'downloading…' : stopCaptureRequested ? 'stopping…' : `stop capture (${capturedSymbolCount}/${chocoMintoStore.futureSymbols.length})` }}
+                </ButtonComponent>
+            </div>
 
-        <!-- Auto capture: the whole [start, end] range per symbol, nothing
-             dropped (unlike "next", which keeps the window at 500), stored
-             in IndexedDB for export/analysis. The first stored candle is
-             the one opening at the start date. -->
-        <label class="ml-sm mr-sm">
-            end date (PHT)
-            <input type="datetime-local" v-model="simulationEndTime" :disabled="isCapturing" />
-        </label>
-        <ButtonComponent v-if="!isCapturing" @click="autoCapture" :disabled="!canAutoCapture" rounded class="mr-sm">auto capture</ButtonComponent>
-        <ButtonComponent v-else @click="stopCaptureRequested = true" :disabled="stopCaptureRequested" color="danger" rounded class="mr-sm">
-            {{ downloadProgress ? 'downloading…' : stopCaptureRequested ? 'stopping…' : `stop capture (${capturedSymbolCount}/${chocoMintoStore.futureSymbols.length})` }}
-        </ButtonComponent>
-        <label class="mr-sm" title="When the capture finishes (or is stopped), download every captured symbol as slim, split zips - same as the chart's Download ALL">
-            <input type="checkbox" v-model="autoDownloadAfterCapture" :disabled="isCapturing" />
-            auto download
-        </label>
-        <span class="mr-sm" v-if="captureSummary">{{ captureSummary }}</span>
-        <span class="mr-sm" v-if="downloadProgress" :title="downloadProgress.label">
-            <progress :value="downloadProgress.value" max="100" style="width: 140px; vertical-align: middle;"></progress>
-            {{ downloadProgress.label }}
-        </span>
+            <div class="command-group command-group-end">
+                <span class="command-label">Tools</span>
+                <ButtonComponent @click="UI_SHOW_TRADE_REPLAY = true" rounded>trade replay</ButtonComponent>
+                <ButtonComponent @click="UI_SHOW_ROLLING_SIMULATION = true" rounded>rolling simulation</ButtonComponent>
+            </div>
+        </div>
 
-        <span class="mr-sm" v-if="steppedCandleCount > 0">
-            +{{ steppedCandleCount }} candle{{ steppedCandleCount === 1 ? '' : 's' }}
-            <template v-if="steppedToOpenTime"> · {{ new Date(steppedToOpenTime).toLocaleString() }}</template>
-        </span>
+        <div class="command-settings">
+            <label class="command-field" :title="`Periods start 1/1/${periodYear} 12:00 AM PHT. ${PERIOD_MIN_YEAR} to the current year.`">
+                year
+                <select v-model.number="periodYear" :disabled="isSteppingCandle || isCapturing" class="command-year">
+                    <option v-for="y in periodYears" :key="y" :value="y">{{ y }}</option>
+                </select>
+            </label>
+            <label class="command-field" title="500-candle periods of the year. 'run all simulation' loads the selected one; auto capture records it.">
+                period (PHT)
+                <select v-model.number="selectedPeriodIndex" :disabled="isSteppingCandle || isCapturing" class="command-period">
+                    <option v-for="p in periods" :key="p.index" :value="p.index">
+                        {{ p.index + 1 }}. {{ p.label }}{{ p.isCurrent ? '  (now)' : '' }}
+                    </option>
+                </select>
+            </label>
+            <label class="command-field">
+                cost
+                <InputComponent type="numeric" v-model="chocoMintoStore.orderCost" class="command-cost" />
+            </label>
+            <label class="command-field">
+                <input type="checkbox" v-model="onlyInterestingSymbols" />
+                only interesting symbols
+            </label>
+            <label class="command-field" title="When the capture finishes (or is stopped), download every captured symbol as slim, split zips - same as the chart's Download ALL">
+                <input type="checkbox" v-model="autoDownloadAfterCapture" :disabled="isCapturing" />
+                auto download capture
+            </label>
+        </div>
 
-        <ButtonComponent @click="UI_SHOW_TRADE_REPLAY = true" color="ghost" rounded class="mr-sm">view trade replay</ButtonComponent>
-        <ButtonComponent @click="UI_SHOW_ROLLING_SIMULATION = true" color="ghost" rounded class="mr-sm">run rolling simulation</ButtonComponent>
-
-        <label class="ml-sm">
-            <input type="checkbox" v-model="onlyInterestingSymbols" />
-            only interesting symbols
-        </label>
+        <div class="command-status" v-if="periodNumber > 0 || captureSummary || downloadProgress">
+            <span v-if="periodNumber > 0" class="command-badge" :class="{ 'command-badge-done': periodComplete }">
+                Period {{ periodNumber }} · candle {{ periodRevealed }}/{{ periodLength }}<template v-if="periodComplete"> · complete</template>
+            </span>
+            <span v-if="periodNumber > 0 && periodStartOpenTime">
+                from {{ new Date(periodStartOpenTime).toLocaleString() }}<template v-if="steppedToOpenTime && periodRevealed > 1"> · at {{ new Date(steppedToOpenTime).toLocaleString() }}</template>
+            </span>
+            <span v-if="captureSummary">{{ captureSummary }}</span>
+            <span v-if="downloadProgress" :title="downloadProgress.label">
+                <progress :value="downloadProgress.value" max="100" class="command-progress"></progress>
+                {{ downloadProgress.label }}
+            </span>
+        </div>
     </div>
-
-    <label>Cost</label>
-    <InputComponent type="numeric" v-model="chocoMintoStore.orderCost"/>
 
     <!-- tab nav -->
     <div class="pa-md text-left">
@@ -249,6 +298,7 @@ import ConditionMetComponent from '../ConditionMetComponent.vue';
 import { WalletSnifferUtility } from '@/utility/WalletSnifferUtility.ts';
 import RiskMeasureComponent from '../RiskMeasureComponent.vue';
 import MarketScannerComponent from './MarketScannerComponent.vue';
+import type { PositionInteraction } from '@/utility/v2/liveDisplay';
 import { SimulationUtilityV2 } from '@/utility/v2/simulationUtilityV2.ts';
 import { klineDbUtilityV2 } from '@/utility/v2/klineDbUtilityV2.ts';
 import { downloadSymbolInfoZip } from '@/utility/v2/symbolInfoExport';
@@ -306,31 +356,78 @@ const selectedSymbol = ref("")
 
 const simulationReport = ref<SimulationReport[]>([])
 
-// The scan's start date. Was hardcoded "1/1/2026" and passed to
-// MarketScannerComponent, which never declared the prop - so it did nothing and
-// every scan used the most recent 500 candles. Now a datetime-local string,
-// persisted so it survives a reload, converted to epoch ms for the scanner.
-// Empty still means "most recent candles", which is exactly the old behaviour.
-const simulationStartTime = ref(localStorage.getItem('simulation-start-time') ?? '');
-watch(simulationStartTime, (val) => localStorage.setItem('simulation-start-time', val));
+// ── PERIOD CALENDAR ─────────────────────────────────────────────────────
+// A YEAR is chosen (2020 .. the current year, default the current year). Its
+// periods are MAX_INIT_CANDLES (500) 15m candles each, laid end to end from
+// 1/1/<year> 12:00 AM PHT; the dropdown lists every period that STARTS in that
+// year (up to now). In the current year the period containing "now" is selected,
+// otherwise the year's first. "run all simulation" loads the selected period,
+// "Next Period" moves to the following one (its last period runs into the next
+// year - that one is then appended to the list), auto capture records it.
+const PERIOD_CANDLE_MS = 15 * 60 * 1000;
+const PERIOD_SPAN_MS = MAX_INIT_CANDLES * PERIOD_CANDLE_MS;
+const PERIOD_MIN_YEAR = 2020;
+
+/** The current year in PHT. */
+const currentPhtYear = () => Number(new Date().toLocaleString('en-US', { timeZone: 'Asia/Manila', year: 'numeric' }));
+/** 1/1/<year> 12:00 AM PHT (UTC+8) in epoch ms. */
+const yearAnchorMs = (year: number) => Date.UTC(year - 1, 11, 31, 16, 0, 0);
+
+/** Selected year - the current year on load. */
+const periodYear = ref<number>(currentPhtYear());
+/** The year dropdown: current year first, back to PERIOD_MIN_YEAR. */
+const periodYears = computed(() => {
+    const years: number[] = [];
+    for (let y = currentPhtYear(); y >= PERIOD_MIN_YEAR; y--) years.push(y);
+    return years;
+});
+
+interface PeriodOption { index: number; startMs: number; endMs: number; label: string; isCurrent: boolean }
+
+const phtDateTime = (ms: number) => new Date(ms).toLocaleString('en-US', {
+    timeZone: 'Asia/Manila', month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
+});
+
+/** Index (0-based) of the period containing `ms`, counted from the selected year's anchor. */
+const periodIndexAt = (ms: number) => Math.max(0, Math.floor((ms - yearAnchorMs(periodYear.value)) / PERIOD_SPAN_MS));
 
 /**
- * datetime-local strings ("2026-01-01T00:00") are read as PHT (UTC+8), not
- * the browser's timezone, so a date typed here means the same candle on any
- * machine. 0 when empty/invalid.
+ * Periods listed past the year's own - set when "Next Period" runs past the
+ * last period that starts in the year, so the loaded one is still selectable.
  */
-function phtInputToMs(value: string): number {
-    if (!value) return 0;
-    const withSeconds = value.length === 16 ? `${value}:00` : value;
-    const ms = new Date(`${withSeconds}+08:00`).getTime();
-    return Number.isFinite(ms) ? ms : 0;
-}
+const periodsExtendedTo = ref(-1);
 
-const simulationStartMs = computed(() => phtInputToMs(simulationStartTime.value));
+/** Every period that starts in the selected year (and not after now), plus any extension. */
+const periods = computed<PeriodOption[]>(() => {
+    const anchor = yearAnchorMs(periodYear.value);
+    const yearEnd = yearAnchorMs(periodYear.value + 1);
+    const now = Date.now();
+    const current = Math.floor((now - anchor) / PERIOD_SPAN_MS);
+    const list: PeriodOption[] = [];
+    for (let i = 0; ; i++) {
+        const startMs = anchor + i * PERIOD_SPAN_MS;
+        if (startMs > now) break;
+        if (startMs >= yearEnd && i > periodsExtendedTo.value) break;
+        // The 500th candle's open time.
+        const endMs = startMs + (MAX_INIT_CANDLES - 1) * PERIOD_CANDLE_MS;
+        list.push({ index: i, startMs, endMs, label: `${phtDateTime(startMs)} → ${phtDateTime(endMs)}`, isCurrent: i === current });
+    }
+    return list;
+});
 
-const simulationEndTime = ref(localStorage.getItem('simulation-end-time') ?? '');
-watch(simulationEndTime, (val) => localStorage.setItem('simulation-end-time', val));
-const simulationEndMs = computed(() => phtInputToMs(simulationEndTime.value));
+/** The period to select for a year: the one containing now in the current year, else the first. */
+const defaultPeriodIndex = () => periodYear.value === currentPhtYear() ? periodIndexAt(Date.now()) : 0;
+const selectedPeriodIndex = ref(defaultPeriodIndex());
+watch(periodYear, () => {
+    periodsExtendedTo.value = -1;
+    selectedPeriodIndex.value = defaultPeriodIndex();
+});
+const selectedPeriod = computed(() => periods.value[selectedPeriodIndex.value] ?? periods.value[periods.value.length - 1]);
+
+/** Start of the selected period - what the scanner loads (and what auto capture starts at). */
+const simulationStartMs = computed(() => selectedPeriod.value?.startMs ?? 0);
+/** The selected period's last (500th) candle - where auto capture ends. */
+const simulationEndMs = computed(() => selectedPeriod.value?.endMs ?? 0);
 
 // Auto capture state. capturedRun blocks "next" afterwards: next trims every
 // window back to MAX_INIT_CANDLES and writes it to IndexedDB, which would
@@ -419,6 +516,12 @@ function startChoco(){
     isBotEnabled.value = true;
 }
 
+/** One entry per symbol, first occurrence kept. */
+function uniqueBySymbol(list: FuturesSymbol[]): FuturesSymbol[] {
+    const seen = new Set<string>();
+    return list.filter(f => !seen.has(f.symbol) && !!seen.add(f.symbol));
+}
+
 async function initializeFutureSymbols(){
     var localStorageFuturesMaxLeverage = localStorage.getItem(LOCALSTORAGE_CACHED_FUTURES_SYMBOLS);
     if(!localStorageFuturesMaxLeverage){
@@ -480,11 +583,14 @@ async function initializeFutureSymbols(){
             }
         }
 
+        chocoMintoStore.futureSymbols = uniqueBySymbol(chocoMintoStore.futureSymbols);
         localStorage.setItem(LOCALSTORAGE_CACHED_FUTURES_SYMBOLS,JSON.stringify(chocoMintoStore.futureSymbols));
 
         UI_STATE_INITIALIZING_FUTURE_SYMBOLS.value = false;
     }else{
-        chocoMintoStore.futureSymbols = JSON.parse(localStorageFuturesMaxLeverage) as FuturesSymbol[]
+        // De-duplicated: a list built while the page was remounting mid-load could
+        // hold a symbol several times, and every batch would then step it again.
+        chocoMintoStore.futureSymbols = uniqueBySymbol(JSON.parse(localStorageFuturesMaxLeverage) as FuturesSymbol[])
     }
 
     //chocoMintoStore.futureSymbols = chocoMintoStore.futureSymbols.slice(0,24);
@@ -536,6 +642,7 @@ async function autoCapture() {
     captureSummary.value = '';
     steppedCandleCount.value = 0;
     steppedToOpenTime.value = null;
+    periodNumber.value = 0;
 
     try {
         chocoMintoStore.isManualSimulation = true;
@@ -615,54 +722,219 @@ const canStepCandle = computed(() =>
     && chocoMintoStore.isManualSimulation
     && Array.isArray(marketScannerRef.value)
     && marketScannerRef.value.length > 0
+    && periodNumber.value > 0
 );
 
-/**
- * Advances every symbol's window by exactly one candle and re-runs the analysis.
- *
- * ALL FOUR BATCHES AT ONCE. Each batch owns a disjoint slice of the symbol list
- * (chocoMintoStore.splitFutureSymbols) and touches only its own symbols' store
- * entries, so there is nothing for them to contend over. Run sequentially they
- * simply added up - four times the fetch latency and four times the wait before
- * the display finished updating.
- *
- * They interleave rather than truly parallelize: JavaScript is one thread, so the
- * analysis still runs one symbol at a time. What overlaps is the waiting - the
- * REST fetches, and the yields each batch takes every few symbols.
- *
- * A scanner that has not scanned yet steps nothing and reports 0 - pressing
- * "next" before "run all simulation" is a no-op rather than an error.
- */
+// ── PERIODS ─────────────────────────────────────────────────────────────
+// From the start date, every 500 candles is one PERIOD. "run all simulation"
+// loads period 1 and reveals its candle 0; "next" reveals one more candle (the
+// analysis runs on that candle only, same result as a full runAnalysis over the
+// revealed candles); once all 500 are revealed the button becomes "Next Period",
+// which closes every open position (PERIOD_END) and loads the next 500 candles
+// from their candle 0. "Reveal All Candles" reveals the rest of the period.
+const periodNumber = ref(0);
+const periodStartOpenTime = ref<number | null>(null);
+const periodRevealed = ref(0);
+const periodLength = ref(500);
+const periodComplete = ref(false);
+
+function scannersWith(method: string): any[] {
+    return ((marketScannerRef.value ?? []) as any[]).filter((s) => s && typeof s[method] === 'function');
+}
+
+/** Reads every batch's period position back into the page's period display. */
+function refreshPeriodInfo() {
+    const infos = scannersWith('getPeriodInfo').map((s) => s.getPeriodInfo()).filter((i: any) => i?.loaded);
+    if (!infos.length) { periodComplete.value = false; periodRevealed.value = 0; return; }
+    periodStartOpenTime.value = infos[0].startMs;
+    periodLength.value = infos[0].length;
+    periodRevealed.value = Math.max(...infos.map((i: any) => i.revealed));
+    periodComplete.value = infos.every((i: any) => i.complete);
+}
+
+/** One press of "next" across every scanner batch: one more candle of the period. */
+async function stepOnce(): Promise<{ advanced: number; interactions: PositionInteraction[] }> {
+    const results = await Promise.all(scannersWith('stepNextCandle').map((s) => s.stepNextCandle()));
+    let advanced = 0;
+    let reachedOpenTime: number | null = null;
+    const interactions: PositionInteraction[] = [];
+    for (const result of results) {
+        advanced += result?.advanced ?? 0;
+        if (result?.lastOpenTime != null) reachedOpenTime = Math.max(reachedOpenTime ?? 0, result.lastOpenTime);
+        if (result?.interactions) interactions.push(...result.interactions);
+    }
+    if (advanced > 0) {
+        steppedCandleCount.value++;
+        steppedToOpenTime.value = reachedOpenTime;
+    }
+    refreshPeriodInfo();
+    return { advanced, interactions };
+}
+
+function notifyNothingToStep() {
+    notificationStore.showNotification(
+        "warning", "top-right", "Nothing to step",
+        "No symbol had a candle left to reveal. Run the scan first, or press Next Period."
+    );
+}
+
+function notifyPeriodComplete() {
+    notificationStore.showNotification(
+        "success", "top-right", `Period ${periodNumber.value} complete`,
+        `All ${periodLength.value} candles revealed. Press "Next Period" to close open positions and continue.`
+    );
+}
+
+/** "3 opened, 1 closed" - the counts of a press's position interactions. */
+function interactionCounts(interactions: PositionInteraction[]): string {
+    const opened = interactions.filter(x => x.kind === "OPENED").length;
+    const closed = interactions.filter(x => x.kind === "CLOSED").length;
+    return [opened ? `${opened} opened` : '', closed ? `${closed} closed` : ''].filter(Boolean).join(', ');
+}
+
+/** The alert for a press's position interactions: counts only. */
+function notifyPositionInteractions(interactions: PositionInteraction[]) {
+    if (!interactions.length) return;
+    // An alert (stays up until closed) - this is what the press, or "next until
+    // new pos int", was waiting for. Counts only; the rows are highlighted in
+    // the scanner (green opened, red closed) and the open/closed/won filters
+    // list them.
+    const counts = interactionCounts(interactions);
+    notificationStore.showAlert(
+        interactions.some(x => x.kind === "OPENED") ? "success" : "warning",
+        `Position interaction: ${counts}`,
+        `${new Date(interactions[0].candleOpenTime).toLocaleString()} - ${counts}`
+    );
+}
+
+/** "next" - or "Next Period" once the period is fully revealed. */
 async function stepNextCandle() {
     if (!canStepCandle.value) return;
+    if (periodComplete.value) return goToNextPeriod();
     isSteppingCandle.value = true;
     stepProgressMessage.value = 'stepping…';
     try {
-        const scanners = (marketScannerRef.value as any[]).filter(
-            (scanner) => scanner && typeof scanner.stepNextCandle === 'function'
-        );
-        const results = await Promise.all(
-            scanners.map((scanner) => scanner.stepNextCandle())
-        );
+        const { advanced, interactions } = await stepOnce();
+        if (advanced === 0) notifyNothingToStep();
+        else notifyPositionInteractions(interactions);
+    } finally {
+        isSteppingCandle.value = false;
+        stepProgressMessage.value = 'next';
+    }
+}
 
-        let advanced = 0;
-        let reachedOpenTime: number | null = null;
-        for (const result of results) {
-            advanced += result?.advanced ?? 0;
-            if (result?.lastOpenTime != null) {
-                reachedOpenTime = Math.max(reachedOpenTime ?? 0, result.lastOpenTime);
-            }
-        }
-        if (advanced > 0) {
-            steppedCandleCount.value++;
-            steppedToOpenTime.value = reachedOpenTime;
-        } else {
-            notificationStore.showNotification(
-                "warning", "top-right", "Nothing to step",
-                "No symbol had a next candle available. Run the scan first, or the windows have caught up to now."
-            );
+/** "Next Period": closes everything still open and loads the next 500 candles from candle 0. */
+async function goToNextPeriod() {
+    if (!canStepCandle.value) return;
+    isSteppingCandle.value = true;
+    stepProgressMessage.value = 'loading next period…';
+    try {
+        const results = await Promise.all(scannersWith('startNextPeriod').map((s) => s.startNextPeriod()));
+        const closed = results.flatMap((r: any) => r?.closed ?? []) as PositionInteraction[];
+        steppedCandleCount.value = 0;
+        steppedToOpenTime.value = null;
+        refreshPeriodInfo();
+        // Keep the dropdown and the badge on the period now loaded (adding it to
+        // the list if time has moved into a new one).
+        const loadedIndex = periodIndexAt(periodStartOpenTime.value ?? 0);
+        if (!periods.value[loadedIndex]) periodsExtendedTo.value = loadedIndex;
+        selectedPeriodIndex.value = loadedIndex;
+        periodNumber.value = loadedIndex + 1;
+        const net = closed.reduce((a, p) => a + (p.netPnl ?? 0), 0);
+        notificationStore.showNotification(
+            "success", "top-right", `Period ${periodNumber.value} started`,
+            (closed.length ? `${closed.length} position${closed.length === 1 ? '' : 's'} closed at period end (net ${net.toFixed(3)} USDT). ` : 'Nothing was open. ')
+            + (periodStartOpenTime.value ? `From ${new Date(periodStartOpenTime.value).toLocaleString()}.` : '')
+        );
+    } finally {
+        isSteppingCandle.value = false;
+        stepProgressMessage.value = 'next';
+    }
+}
+
+/** "Reveal All Candles": the rest of the current period at once. */
+async function revealAllCandles() {
+    if (!canStepCandle.value || periodComplete.value) return;
+    isSteppingCandle.value = true;
+    stepProgressMessage.value = 'revealing…';
+    try {
+        const results = await Promise.all(scannersWith('revealAllCandles').map((s) => s.revealAllCandles()));
+        const opened = results.reduce((a: number, r: any) => a + (r?.openedCount ?? 0), 0);
+        const closed = results.reduce((a: number, r: any) => a + (r?.closedCount ?? 0), 0);
+        const reached = Math.max(0, ...results.map((r: any) => r?.lastOpenTime ?? 0));
+        if (reached) steppedToOpenTime.value = reached;
+        refreshPeriodInfo();
+        notificationStore.showNotification(
+            "success", "top-right", `Period ${periodNumber.value}: all ${periodLength.value} candles revealed`,
+            (opened || closed) ? [opened ? `${opened} opened` : '', closed ? `${closed} closed` : ''].filter(Boolean).join(', ') : 'No position opened or closed.'
+        );
+    } finally {
+        isSteppingCandle.value = false;
+        stepProgressMessage.value = 'next';
+    }
+}
+
+const isAutoStepping = ref(false);
+const stopAutoStepRequested = ref(false);
+
+/** Presses "next" until a press opens or closes a position, the period ends, or stop is pressed. */
+async function stepUntilPositionInteraction() {
+    if (!canStepCandle.value || periodComplete.value) return;
+    isSteppingCandle.value = true;
+    isAutoStepping.value = true;
+    stopAutoStepRequested.value = false;
+    let presses = 0;
+    try {
+        while (!stopAutoStepRequested.value) {
+            stepProgressMessage.value = `${presses} candle${presses === 1 ? '' : 's'}…`;
+            const { advanced, interactions } = await stepOnce();
+            if (advanced === 0) { notifyNothingToStep(); break; }
+            presses++;
+            if (interactions.length) { notifyPositionInteractions(interactions); break; }
+            if (periodComplete.value) { notifyPeriodComplete(); break; }
         }
     } finally {
+        isAutoStepping.value = false;
+        stopAutoStepRequested.value = false;
+        isSteppingCandle.value = false;
+        stepProgressMessage.value = 'next';
+    }
+}
+
+/** How many presses "run x times" makes. Remembered across sessions. */
+const RUN_TIMES_KEY = 'v2-mint-run-times';
+const storedRunTimes = Number(localStorage.getItem(RUN_TIMES_KEY));
+const runTimesInput = ref<number>(Number.isInteger(storedRunTimes) && storedRunTimes >= 1 ? storedRunTimes : 10);
+watch(runTimesInput, (v) => { if (Number.isInteger(v) && v >= 1) localStorage.setItem(RUN_TIMES_KEY, String(v)); });
+const validRunTimes = computed(() => Number.isInteger(runTimesInput.value) && runTimesInput.value >= 1);
+
+/** Presses "next" runTimesInput times (stops at the period's end, or on stop). */
+async function stepTimes() {
+    if (!canStepCandle.value || !validRunTimes.value || periodComplete.value) return;
+    const total = runTimesInput.value;
+    isSteppingCandle.value = true;
+    isAutoStepping.value = true;
+    stopAutoStepRequested.value = false;
+    const all: PositionInteraction[] = [];
+    let presses = 0;
+    try {
+        while (presses < total && !stopAutoStepRequested.value) {
+            stepProgressMessage.value = `${presses}/${total}…`;
+            const { advanced, interactions } = await stepOnce();
+            if (advanced === 0) { notifyNothingToStep(); break; }
+            presses++;
+            all.push(...interactions);
+            if (periodComplete.value) break;
+        }
+        // No modal for a batch run - a short toast with the counts.
+        if (presses > 0) {
+            notificationStore.showNotification("success", "top-right",
+                `Ran ${presses} candle${presses === 1 ? '' : 's'}${periodComplete.value ? ' - period complete' : ''}`,
+                all.length ? `${interactionCounts(all)}` : "No position opened or closed.");
+        }
+    } finally {
+        isAutoStepping.value = false;
+        stopAutoStepRequested.value = false;
         isSteppingCandle.value = false;
         stepProgressMessage.value = 'next';
     }
@@ -673,6 +945,7 @@ async function runManualSimulation() {
     // counter no longer describes anything.
     steppedCandleCount.value = 0;
     steppedToOpenTime.value = null;
+    periodNumber.value = 0;
     capturedRun.value = false;
     captureSummary.value = '';
 
@@ -704,6 +977,9 @@ async function runManualSimulation() {
         });
         
         await Promise.all(scanPromises);
+        refreshPeriodInfo();
+        // The calendar number (1 = the period starting 1/1/2025), as in the dropdown.
+        periodNumber.value = periodIndexAt(periodStartOpenTime.value ?? simulationStartMs.value) + 1;
     }
 }
 
@@ -748,3 +1024,156 @@ async function analyzeMainMarkets(){
     })
 }
 </script>
+
+<style scoped>
+/* The page inherits black text; on the dark theme that is unreadable. */
+.readable-text {
+    color: var(--command-text, #1a1a1a);
+    --command-text: #1a1a1a;
+    font-weight: 600;
+}
+
+.readable-text-muted {
+    --command-text: #1a1a1a;
+    color: var(--command-text);
+    font-size: 12px;
+}
+
+.command-area {
+    /* Solid, high-contrast text: near-white on the dark theme, near-black on
+       light (see the media query below). The page itself inherits black, and the
+       theme text color is a faded 64% - both were unreadable here. */
+    --command-text: #1a1a1a;
+    color: var(--command-text);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    text-align: left;
+}
+
+/* Row 1: actions. Groups sit side by side, separated by a divider. */
+.command-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    row-gap: 8px;
+}
+
+.command-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 12px;
+    border-left: 1px solid rgba(128, 128, 128, 0.35);
+}
+
+.command-group:first-child {
+    padding-left: 0;
+    border-left: none;
+}
+
+.command-label {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--command-text);
+    margin-right: 2px;
+}
+
+/* Tools sit at the right end of the bar. */
+.command-group-end {
+    margin-left: auto;
+}
+
+.command-number {
+    width: 4.5em;
+}
+
+/* Row 2: settings. */
+.command-settings {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 18px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(128, 128, 128, 0.2);
+}
+
+.command-field input[type="checkbox"] {
+    width: 15px;
+    height: 15px;
+}
+
+.command-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--command-text);
+    white-space: nowrap;
+}
+
+/* Form controls have a white background: give them dark text, whatever the
+   theme (the area text is near-white on dark, which vanished on white). */
+.command-area select,
+.command-area input[type="number"],
+.command-area input[type="text"],
+.command-area option {
+    background: #ffffff;
+    color: #1a1a1a;
+    border: 1px solid rgba(128, 128, 128, 0.6);
+    border-radius: 4px;
+    padding: 2px 4px;
+    font-weight: 500;
+}
+
+.command-year {
+    width: 5.5em;
+}
+
+.command-period {
+    max-width: 100%;
+}
+
+.command-cost {
+    width: 6em;
+}
+
+/* Row 3: status. */
+.command-status {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 16px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--command-text);
+}
+
+.command-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(76, 175, 80, 0.2);
+}
+
+.command-badge-done {
+    background: rgba(255, 193, 7, 0.25);
+}
+
+.command-progress {
+    width: 140px;
+    vertical-align: middle;
+}
+
+/* Dark theme - LAST, so it overrides the light defaults above. */
+@media (prefers-color-scheme: dark) {
+    .command-area,
+    .readable-text,
+    .readable-text-muted {
+        --command-text: #f2f2f2;
+    }
+}
+</style>

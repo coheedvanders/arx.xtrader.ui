@@ -17,9 +17,13 @@ import { getLiquidationHeatmapStamp } from "./analysis/liquidationHeatmapStamp";
 import { getLiquidityHeatmapAnchors } from "./analysis/liquidityHeatmapAnchor";
 import { getLiquiditySweepInfo } from "./analysis/liquidationSweepInfo";
 import { getImbalanceState } from "./analysis/imbalanceState";
-import { checkSwingPoint, classifyMarketStructure } from "./analysis/marketStructure";
+import { getPriceZoneState, priceActionZoneContext } from "./analysis/priceZoneState";
+import { checkSwingPoint, classifyMarketStructure, MARKET_STRUCTURE_FRACTAL_WIDTH } from "./analysis/marketStructure";
 import { initTrendTracker, stepTrendTracker, type TrendTrackerState } from "./analysis/trendState";
-import { checkPositionEntry, updatePositionEntry, forceClosePosition, DEFAULT_LEVERAGE } from "./analysis/positionEntry";
+import { checkPositionEntry, couldEnterAt, updatePositionEntry, forceClosePosition, DEFAULT_LEVERAGE } from "./analysis/positionEntry";
+
+/** Change z-score a strong, volume-spike candle needs for POTENTIAL_BULL/BEAR_QUICK_REVERSAL. */
+const QUICK_REVERSAL_MIN_CHANGE_Z = 4;
 
 /** Price-zone session boundaries are at 00/06/12/18 in this UTC offset (PHT). */
 export const PRICE_ZONE_UTC_OFFSET_HOURS = 8;
@@ -221,7 +225,82 @@ export function remapCandleIndices(candles: CandleInfo[], by: number): void {
 import { computeTrendStats } from "./analysis/trendStats";
 import type { PositionEntry } from "@/core/interfacesv2";
 
+/** CandleInfo.change_pct: (close - open) / open * 100, unrounded; 0 when open is 0. */
+export function candleChangePct(candle: { open: number; close: number }): number {
+    return candle.open ? ((candle.close - candle.open) / candle.open) * 100 : 0;
+}
+
+/** Every field runAnalysis derives onto a candle (CandleInfo minus raw OHLCV). */
+const DERIVED_CANDLE_FIELDS = [
+    "atr", "liquidityAnchor", "conditions_met", "extras", "marketStructure", "trendState",
+    "positionEntry", "priceZone", "outsidePriceZoneMetrics", "ema200", "candleStructure",
+    "volumeState", "imbalanceState", "priceZoneState", "priceAction", "openInterest", "longShort",
+] as const;
+
+export type LiveStepKind = "ADVANCED" | "SKIPPED" | "BLOCKED" | "ANALYZED";
+
 export class SimulationUtilityV2 {
+    /** ATR period runAnalysis uses for candle.atr. */
+    static readonly ATR_PERIOD = 8;
+
+    /** Strips everything runAnalysis derives from a candle, leaving raw OHLCV. */
+    static clearDerivedFields(candle: CandleInfo): void {
+        for (const k of DERIVED_CANDLE_FIELDS) delete (candle as unknown as Record<string, unknown>)[k];
+    }
+
+    /**
+     * ONE LIVE TICK for a 500-candle window whose newest candle was just
+     * appended (and oldest dropped): exactly what a live bot does when it
+     * fetches the latest 500 candles, analyses them and decides at the 500th -
+     * but without doing a full analysis when its result cannot matter.
+     *
+     *   ADVANCED - a position is open. One position per symbol, so no entry is
+     *              possible; the position is moved forward on the new candle
+     *              only (advanceOpenPosition), which is the one thing a full
+     *              pass would change for it.
+     *   SKIPPED  - nothing open and couldEnterAt says no entry can fire here
+     *              (see its contract in positionEntry.ts). Nothing to do.
+     *   BLOCKED  - an entry could fire, but the caller's gate (allowNewEntry,
+     *              e.g. a position cap or budget) refuses a new position now.
+     *   ANALYZED - a full fresh analysis of the window, entries allowed at the
+     *              last candle only.
+     *
+     * LIVE-LIKE: candles[0] is the one candle a pass never re-derives (the walk
+     * starts at 1), so it would otherwise carry its fields from the previous
+     * tick's pass into this one. A live fetch of 500 candles has none, so they
+     * are cleared first. That also makes every pass depend on the window's raw
+     * candles alone, which is what makes ADVANCED and SKIPPED exact: they give
+     * the same positions as running the full pass every tick.
+     */
+    static async stepLiveWindow(
+        symbolInfo: SymbolInfo,
+        openPosition: PositionEntry | null,
+        positionMargin: number,
+        maxPositionDurationCandles?: number,
+        allowNewEntry?: () => boolean
+    ): Promise<{ openPosition: PositionEntry | null; kind: LiveStepKind }> {
+        const window = symbolInfo.candle_15m;
+        const last = window.length - 1;
+        if (window.length) SimulationUtilityV2.clearDerivedFields(window[0]);
+
+        if (openPosition) {
+            const candle = window[last];
+            candle.atr = CandleAnalyzerV2.calculateATR(window, SimulationUtilityV2.ATR_PERIOD);
+            SimulationUtilityV2.advanceOpenPosition(openPosition, candle, last, "15m", maxPositionDurationCandles);
+            return { openPosition: openPosition.status === "OPEN" ? openPosition : null, kind: "ADVANCED" };
+        }
+        if (!couldEnterAt(window, last)) {
+            return { openPosition: null, kind: "SKIPPED" };
+        }
+        if (allowNewEntry && !allowNewEntry()) {
+            return { openPosition: null, kind: "BLOCKED" };
+        }
+        const result = await SimulationUtilityV2.runMarketAnalysis(
+            symbolInfo, [], null, maxPositionDurationCandles, positionMargin, true, true, true, last
+        );
+        return { openPosition: result.openPosition, kind: "ANALYZED" };
+    }
+
     static async constructSymbolInfo(symbol:string,limit:number){
         var symbolInfo: SymbolInfo = {
             name: symbol,
@@ -330,11 +409,8 @@ export class SimulationUtilityV2 {
                 + "positions at all while looking entirely healthy."
             );
         }
-        // Classic 5-candle fractal (2 candles required on either side to
-        // confirm a swing) — a standard, conventional choice, not derived
-        // from anything in this data; arbitrary in the sense that other
-        // widths are equally defensible, just less common.
-        const MARKET_STRUCTURE_FRACTAL_WIDTH = 2;
+        // MARKET_STRUCTURE_FRACTAL_WIDTH (5-candle fractal) lives in
+        // marketStructure.ts, shared with positionEntry's couldEnterAt.
         // Stated, tunable threshold, not a "correct" value — cuts label
         // density roughly in half against real data (25.8% -> 12.0% on a
         // DASHUSDT 15m sample) by requiring a new swing to differ from
@@ -412,17 +488,27 @@ export class SimulationUtilityV2 {
         interface PocAvwapAnchor { anchorGi: number; direction: SIGNAL_DIRECTION; }
         let pocAvwapAnchors: PocAvwapAnchor[] = [];
 
-        // Same source of truth as the UI's own addAvwapAnchor — reuses
-        // CandleAnalyzerV2.getAnchorVwap rather than reimplementing the
-        // cumulative-volume-weighted formula a second time. Recomputes
-        // each anchor's value from scratch every step rather than
-        // maintaining incremental running sums — with at most 4 anchors
-        // and ~500 candles, this is cheap, and it guarantees this can
-        // never silently drift from the same calculation the chart uses.
+        // The anchored VWAP mid, kept as running sums per anchor. It is the same
+        // arithmetic as CandleAnalyzerV2.getAnchorVwap(candles.slice(anchorGi,
+        // uptoGi + 1)).mid - the same additions in the same order, so the value
+        // is bit-identical - but extended by the new candles only, instead of
+        // re-summed from the anchor on every candle (that re-sum was O(n^2) and
+        // ~10% of a pass). Sums are per anchor index, and local to this call:
+        // indices mean "index into THIS array".
+        const pocVwapSums = new Map<number, { next: number; pv: number; vol: number }>();
         function currentPocAvwapValues(candles: CandleInfo[], anchors: PocAvwapAnchor[], uptoGi: number): { value: number; direction: SIGNAL_DIRECTION }[] {
             return anchors.map(a => {
-                const zone = CandleAnalyzerV2.getAnchorVwap(candles.slice(a.anchorGi, uptoGi + 1));
-                return { value: zone.mid, direction: a.direction };
+                let s = pocVwapSums.get(a.anchorGi);
+                if (!s) { s = { next: a.anchorGi, pv: 0, vol: 0 }; pocVwapSums.set(a.anchorGi, s); }
+                for (; s.next <= uptoGi; s.next++) {
+                    const c = candles[s.next];
+                    if (c.high == null || c.low == null || c.close == null) continue;
+                    const typical = (c.high + c.low + c.close) / 3;
+                    const vol = c.volume ?? 0;
+                    s.pv += typical * vol;
+                    s.vol += vol;
+                }
+                return { value: s.vol > 0 ? s.pv / s.vol : 0, direction: a.direction };
             });
         }
 
@@ -474,18 +560,43 @@ export class SimulationUtilityV2 {
         }
         movingCandlesAccum = candles.slice(0, Math.max(1, startIndex));
 
+        // Every candle in movingCandles that carries a structure label, in index
+        // order - what `movingCandles.filter(c => c.marketStructure?.label)` gives,
+        // kept incrementally instead of re-filtering the whole history on every
+        // candle (the largest O(n^2) cost left in a pass). Seeded from the prefix
+        // exactly as the filter would see it, then appended to only where a label
+        // is set below (confirmIdx only ever increases, so order is preserved).
+        // A candle's own reset (marketStructure = null) happens before it could
+        // be appended, so nothing here can go stale within a pass.
+        const structureCandles: CandleInfo[] = movingCandlesAccum.filter(c => c.marketStructure && c.marketStructure.label);
+
+        // The zone of every price-zone session so far, oldest first - what
+        // movingCandles.filter(c => c.extras includes "PRICEZONE_START").map(c => c.priceZone)
+        // gives, kept incrementally (seeded from the prefix the same way) instead of
+        // re-filtering the whole history on every candle.
+        const sessionZones: PriceZone[] = movingCandlesAccum
+            .filter(c => c.extras?.includes("PRICEZONE_START") && c.priceZone)
+            .map(c => c.priceZone!);
+
         var lastTrendSetterAvwap: PriceZone | null = null;
 
         // Session price zone. Not part of AnalysisCarry: on a resume the
         // zone in force is simply the one the last derived candle holds.
         let activePriceZone: PriceZone | null = startIndex > 1 ? (candles[startIndex - 1]?.priceZone ?? null) : null;
 
+        // change_pct is raw (open/close only); candles[0] is never walked, so set it here too.
+        if (candles.length) candles[0].change_pct = candleChangePct(candles[0]);
+
+        // One candle of this interval, for the PRICEZONE_END check ("does the next candle open a new session?").
+        const INTERVAL_MS_FOR_ZONES = ({ "15m": 15, "1h": 60, "4h": 240, "1d": 1440 }[interval] ?? 15) * 60 * 1000;
+
         for (let i = startIndex; i <= candles.length - 1; i++) {
             movingCandlesAccum.push(candles[i]);
             var movingCandles = movingCandlesAccum;
             var candle = candles[i];
 
-            candle.atr = CandleAnalyzerV2.calculateATR(movingCandles, 8);
+            candle.change_pct = candleChangePct(candle);
+            candle.atr = CandleAnalyzerV2.calculateATR(movingCandles, SimulationUtilityV2.ATR_PERIOD);
 
             candle.liquidityAnchor = [];
             candle.conditions_met = [];
@@ -493,6 +604,12 @@ export class SimulationUtilityV2 {
             candle.marketStructure = null;
             candle.trendState = null;
             candle.positionEntry = null;
+            // getVolumeState reads this candle's priceAction (for its reasons
+            // text) BEFORE getPriceAction sets it below. Without this, a window
+            // analysed before would hand it the previous pass's value - a fresh
+            // fetch has none - so re-analysing a window could differ from
+            // analysing the same candles fresh.
+            delete (candle as { priceAction?: unknown }).priceAction;
 
             // SESSION BASED PRICE ZONE — ported from SimulationUtility.
             // generatePrizeZone only reads open/close/high/low, which
@@ -501,6 +618,15 @@ export class SimulationUtilityV2 {
             // local time, so the same data always yields the same zones.
             if (SimulationUtility.isNewZonePeriod(candle.openTime, PRICE_ZONE_UTC_OFFSET_HOURS)) {
                 activePriceZone = PriceZoneUtility.generatePrizeZone(movingCandles.slice(-24) as unknown as CandleEntry[], 0);
+                // First candle of this price-zone session.
+                candle.extras.push("PRICEZONE_START");
+                if (activePriceZone) sessionZones.push(activePriceZone);
+            }
+            // Last candle of the session: the NEXT candle opens a new one. Not
+            // look-ahead - the sessions are fixed clock boundaries (00/06/12/18
+            // PHT), so this is known at this candle's own open.
+            if (activePriceZone && SimulationUtility.isNewZonePeriod(candle.openTime + INTERVAL_MS_FOR_ZONES, PRICE_ZONE_UTC_OFFSET_HOURS)) {
+                candle.extras.push("PRICEZONE_END");
             }
             candle.priceZone = activePriceZone;
             candle.outsidePriceZoneMetrics = getOutsidePriceZoneMetrics(candle, candles[i - 1]);
@@ -542,6 +668,7 @@ export class SimulationUtilityV2 {
                         // not confirmIdx's — this is the moment the swing at
                         // confirmIdx actually became knowable.
                         candles[confirmIdx].marketStructure = { label: result.label, confirmedOpenTime: candle.openTime };
+                        structureCandles.push(candles[confirmIdx]);
                         newlyConfirmedLabel = result.label;
                         // Tagged on THIS candle - the one that confirms the
                         // swing - not on the swing candle, so the condition is
@@ -605,6 +732,29 @@ export class SimulationUtilityV2 {
             // Imbalance - AFTER candleStructure and volumeState, which its
             // per-candle score reads for THIS candle (change z, volume z).
             candle.imbalanceState = getImbalanceState(movingCandles);
+
+            // The zone session's story so far (priceZoneState.ts), continued from the
+            // previous candle's state. candles[0] is never derived by a walk, so a
+            // walk's first candle (i = 1) starts without one.
+            candle.priceZoneState = getPriceZoneState(
+                movingCandles,
+                i > 1 ? candles[i - 1].priceZoneState ?? null : null,
+                candle.extras.includes("PRICEZONE_START")
+            );
+            {
+                const pzs = candle.priceZoneState;
+                if (pzs) {
+                    if (pzs.event !== "NONE") candle.conditions_met.push(`ZONE_${pzs.event}`);
+                    // Opening type: once, on the candle that completes the first hour.
+                    if (pzs.ibComplete && pzs.sessionCandle === 4 && pzs.openType) {
+                        candle.conditions_met.push(pzs.openTypeDirection ? `${pzs.openType}_${pzs.openTypeDirection}` : pzs.openType);
+                    }
+                    // 80% re-entry armed on this candle.
+                    if (pzs.reentry && pzs.reentry.triggeredOpenTime === candle.openTime) {
+                        candle.conditions_met.push(pzs.reentry.from === "ABOVE" ? "ZONE_REENTRY_SETUP_DOWN" : "ZONE_REENTRY_SETUP_UP");
+                    }
+                }
+            }
 
             // VALUE ACCEPTED - an EVENT: the candle where the move is first
             // ACCEPTED outside value (state turns IMBALANCE_UP/DOWN on this
@@ -688,6 +838,9 @@ export class SimulationUtilityV2 {
                 candle.priceAction.breakout = breakout;
                 candle.priceAction.failedBreakout = failedBreakout;
             }
+            // Where this candle sits vs the zone + the zone event - context only,
+            // strength / strongAction are deliberately unchanged (see PriceAction.zone).
+            candle.priceAction.zone = priceActionZoneContext(candle, candle.priceZoneState);
 
             if(candle.priceZone){
                 if(candle.close > candle.priceZone.upper){
@@ -728,7 +881,7 @@ export class SimulationUtilityV2 {
                     candle.conditions_met.push("RECENT_STRONG_PRICE_ACTION");
                 }
             }
-            var marketStructures = movingCandles.filter(c => c.marketStructure && c.marketStructure.label)
+            var marketStructures = structureCandles;
 
             if(marketStructures.length >= 6){
                 var recentMarketStructure = marketStructures.slice(-5).map(c => c.marketStructure!.label);
@@ -754,6 +907,29 @@ export class SimulationUtilityV2 {
                         candle.extras.push(`lowestCandleOpenTime: ${lowestCandleOpenTime}`);
                         candle.extras.push(`highestAtr: ${highestAtr}`);
                     }
+                }
+            }
+
+            if(candle.priceAction.strongAction && candle.candleStructure.changePercentageZScore >= QUICK_REVERSAL_MIN_CHANGE_Z && candle.candleStructure.volumeSpike){
+                if(candle.candleStructure.isBearish){
+                    candle.conditions_met.push("POTENTIAL_BULL_QUICK_REVERSAL")
+                }
+
+                if(candle.candleStructure.isBullish){
+                    candle.conditions_met.push("POTENTIAL_BEAR_QUICK_REVERSAL")
+                }
+            }
+
+            // The PREVIOUS session's zone: sessionZones ends with the CURRENT
+            // session's zone (its PRICEZONE_START candle is this one or earlier),
+            // so the previous one is second to last.
+            var previousPriceZone = sessionZones.length >= 2 ? sessionZones[sessionZones.length - 2] : null;
+            if(previousPriceZone){
+                // The candle's body crosses the previous zone's mid, either way.
+                var candleBreaksPreviousPriceZoneMid = (candle.close > previousPriceZone.mid && candle.open < previousPriceZone.mid) || (candle.close < previousPriceZone.mid && candle.open > previousPriceZone.mid)
+
+                if(candleBreaksPreviousPriceZoneMid){
+                    candle.conditions_met.push("BREAKS_PREV_PRICEZONE_MID");
                 }
             }
 
@@ -807,32 +983,7 @@ export class SimulationUtilityV2 {
             // (see positionEntry.ts's own header for why that
             // distinction matters).
             if (openPosition && i > openPosition.openGi) {
-                const intervalMinutes = { "15m": 15, "1h": 60, "4h": 240, "1d": 1440 }[interval];
-                updatePositionEntry(openPosition, candle, i);
-
-                // Only active when a caller explicitly passes this -
-                // MarketScannerComponent's own existing call never does,
-                // so its behavior is provably unchanged. A rolling-
-                // window "rigorous test" replay is the one caller that
-                // wants a hard cap on how long a single position can
-                // occupy a symbol's one-at-a-time slot.
-                // A position may carry its OWN cap, which wins. Added for the
-                // cross-sectional book, whose measured result is specifically a
-                // 384-candle hold while the segment entry's is 250: widening the
-                // global cap to fit the longer one would silently change the
-                // shorter one. `undefined` falls through to the caller's value,
-                // so every existing position and caller is unchanged.
-                const durationCap = openPosition.maxDurationCandles ?? maxPositionDurationCandles;
-                if (
-                    openPosition.status === "OPEN" &&
-                    durationCap != null &&
-                    (i - openPosition.openGi) >= durationCap
-                ) {
-                    forceClosePosition(openPosition, candle, i, "EXPIRED");
-                }
-
-                openPosition.durationMinutes = (i - openPosition.openGi) * intervalMinutes;
-                candle.positionEntry = openPosition;
+                SimulationUtilityV2.advanceOpenPosition(openPosition, candle, i, interval, maxPositionDurationCandles);
                 if (openPosition.status !== "OPEN") {
                     openPosition = null;
                 }
@@ -915,6 +1066,40 @@ export class SimulationUtilityV2 {
         return { openPosition, carry };
     }
 
+    /**
+     * Advances an open position by exactly one candle - the step runAnalysis
+     * takes for every candle after a position's openGi: TP/SL/MID via
+     * updatePositionEntry, then the candle-life cap (the position's own
+     * maxDurationCandles wins over the caller's), then durationMinutes, and the
+     * candle is stamped with the position.
+     *
+     * Shared so a caller that only needs the position moved forward (the
+     * rolling simulation, on a candle where no entry is possible) does exactly
+     * what a full pass would do on that candle. candle.atr must already be set.
+     */
+    static advanceOpenPosition(position: PositionEntry, candle: CandleInfo, i: number, interval: MARKET_INTERVAL, maxPositionDurationCandles?: number): void {
+        const intervalMinutes = { "15m": 15, "1h": 60, "4h": 240, "1d": 1440 }[interval];
+        updatePositionEntry(position, candle, i);
+
+        // A position may carry its OWN cap, which wins. Added for the
+        // cross-sectional book, whose measured result is specifically a
+        // 384-candle hold while the segment entry's is 250: widening the
+        // global cap to fit the longer one would silently change the
+        // shorter one. `undefined` falls through to the caller's value,
+        // so every existing position and caller is unchanged.
+        const durationCap = position.maxDurationCandles ?? maxPositionDurationCandles;
+        if (
+            position.status === "OPEN" &&
+            durationCap != null &&
+            (i - position.openGi) >= durationCap
+        ) {
+            forceClosePosition(position, candle, i, "EXPIRED");
+        }
+
+        position.durationMinutes = (i - position.openGi) * intervalMinutes;
+        candle.positionEntry = position;
+    }
+
     //HELPERS
     static mapToInfo(rawCandles: Candle[]){ 
         return rawCandles.map(candle => {
@@ -924,7 +1109,8 @@ export class SimulationUtilityV2 {
                 high: candle.high,
                 low: candle.low,
                 close: candle.close,
-                volume: candle.volume
+                volume: candle.volume,
+                change_pct: candleChangePct(candle),
             } as CandleInfo;
         });
     }

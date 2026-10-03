@@ -124,6 +124,8 @@ export interface FuturesSymbol{
   networkChain: string,
   hasRecentCrossedMovementPoc: boolean,
   hasRecentVolatilityChangeSpike: boolean
+  /** A position OPENED or CLOSED on this symbol's newest candle on the last "next" (highlighted until the next press). */
+  positionInteraction?: "OPENED" | "CLOSED" | null
 }
 
 export interface PastVolumeAnalysis{

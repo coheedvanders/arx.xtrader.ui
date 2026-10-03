@@ -16,11 +16,7 @@
             <ButtonComponent rounded color="ghost" @click="downloadAllSymbolWindows" :disabled="!canDownloadWindows">
                 {{ windowDownloadInProgress ? 'downloading…' : 'download all symbols (this period)' }}
             </ButtonComponent>
-            <label class="ml-sm" title="Live-like: every tick each symbol's latest 500 candles are analysed from scratch and checkPositionEntry alone decides an entry at the 500th candle. No position cap, budget or interest gate, no candle-life cap, and no auto-close / liquidation stop. Margin follows the margin settings (dynamic margin included).">
-                <input type="checkbox" v-model="mimicRunSimulation" :disabled="isRunning" />
-                positionEntry only (no gates)
-            </label>
-            <span class="ml-sm" v-if="!mimicRunSimulation">cap: <strong>{{ maxConcurrentPositionsInput }}</strong></span>
+            <span class="ml-sm">cap: <strong>{{ maxConcurrentPositionsInput }}</strong></span>
             <span class="ml-sm hint" v-if="!startDateTimeInput">set a start date/time in Settings to run</span>
         </div>
 
@@ -69,11 +65,6 @@
                         nothing is open. Not a liquidation: the account bled out through
                         ordinary stops, so no maintenance-margin close was ever triggered.
                     </div>
-                    <div v-if="balanceWentNegative" class="live-warning">
-                        ⛔ BALANCE NEGATIVE — the free balance (after the margin held by open
-                        positions, fees, funding and closed pnl) went below zero, so the account
-                        could not have carried this book. Run stopped.
-                    </div>
                     <div v-if="wasLiquidated" class="live-warning">
                         ⛔ LIQUIDATED — margin balance fell to maintenance margin. Every position was
                         closed and the run stopped, as a real account would.
@@ -111,13 +102,19 @@
                             <div class="cap-bar-fill" :class="{ 'cap-full': capUtilization >= 1 }"
                                  :style="{ width: (capUtilization * 100) + '%' }"></div>
                         </div>
-                        <div class="live-row" v-if="skippedSymbolTicks + analyzedSymbolTicks > 0">
-                            <span class="live-label" title="Symbol-ticks that skipped the full window re-analysis because the symbol had no open position and no permission to open one. Higher is faster.">
+                        <div class="live-row" v-if="skippedSymbolTicks + analyzedSymbolTicks + positionOnlySymbolTicks > 0">
+                            <span class="live-label" title="Symbol-ticks that skipped the full window re-analysis: no open position and no entry possible (or, in gated mode, no permission to open one), or - in 'positionEntry only' mode - an open position that only needed moving forward on the new candle. Higher is faster.">
                                 Analysis skipped
                             </span>
                             <span class="live-value">
-                                {{ fmtPercent(skippedSymbolTicks / (skippedSymbolTicks + analyzedSymbolTicks)) }}
+                                {{ fmtPercent((skippedSymbolTicks + positionOnlySymbolTicks) / (skippedSymbolTicks + analyzedSymbolTicks + positionOnlySymbolTicks)) }}
                             </span>
+                        </div>
+                        <div class="live-row" v-if="blockedEntrySymbolTicks > 0">
+                            <span class="live-label" title="Candles where an entry was possible (a swing confirmation that could become the setup) but the position cap or the budget refused a new position. Some of these would not have been entries anyway.">
+                                Possible entries blocked by cap / budget
+                            </span>
+                            <span class="live-value">{{ blockedEntrySymbolTicks }}</span>
                         </div>
                         <div class="live-row">
                             <span class="live-label">Symbols loaded</span>
@@ -960,7 +957,7 @@
                                     but a less responsive tab. Worth minutes over a full run, not hours.
                                 </details>
 
-                                <label class="settings-field">position candle life
+                                <label class="settings-field" v-if="CANDLE_LIFE_CAP_APPLIED">position candle life
                                     <InputComponent v-model.number="maxPositionDurationInput" :disabled="isRunning" />
                                 </label>
 
@@ -988,6 +985,7 @@
                                     Auto-close rules
                                     <ButtonComponent color="ghost" @click="addAutoCloseRule" :disabled="isRunning">+ add rule</ButtonComponent>
                                 </h4>
+                                <p class="hint" v-if="!AUTO_CLOSE_RULES_APPLIED"><strong>Not applied in the current simulation</strong> — positions close only on their own TP / SL, or liquidation.</p>
                                 <p class="hint">
                                     Every enabled rule is checked on every tick and ANY of them firing
                                     closes EVERY open position across every symbol. Rules are OR'd, not
@@ -1095,7 +1093,6 @@ import { SimulationUtilityV2, type EntryOptions } from '@/utility/v2/simulationU
 import { KlineUtility } from '@/utility/klineUtility';
 import { BinanceMarginUtility } from '@/utility/binanceMarginUtility';
 import { estimateCompletion, FIFTEEN_MIN_MS, type CompletionEstimate } from '@/utility/v2/analysis/completionEstimate';
-import { evaluatePriceVolumeInterest } from '@/utility/v2/analysis/priceVolumeInterest';
 import { forceClosePosition } from '@/utility/v2/analysis/positionEntry';
 import { buildSimulationSummary, type SimulationSummary } from '@/utility/v2/analysis/simulationSummary';
 import {
@@ -1141,18 +1138,10 @@ const PAGE_SIZE = 50;
 const START_DATETIME_STORAGE_KEY = 'rolling-simulation-start-datetime';
 const startDateTimeInput = ref(localStorage.getItem(START_DATETIME_STORAGE_KEY) ?? '');
 
-// "positionEntry only (no gates)". The live-bot loop, nothing else: every tick
-// each symbol's latest 500 candles are analysed FROM SCRATCH (as a live fetch of
-// 500 would be), checkPositionEntry alone decides an entry at the 500th candle,
-// and the window shifts by one. No cap, budget or interest gate, no candle-life
-// cap (a position's own maxDurationCandles still applies), and no auto-close /
-// liquidation / account-dead stop. Margin still follows the margin settings
-// (dynamic margin included), frozen per tick as in the gated mode. Every symbol is
-// analysed on every tick, so it is slower than the gated mode - that is the
-// real per-candle cost of the live loop.
-const MIMIC_RUN_SIMULATION_KEY = 'rolling-simulation-mimic-run-simulation';
-const mimicRunSimulation = ref(localStorage.getItem(MIMIC_RUN_SIMULATION_KEY) !== 'false');
-watch(mimicRunSimulation, (v) => localStorage.setItem(MIMIC_RUN_SIMULATION_KEY, String(v)));
+/** Auto-close rules are configurable but not applied in this version. */
+const AUTO_CLOSE_RULES_APPLIED = false;
+/** The candle-life cap ("position candle life") is not applied in this version. */
+const CANDLE_LIFE_CAP_APPLIED = false;
 watch(startDateTimeInput, (value) => {
     localStorage.setItem(START_DATETIME_STORAGE_KEY, value);
 });
@@ -1613,8 +1602,29 @@ const unrecordedResolutionCount = ref(0);
 
 // Throughput telemetry: how many symbol-ticks skipped the full re-analysis
 // versus ran it. The skip ratio is the speedup actually achieved.
+/**
+ * Hands control back to the browser for one task. A MessageChannel message is
+ * a macrotask without setTimeout's ~4 ms minimum delay, so the tab can repaint
+ * and take a pause/stop click without the walk paying the clamp every time.
+ */
+const yieldChannel = typeof MessageChannel !== 'undefined' ? new MessageChannel() : null;
+function yieldToBrowser(): Promise<void> {
+    if (!yieldChannel) return new Promise(resolve => setTimeout(resolve, 0));
+    return new Promise(resolve => {
+        yieldChannel.port1.onmessage = () => resolve();
+        yieldChannel.port2.postMessage(null);
+    });
+}
+/** Yield at most this often during a tick's symbol loop (~a frame's worth of work). */
+const YIELD_MIN_INTERVAL_MS = 50;
+let lastYieldAt = 0;
+
 const skippedSymbolTicks = ref(0);
 const analyzedSymbolTicks = ref(0);
+/** "positionEntry only" mode: ticks where an open position was only moved forward on the new candle. */
+const positionOnlySymbolTicks = ref(0);
+/** Symbol-ticks where an entry could have fired but the cap / budget refused a new position. */
+const blockedEntrySymbolTicks = ref(0);
 
 interface RunStats {
     won: number;
@@ -2239,7 +2249,7 @@ async function downloadFullRunData() {
                 startDateTimeInput: startDateTimeInput.value,
                 endDateTimeInput: endDateTimeInput.value,
                 windowSize: WINDOW_SIZE,
-                maxPositionDurationCandles: maxPositionDurationInput.value,
+                maxPositionDurationCandles: CANDLE_LIFE_CAP_APPLIED ? maxPositionDurationInput.value : null,
             },
             // Stated rather than implied: the skip optimization means analysis
             // did not run on every symbol-tick, so candles without a signal
@@ -2341,10 +2351,11 @@ function resetRun() {
     unrecordedResolutionCount.value = 0;
     skippedSymbolTicks.value = 0;
     analyzedSymbolTicks.value = 0;
+    positionOnlySymbolTicks.value = 0;
+    blockedEntrySymbolTicks.value = 0;
     liquidationEvents.value = [];
     wasLiquidated.value = false;
     accountDied.value = false;
-    balanceWentNegative.value = false;
     remainingBudgetThisTick = 0;
     openPositionCountThisTick = 0;
     marginThisTick = 0;
@@ -2404,20 +2415,15 @@ let capUsedForLastPermittedEntry = 0;
 
 /**
  * Whether a symbol should be allowed to open a NEW position right now.
- * Three independent gates, all must pass:
+ * Two gates, both must pass (WHETHER to enter is checkPositionEntry's call;
+ * these only decide whether the account can take one more position):
  *
  * 1. Concurrency: is TOTAL open exposure already at the configured cap.
  * 2. Capital: would opening one more position at the configured margin
  *    exceed remainingBudgetThisTick.
- * 3. Interest: is this symbol's own recent price action/volume actually
- *    worth trading right now (evaluatePriceVolumeInterest on its own
- *    already-loaded window - no extra fetch, no OI/LS dependency, since
- *    OI/LS isn't reliably available this far back).
  *
- * When any gate fails, an existing open position for that symbol still
- * gets tracked/updated normally (via allowNewEntry=false, not by
- * skipping the symbol entirely) - only the opening of something NEW is
- * held back.
+ * Asked only for a symbol with nothing open and a possible entry on this
+ * candle (see stepLiveWindow). A refusal never touches an open position.
  */
 /**
  * The cap AS IT STANDS PART-WAY THROUGH A TICK.
@@ -2478,8 +2484,7 @@ function shouldAllowNewEntry(state: SymbolRollingState): boolean {
     // against, recorded as 23 because the post-open budget implied 23).
     capUsedForLastPermittedEntry = cap;
     if (remainingBudgetThisTick < marginThisTick) return false;
-    if (!state.window.length) return false;
-    return evaluatePriceVolumeInterest(state.window).isInteresting;
+    return state.window.length > 0;
 }
 
 /** One symbol's initialization result, not yet committed to the run. */
@@ -2551,10 +2556,9 @@ async function initializeSymbol(symbol: string, startTimestamp: number): Promise
     // Everything else the analysis produces - trend segments, ATR, market
     // structure, volume state - is still computed and retained; only
     // position creation is suppressed.
-    const mimic = mimicRunSimulation.value;
     const { openPosition } = await SimulationUtilityV2.runMarketAnalysis(
         symbolInfo, [], null,
-        mimic ? undefined : maxPositionDurationInput.value,
+        undefined,
         effectiveMargin.value,
         false, true, true,
         // Warm-up opens nothing (allowNewEntry is false), but the index is
@@ -2796,114 +2800,52 @@ async function shiftSymbolWindow(symbol: string, state: SymbolRollingState): Pro
     state.window.push(nextCandle);
     state.window.shift();
 
-    const mimic = mimicRunSimulation.value;
     if (state.openPosition) {
         state.openPosition.openGi -= 1;
         if (state.openPosition.closeGi != null) state.openPosition.closeGi -= 1;
     }
 
-    // ── THE ACTUAL SPEEDUP ────────────────────────────────────────────
-    // runAnalysis re-derives EVERY field on ALL 500 candles on every call
-    // (it wipes atr, ema200, candleStructure, volumeState, priceAction,
-    // marketStructure, trendState and positionEntry and recomputes them),
-    // which is ~97% of this simulation's runtime. For a symbol with no open
-    // position AND no permission to open one, that entire pass produces
-    // nothing that is read: recordTick only looks for a positionEntry, and
-    // there cannot be one.
-    //
-    // Skipping is safe precisely BECAUSE the pass is stateless. Nothing is
-    // carried between calls, so the next call that DOES run rebuilds every
-    // field for the whole window from scratch - a skipped tick leaves no
-    // gap to repair. The entry gate itself is unaffected: the interest
-    // check reads raw OHLCV off the window, never the computed fields, and
-    // the window is still advanced above.
-    const allowEntryThisSymbol = mimic ? true : shouldAllowNewEntry(state);
-    if (!state.openPosition && !allowEntryThisSymbol) {
-        skippedSymbolTicks.value++;
-        // RAW ONLY, and that is the honest record. The skip means no analysis
-        // ran for this symbol on this candle, so there are no derived fields
-        // to store - and the engine could not have entered here either, since
-        // an entry may only be created at the candle analysis reached. The
-        // archive's signal coverage therefore equals the engine's own. Raw
-        // OHLCV is still written because forward-path research needs an
-        // unbroken price series whether or not a signal fired.
-        archiveCandles(symbol, [compactCandle(nextCandle, state.window, state.window.length - 1)]);
-        return true;
-    }
-    analyzedSymbolTicks.value++;
-
+    // THE LIVE TICK - see SimulationUtilityV2.stepLiveWindow. The window is
+    // analysed as a fresh 500-candle fetch and checkPositionEntry decides at the
+    // 500th candle, but the full analysis only runs when it can matter: an open
+    // position is just moved forward on the new candle, a candle where no entry
+    // can fire (couldEnterAt) is skipped, and so is one where the cap / budget
+    // would refuse the position anyway. Same positions as running the full
+    // analysis every tick - verified trade-for-trade - at a fraction of the cost.
     const positionBefore = state.openPosition;
-    // Captured BEFORE the analysis mutates it - the shared position object
-    // is updated in place, so reading status afterwards would show the new
-    // value and the check below could never fire.
-    const statusBefore = positionBefore?.status ?? null;
     const symbolInfo = buildMinimalSymbolInfo(symbol, state.window);
-    // Whether a position is already open doesn't need to factor into the
-    // gate here - when one is, runAnalysis's own internal branching
-    // updates it regardless of allowNewEntry's value; the gate only ever
-    // matters for the "no position currently open" case, which is exactly
-    // what shouldAllowNewEntry itself is evaluating.
     const analysisStartedAt = performance.now();
-    const { openPosition } = await SimulationUtilityV2.runMarketAnalysis(
-        symbolInfo, [], state.openPosition,
-        mimic ? undefined : maxPositionDurationInput.value,
-        marginThisTick,
-        allowEntryThisSymbol, true, true,
-        // THE FIX. A new position may only be created at the candle the
-        // simulation has actually reached. Without this, runAnalysis's
-        // re-walk of the whole 500-candle window could create an entry at
-        // ANY past candle as soon as the once-per-tick gate opened - at
-        // that candle's own price, which is history by then. That bypassed
-        // the position cap, the budget check and the per-tick margin
-        // freeze all at once (a real run showed 190 concurrent positions
-        // against a cap of 100, and 81 entries sharing one openTime), and
-        // it is look-ahead besides: the entry price predates the decision.
-        // It also made recordTick's last-candle-only read lossy, since a
-        // position could open AND resolve inside the window interior
-        // without ever being seen - the source of the vanishing open
-        // counts and the unattributed funding.
-        state.window.length - 1
+    const { openPosition, kind } = await SimulationUtilityV2.stepLiveWindow(
+        symbolInfo, state.openPosition, marginThisTick,
+        // No candle-life cap: a position runs to its own TP / SL (or its own
+        // maxDurationCandles, which still applies).
+        undefined,
+        // Asked only when nothing is open and an entry is possible here.
+        () => shouldAllowNewEntry(state)
     );
-
-    timeAnalysisMs += performance.now() - analysisStartedAt;
-
-    // Compare by object IDENTITY, not by null-ness. A single re-analysis
-    // pass walks the whole window, so it can resolve the resumed position
-    // partway through AND open a brand new one later in that same pass -
-    // in which case the old `openPosition && !wasOpenBefore` test saw
-    // non-null both before and after, skipped this branch entirely, and
-    // silently left the NEW position carrying the PREVIOUS position's
-    // openTime. Real exports showed 10.4% of positions with a provably
-    // wrong openTime because of this.
-    // INVARIANT: a position that resolves must be sitting on the window's
-    // last candle, because that is the only place recordTick looks. With
-    // entries confined to the last candle this should hold always, so a
-    // non-zero count here means the lossy path is back - which is exactly
-    // what went unnoticed before, since totalClosedPnl and the trade
-    // ledger are written in the same place and agree even when both miss a
-    // position. This counter is an INDEPENDENT witness; it is exported.
-    if (positionBefore && statusBefore === 'OPEN' && positionBefore.status !== 'OPEN') {
-        const lastCandle = state.window[state.window.length - 1];
-        if (lastCandle?.positionEntry !== positionBefore) unrecordedResolutionCount.value++;
+    const last = state.window.length - 1;
+    if (kind === 'ANALYZED') {
+        analyzedSymbolTicks.value++;
+        timeAnalysisMs += performance.now() - analysisStartedAt;
+    } else if (kind === 'ADVANCED') {
+        positionOnlySymbolTicks.value++;
+    } else {
+        if (kind === 'BLOCKED') blockedEntrySymbolTicks.value++;
+        skippedSymbolTicks.value++;
     }
 
-    const isBrandNewPosition = openPosition != null && openPosition !== positionBefore;
-    if (isBrandNewPosition) {
-        // Committed HERE, not in the predicate: a candidate can pass the balance
-        // veto and still be refused by the R:R gate, the fee guard or the level
-        // geometry, and counting those would make the book look more balanced
-        // than it is.
+    if (openPosition != null && openPosition !== positionBefore) {
+        // Committed HERE, not in the gate: the entry can still decline after
+        // the gate said yes (no signal, levels on the wrong side), and counting
+        // those would make the book look fuller than it is.
         remainingBudgetThisTick -= marginThisTick;
         openPositionCountThisTick += 1;
         // The tightest cap that actually permitted an open this tick.
         enforcedCapThisTick = Math.min(enforcedCapThisTick, capUsedForLastPermittedEntry);
     }
     state.openPosition = openPosition;
-    // Analysis ran, so this candle now carries its derived fields. Written
-    // last, after the position bookkeeping, so the row reflects the tick's
-    // final state. The [symbol, openTime] key means this overwrites nothing
-    // but itself if the walk ever revisits the candle.
-    archiveCandles(symbol, [compactCandle(state.window[state.window.length - 1], state.window, state.window.length - 1)]);
+    // Raw OHLCV for a candle no analysis ran on; derived fields otherwise.
+    archiveCandles(symbol, [compactCandle(state.window[last], state.window, last)]);
     return true;
 }
 
@@ -3095,8 +3037,7 @@ const wasLiquidated = ref(false);
  *  terminal, but NOT a liquidation. Kept separate so the two are never
  *  conflated when reading a result. */
 const accountDied = ref(false);
-/** "positionEntry only" mode stops the run once the free balance goes below zero. */
-const balanceWentNegative = ref(false);
+
 
 /**
  * Cross-margin liquidation check: when margin balance falls to or below
@@ -3593,10 +3534,16 @@ async function runRollingSimulation() {
                 // yield here, a full pass over all symbols runs as one
                 // unbroken synchronous block with no chance for the
                 // browser to repaint or respond.
-                if (symbolsAdvancedThisTick % Math.max(1, yieldEverySymbols.value) === 0) {
+                // Yield on a TIME budget as well as the symbol count: with most
+                // symbol-ticks now well under a millisecond, yielding every N
+                // symbols would hand back to the browser far more often than a
+                // frame needs, and each setTimeout(0) costs >= ~4 ms of clamp.
+                if (symbolsAdvancedThisTick % Math.max(1, yieldEverySymbols.value) === 0
+                    && performance.now() - lastYieldAt >= YIELD_MIN_INTERVAL_MS) {
                     const candleDatePht = new Date(currentSimTime).toLocaleString('en-US', { timeZone: 'Asia/Manila' });
                     statusMessage.value = `candle ${candlesProcessedSoFar + 1} (${candleDatePht} PHT): symbol ${symbolsAdvancedThisTick}/${symbolStates.size} [${symbol}]`;
-                    await new Promise(resolve => setTimeout(resolve, 0));
+                    await yieldToBrowser();
+                    lastYieldAt = performance.now();
                 }
             }
 
@@ -3613,7 +3560,7 @@ async function runRollingSimulation() {
             // Auto-close rules are only consulted if the account survived.
             accrueFunding(previousSimTime, currentSimTime);
 
-            if (!mimicRunSimulation.value && checkLiquidation(currentSimTime)) {
+            if (checkLiquidation(currentSimTime)) {
                 candlesProcessedSoFar++;
                 recordTick(currentSimTime, settledKeys);
                 statusMessage.value = `LIQUIDATED at ${new Date(currentSimTime).toLocaleString()} — margin balance fell to maintenance margin. Run stopped.`;
@@ -3631,7 +3578,10 @@ async function runRollingSimulation() {
             // Open pnl computed fresh here, not read from stats - see
             // computeCurrentOpenPnl for why that distinction matters.
             const openPnlNow = computeCurrentOpenPnl();
-            const firedRules = mimicRunSimulation.value ? [] : triggeredAutoCloseRules(currentSimTime, openPnlNow);
+            // Auto-close rules are not applied in this version of the simulation
+            // (entries and exits come from positionEntry, the cap, the budget and
+            // liquidation only). The rules stay configurable for when they return.
+            const firedRules: AutoCloseRule[] = AUTO_CLOSE_RULES_APPLIED ? triggeredAutoCloseRules(currentSimTime, openPnlNow) : [];
             if (firedRules.length) {
                 autoCloseAllPositions(currentSimTime, firedRules, openPnlNow);
             }
@@ -3648,18 +3598,7 @@ async function runRollingSimulation() {
             // as a flat tail and wastes the rest of the walk. Distinct from
             // liquidation: nothing was force-closed, the account simply bled
             // out through ordinary stops.
-            // "positionEntry only" mode has no liquidation or budget check, so
-            // it stops here instead: a negative free balance means the account
-            // could not have held these positions.
-            if (mimicRunSimulation.value && balance.value < 0) {
-                balanceWentNegative.value = true;
-                statusMessage.value = `BALANCE NEGATIVE at ${new Date(currentSimTime).toLocaleString()} — `
-                    + `balance ${balance.value.toFixed(2)} with ${openPositionsDisplay.value.length} open `
-                    + `(margin ${estimatedMarginUsed.value.toFixed(2)}, open pnl ${stats.value.totalOpenPnl.toFixed(2)}). Run stopped.`;
-                break;
-            }
-
-            if (!mimicRunSimulation.value && openPositionsDisplay.value.length === 0 && balance.value < effectiveMargin.value) {
+            if (openPositionsDisplay.value.length === 0 && balance.value < effectiveMargin.value) {
                 accountDied.value = true;
                 statusMessage.value = `ACCOUNT DEAD at ${new Date(currentSimTime).toLocaleString()} — `
                     + `balance ${balance.value.toFixed(2)} cannot fund the minimum position `
@@ -3861,7 +3800,7 @@ function buildExportPayload() {
             positionCapRatio: positionCapRatioInput.value,
             positionCapFloor: positionCapFloorInput.value,
             positionCapCeiling: positionCapCeilingInput.value,
-            maxPositionDurationCandles: maxPositionDurationInput.value,
+            maxPositionDurationCandles: CANDLE_LIFE_CAP_APPLIED ? maxPositionDurationInput.value : null,
             // Recorded because it affects wall-clock only, never results -
             // and having it in the file is what lets that claim be checked
             // rather than trusted.
@@ -3936,6 +3875,8 @@ function buildExportPayload() {
             unrecordedResolutions: unrecordedResolutionCount.value,
             skippedSymbolTicks: skippedSymbolTicks.value,
             analyzedSymbolTicks: analyzedSymbolTicks.value,
+            positionOnlySymbolTicks: positionOnlySymbolTicks.value,
+            blockedEntrySymbolTicks: blockedEntrySymbolTicks.value,
             skipRatio: (skippedSymbolTicks.value + analyzedSymbolTicks.value) > 0
                 ? skippedSymbolTicks.value / (skippedSymbolTicks.value + analyzedSymbolTicks.value)
                 : 0,

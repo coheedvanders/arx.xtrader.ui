@@ -1,6 +1,22 @@
 import type { PriceZone, VolumeProfile, VolumeProfileBucket } from "@/core/interfaces"
 import type { CandleInfo } from "@/core/interfacesv2"
 
+/**
+ * Per-candle memo of getCandleChangeZScore's rounded abs change. The z-score
+ * re-reads the last 50 candles on every candle, and the toFixed/parseFloat
+ * rounding was ~40% of runAnalysis. Keyed by the candle object and checked
+ * against its open/close, so a candle whose prices change (a live candle still
+ * forming) is recomputed - the value is always exactly what it would be fresh.
+ */
+const absChangeMemo = new WeakMap<CandleInfo, { open: number; close: number; value: number | null }>();
+function roundedAbsChange(c: CandleInfo): number | null {
+    const hit = absChangeMemo.get(c);
+    if (hit && hit.open === c.open && hit.close === c.close) return hit.value;
+    const value = c.open ? Math.abs(parseFloat((((c.close - c.open) / c.open) * 100).toFixed(2))) : null;
+    absChangeMemo.set(c, { open: c.open, close: c.close, value });
+    return value;
+}
+
 export class CandleAnalyzerV2 {
     /**
      * CandleInfo port of candleAnalyzer.getCandleChangeZScore (old
@@ -13,23 +29,27 @@ export class CandleAnalyzerV2 {
     static getCandleChangeZScore(candles: CandleInfo[], length: number): number {
         if (candles.length < length) return 0;
 
-        const absChange = (c: CandleInfo): number | null => {
-            if (!c.open) return null;
-            return Math.abs(parseFloat((((c.close - c.open) / c.open) * 100).toFixed(2)));
-        };
+        // Plain loops over the last `length` candles - the same values summed in
+        // the same order as the slice/map/filter/reduce chain this replaces (so
+        // the result is bit-identical), without allocating four arrays per call.
+        const start = candles.length - length;
+        let count = 0, sum = 0;
+        for (let k = start; k < candles.length; k++) {
+            const v = roundedAbsChange(candles[k]);
+            if (v !== null && Number.isFinite(v)) { sum += v; count++; }
+        }
+        if (count === 0) return 0;
 
-        const absChanges = candles
-            .slice(-length)
-            .map(absChange)
-            .filter((v): v is number => v !== null && Number.isFinite(v));
-
-        if (absChanges.length === 0) return 0;
-
-        const mean = absChanges.reduce((a, b) => a + b, 0) / absChanges.length;
-        const variance = absChanges.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / absChanges.length;
+        const mean = sum / count;
+        let squares = 0;
+        for (let k = start; k < candles.length; k++) {
+            const v = roundedAbsChange(candles[k]);
+            if (v !== null && Number.isFinite(v)) squares += Math.pow(v - mean, 2);
+        }
+        const variance = squares / count;
         const stdDev = Math.sqrt(variance);
 
-        const latestAbsChange = absChange(candles[candles.length - 1]);
+        const latestAbsChange = roundedAbsChange(candles[candles.length - 1]);
         if (latestAbsChange === null || !Number.isFinite(latestAbsChange)) return 0;
 
         return stdDev === 0 ? 0 : (latestAbsChange - mean) / stdDev;
@@ -47,15 +67,17 @@ export class CandleAnalyzerV2 {
         const currentVolume = candles[candles.length - 1].volume;
         if (!currentVolume || currentVolume === 0) return false;
 
-        const pastVolumes = candles
-            .slice(-lookbackPeriod - 1, -1)
-            .map(c => c.volume)
-            .filter(v => v && v > 0);
+        // The previous `lookbackPeriod` candles' non-zero volumes, summed in
+        // order - same result as the slice/map/filter/reduce it replaces.
+        let count = 0, sum = 0, maxVolume = -Infinity;
+        for (let k = candles.length - lookbackPeriod - 1; k < candles.length - 1; k++) {
+            const v = candles[k].volume;
+            if (v && v > 0) { sum += v; count++; if (v > maxVolume) maxVolume = v; }
+        }
 
-        if (pastVolumes.length === 0) return false;
+        if (count === 0) return false;
 
-        const avgVolume = pastVolumes.reduce((sum, v) => sum + v, 0) / pastVolumes.length;
-        const maxVolume = Math.max(...pastVolumes);
+        const avgVolume = sum / count;
 
         return currentVolume >= avgVolume * multiplier && currentVolume >= maxVolume;
     }

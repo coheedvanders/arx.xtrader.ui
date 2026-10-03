@@ -354,6 +354,14 @@ export interface CandleInfo {
     volume: number
     openTime: number
     closeTime: number
+    /**
+     * The candle's own change in percent: (close - open) / open * 100, unrounded
+     * (0 when open is 0). Positive = bullish candle. Raw - derived only from this
+     * candle's open/close - so it is set wherever a candle is created
+     * (mapToInfo), refreshed by every analysis pass, and kept current on a live
+     * candle as its close moves. See candleChangePct.
+     */
+    change_pct: number
 
     atr: number
     ema200: number
@@ -416,6 +424,156 @@ export interface CandleInfo {
     // (treated as value) and vs the previous session's zone and prices.
     // Null until a zone exists. See imbalanceState.ts.
     imbalanceState: ImbalanceState | null
+
+    // The current price-zone SESSION's story so far, vs its zone and the
+    // previous session's volume value area. Session-to-date, no look-ahead.
+    // Null until a zone exists. See priceZoneState.ts.
+    priceZoneState?: PriceZoneState | null
+}
+
+/**
+ * What happened at the zone on THIS candle (priority order, first match wins):
+ *   ACCEPT_ABOVE/BELOW    2nd consecutive close beyond the edge (acceptance)
+ *   BREAK_UP/DOWN         1st close beyond the edge
+ *   REENTRY_FROM_ABOVE/BELOW  close back inside after an ACCEPTED run outside
+ *   FAILED_BREAK_UP/DOWN  close back inside after a single close outside (look above/below and fail)
+ *   REJECT_UPPER/LOWER    wick beyond the edge (>= tolerance), close back inside, from inside
+ *   TEST_UPPER/LOWER      high/low reaches the edge (within tolerance) and closes inside
+ *   MID_RECLAIM / MID_LOSS  the body crosses the zone mid up / down
+ * DESCRIPTIVE, not signals: measured on 41k Binance 15m sessions, neither failed
+ * breakouts nor acceptance beat random candles at the same location.
+ */
+export type PRICE_ZONE_EVENT =
+    | 'NONE'
+    | 'TEST_UPPER' | 'TEST_LOWER'
+    | 'REJECT_UPPER' | 'REJECT_LOWER'
+    | 'BREAK_UP' | 'BREAK_DOWN'
+    | 'ACCEPT_ABOVE' | 'ACCEPT_BELOW'
+    | 'FAILED_BREAK_UP' | 'FAILED_BREAK_DOWN'
+    | 'REENTRY_FROM_ABOVE' | 'REENTRY_FROM_BELOW'
+    | 'MID_RECLAIM' | 'MID_LOSS'
+
+/**
+ * Dalton's opening types, applied to the first hour (4 candles) of a 6h session.
+ * Measured hold rate of the extreme they mark (vs 27% random IB extreme, 40% for
+ * "the IB extreme opposite the IB close"): TEST_DRIVE 47%, DRIVE 41% (adds
+ * nothing over the IB close), REJECTION_REVERSE 33%, AUCTION 24%.
+ */
+export type ZONE_OPEN_TYPE = 'OPEN_DRIVE' | 'OPEN_TEST_DRIVE' | 'OPEN_REJECTION_REVERSE' | 'OPEN_AUCTION'
+
+export interface PriceZoneState {
+    // ── session clock ──
+    /** 1-based position of this candle in its zone session (1..24 on 15m). */
+    sessionCandle: number
+    /**
+     * The state began MID-session (the analysis window starts inside it), so
+     * sessionCandle counts from the window start and the session-to-date values
+     * cover only what the window holds. The opening range, IB and opening type
+     * are left unset - they need the session's real first hour.
+     */
+    partialSession: boolean
+    sessionStartOpenTime: number
+    /** ATR at the session's start (the candle before it), the unit for this session's tolerances. */
+    sessionAtr: number
+
+    // ── session to date ──
+    sessionOpen: number
+    sessionHigh: number
+    sessionLow: number
+    /** (sessionHigh - sessionLow) / sessionAtr. */
+    sessionRangeAtr: number
+    /** Session range so far / zone width. > 1: this session has outgrown the prior range. */
+    rangeVsZone: number
+    /** Volume-weighted average of the typical price, session to date. */
+    sessionVwap: number
+    /** (close - sessionVwap) / ATR. */
+    closeVsVwapAtr: number
+
+    // ── time at price (closes, this session) ──
+    candlesAbove: number
+    candlesInside: number
+    candlesBelow: number
+
+    // ── edge interactions (this session) ──
+    touchesUpper: number
+    touchesLower: number
+    rejectionsUpper: number
+    rejectionsLower: number
+    midCrosses: number
+    /** Consecutive closes beyond the upper / lower edge, this one included (0 if not beyond). */
+    closesAbove: number
+    closesBelow: number
+
+    // ── opening range: the session's first 30 minutes (2 candles) ──
+    orHigh: number
+    orLow: number
+
+    // ── initial balance: the session's first hour (4 candles) ──
+    ibHigh: number
+    ibLow: number
+    ibComplete: boolean
+    /** IB width / sessionAtr. Narrow IBs trend more (measured: 22% of narrow-IB sessions vs 11% of wide). */
+    ibWidthAtr: number
+    /** Where the IB closed: UP = upper half of the IB range. Null until the IB completes. */
+    ibCloseDirection: 'UP' | 'DOWN' | null
+    ibExtension: 'NONE' | 'UP' | 'DOWN' | 'BOTH'
+    /** How far beyond the IB high / low the session has traded, in IB widths. */
+    ibExtensionUpX: number
+    ibExtensionDownX: number
+
+    // ── opening type (decided when the IB completes, then fixed) ──
+    openType: ZONE_OPEN_TYPE | null
+    openTypeDirection: 'UP' | 'DOWN' | null
+    /** The extreme the open type says should hold (the low of an up drive / test drive, the high of a down one). */
+    openTypeExtreme: number | null
+    /** Whether that extreme has held so far this session. */
+    openTypeExtremeHeld: boolean | null
+
+    // ── this candle ──
+    event: PRICE_ZONE_EVENT
+
+    /**
+     * The 80%-rule context: the session traded outside the zone, then 4
+     * consecutive closes (two 30-min periods) back inside. Target = the far
+     * edge. Measured: reaches it 26% of the time (40% vs a value area), about
+     * +14 points over random - a probability context, NOT an edge (avg R < 0).
+     */
+    reentry: {
+        from: 'ABOVE' | 'BELOW'
+        target: number
+        /** The extreme of the excursion outside. */
+        excursionExtreme: number | null
+        triggeredOpenTime: number
+        targetHit: boolean
+    } | null
+
+    // ── previous session's volume value area (70%) ──
+    /** Built at the session start from the previous 24 candles' volume (each candle's volume spread over its range). */
+    valueArea: { lower: number; upper: number; poc: number } | null
+    vsValueArea: 'ABOVE' | 'BELOW' | 'INSIDE' | null
+    /** Where the session OPENED vs that value area (with the range zone, a 24/7 session almost never opens outside). */
+    sessionOpenVsValueArea: 'ABOVE' | 'BELOW' | 'INSIDE' | null
+
+    // ── running values the next candle continues from (kept on the state so it
+    //    survives storage / copying; also readable) ──
+    /** Session sums behind sessionVwap: sum(typical x volume), sum(volume). */
+    vwapPriceVolume: number
+    vwapVolume: number
+    /** The session has traded above the upper / below the lower edge at some point. */
+    tradedAboveZone: boolean
+    tradedBelowZone: boolean
+    /** The session's highest high above the upper edge / lowest low below the lower edge (null if none). */
+    excursionHigh: number | null
+    excursionLow: number | null
+    /** Consecutive candles closing inside with no wick outside, this one included. */
+    insideRun: number
+}
+
+/** Where a price-action event happened relative to the session zone. */
+export interface PriceActionZoneContext {
+    location: 'ABOVE' | 'AT_UPPER' | 'INSIDE' | 'AT_MID' | 'AT_LOWER' | 'BELOW'
+    /** The zone event on the same candle (priceZoneState.event). */
+    event: PRICE_ZONE_EVENT
 }
 
 /**
@@ -596,7 +754,7 @@ export interface PositionEntryReason {
      *  adding a trigger here needs no change there. Check before assuming. */
     // HH_ABOVE_ZONE_FADE: SHORT on CONFIRMATION_HH + ABOVE_ZONE + GOOD_DISTANCE_ABOVE_ZONE
     // + VOLATILE_ABS_ATR_CHANGE (checkHhAboveZoneShort in positionEntry.ts).
-    trigger: "POTENTIAL_REVERSAL" | "EXTENSION_FADE" | "BREAKOUT_FADE" | "CROSS_SECTIONAL" | "HH_ABOVE_ZONE_FADE" | "BULL_SLINGSHOT_DIVE"
+    trigger: "POTENTIAL_REVERSAL" | "EXTENSION_FADE" | "BREAKOUT_FADE" | "CROSS_SECTIONAL" | "HH_ABOVE_ZONE_FADE" | "BULL_SLINGSHOT_DIVE" | "BULL_QUICK_REVERSAL" | "BEAR_QUICK_REVERSAL"
     reversingDirection: "UP" | "DOWN"
     segmentLow: number
     segmentHigh: number
@@ -732,16 +890,14 @@ export interface PositionEntry {
      * produced before this field existed — so a report must treat
      * `undefined` as "unknown", never as a zero for any bucket.
      */
-    closeReason?: "TP" | "SL" | "MID" | "EXPIRED" | "AUTO_CLOSE" | "LIQUIDATED" | "MANAGED"
+    closeReason?: "TP" | "SL" | "MID" | "EXPIRED" | "AUTO_CLOSE" | "LIQUIDATED" | "MANAGED" | "PERIOD_END"
     /**
      * Set only when closeReason is "MANAGED": which in-flight rule asked
      * for the close, so an export can be grouped by it.
      *
-     * The rule union is DUPLICATED from ManagedExitRule in
-     * utility/v2/analysis/positionEntry.ts, deliberately - that module
-     * imports from this one, so this one must not import back. Keep the
-     * two in sync; the same deliberate duplication exists for
-     * closeReason in simulationSummary.ts.
+     * The in-flight management rules that set this were removed from
+     * positionEntry.ts (see git history); the field stays so older exports
+     * still type-check. Nothing sets it now.
      */
     managedExit?: {
         rule: "BREAKEVEN_STOP" | "TRAILING_GIVEBACK" | "EXTENSION_EXHAUSTION" | "ADVERSE_STRUCTURE" | "NO_PROGRESS"
@@ -953,6 +1109,13 @@ export interface PriceAction {
     strongAction: boolean
 
     reasons: string[]
+
+    /**
+     * Where this candle sits vs the session zone, and the zone event on it.
+     * Context only - it does not change strength / strongAction: edge
+     * rejections and failed breakouts did not beat random in the measurement.
+     */
+    zone?: PriceActionZoneContext | null
 }
 
 export interface PositioningState {

@@ -7,7 +7,7 @@ import { detectCandlePatterns } from "./candlePatterns";
  * All tunable thresholds live here. Nothing below this section
  * should hardcode a magic number — reference these constants.
  * ============================================================ */
-const CONFIG = {
+export const CANDLE_STRUCTURE_CONFIG = {
     // Volume spike lookback, same as the old SimulationUtility's
     // hasVolumeSpike(movingCandles, 20).
     VOLUME_SPIKE_LOOKBACK: 20,
@@ -128,7 +128,7 @@ function computeDirection(candle: CandleInfo, bodyRatio: number): DirectionFlags
         direction = isBullish ? 'BULLISH' : 'BEARISH';
     }
 
-    const isDoji = bodyRatio <= CONFIG.DOJI_BODY_RATIO_THRESHOLD;
+    const isDoji = bodyRatio <= CANDLE_STRUCTURE_CONFIG.DOJI_BODY_RATIO_THRESHOLD;
 
     return { direction, isBullish, isBearish, isDoji };
 }
@@ -162,8 +162,8 @@ interface VolatilityFlags {
 
 function computeVolatilityFlags(rangeAtrRatio: number): VolatilityFlags {
     return {
-        isExpansion: rangeAtrRatio >= CONFIG.EXPANSION_RANGE_ATR_RATIO,
-        isCompression: rangeAtrRatio > 0 && rangeAtrRatio <= CONFIG.COMPRESSION_RANGE_ATR_RATIO,
+        isExpansion: rangeAtrRatio >= CANDLE_STRUCTURE_CONFIG.EXPANSION_RANGE_ATR_RATIO,
+        isCompression: rangeAtrRatio > 0 && rangeAtrRatio <= CANDLE_STRUCTURE_CONFIG.COMPRESSION_RANGE_ATR_RATIO,
     };
 }
 
@@ -281,7 +281,7 @@ function computeStrength(inputs: {
     const bodyScore = clamp(bodyRatio, 0, 1);
 
     // 2) Size relative to recent volatility, capped so an outlier can't blow past 1.
-    const rangeVsAtrScore = clamp(safeDivide(rangeAtrRatio, CONFIG.STRENGTH_RANGE_ATR_CAP, 0), 0, 1);
+    const rangeVsAtrScore = clamp(safeDivide(rangeAtrRatio, CANDLE_STRUCTURE_CONFIG.STRENGTH_RANGE_ATR_CAP, 0), 0, 1);
 
     // 3) Conviction of the close: how close it sits to the extreme of the range
     //    in the direction the candle actually closed. A bullish candle closing
@@ -301,7 +301,7 @@ function computeStrength(inputs: {
     //    whether that event is bullish or bearish.
     const patternScore = (isBullishEngulfing || isBearishEngulfing || isOutsideBar) ? 1 : 0;
 
-    const weights = CONFIG.STRENGTH_WEIGHTS;
+    const weights = CANDLE_STRUCTURE_CONFIG.STRENGTH_WEIGHTS;
     const composite =
         bodyScore * weights.body +
         rangeVsAtrScore * weights.rangeVsAtr +
@@ -411,8 +411,8 @@ export function getCandleStructure(
 
             strength,
 
-            volumeSpike: CandleAnalyzerV2.hasVolumeSpike(candles, CONFIG.VOLUME_SPIKE_LOOKBACK),
-            changePercentageZScore: CandleAnalyzerV2.getCandleChangeZScore(candles, CONFIG.CHANGE_ZSCORE_LENGTH),
+            volumeSpike: CandleAnalyzerV2.hasVolumeSpike(candles, CANDLE_STRUCTURE_CONFIG.VOLUME_SPIKE_LOOKBACK),
+            changePercentageZScore: CandleAnalyzerV2.getCandleChangeZScore(candles, CANDLE_STRUCTURE_CONFIG.CHANGE_ZSCORE_LENGTH),
 
             ...computeAtrAdjustedClose(candle, directionFlags.isBullish, directionFlags.isBearish),
 
@@ -516,8 +516,8 @@ export function getCandleStructure(
 
     const last = results[results.length - 1];
     if (last) {
-        last.volumeSpike = CandleAnalyzerV2.hasVolumeSpike(candles, CONFIG.VOLUME_SPIKE_LOOKBACK);
-        last.changePercentageZScore = CandleAnalyzerV2.getCandleChangeZScore(candles, CONFIG.CHANGE_ZSCORE_LENGTH);
+        last.volumeSpike = CandleAnalyzerV2.hasVolumeSpike(candles, CANDLE_STRUCTURE_CONFIG.VOLUME_SPIKE_LOOKBACK);
+        last.changePercentageZScore = CandleAnalyzerV2.getCandleChangeZScore(candles, CANDLE_STRUCTURE_CONFIG.CHANGE_ZSCORE_LENGTH);
         last.patterns = detectCandlePatterns(candles);
     }
     return last;

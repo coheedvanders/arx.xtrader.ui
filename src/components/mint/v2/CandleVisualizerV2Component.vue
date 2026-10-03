@@ -2175,6 +2175,8 @@ import type {
 import type { PriceZone } from "@/core/interfaces";
 import { CANDLE_PATTERN_BIAS, type CandlePattern } from "@/utility/v2/analysis/candlePatterns";
 import { klineDbUtilityV2 } from "@/utility/v2/klineDbUtilityV2";
+import { prepareSymbolForDisplay } from "@/utility/v2/liveDisplay";
+import { candleChangePct } from "@/utility/v2/simulationUtilityV2";
 import { getLiqudationHeatmap, type LiquidationHeatmapCell } from "@/utility/v2/analysis/liquidationHeatmap";
 import { predictMovement, recomputeLevelAtPrice, type MovementPrediction, type PredictedLevel } from "@/utility/v2/analysis/predictMovement";
 import { OrderMakerUtility } from "@/utility/OrderMakerUtility";
@@ -2556,9 +2558,12 @@ function syncCrossTimeframeCandles(info: SymbolInfo, primaryOpenTime: number, pr
       // waiting for the next full IndexedDB refresh.
       const prevEma = last?.ema200;
       const alpha = 2 / 201;
-      const seededEma = typeof prevEma === "number" && Number.isFinite(prevEma)
+      // Step the EMA only from a real previous value. ema200 is 0 while there
+      // is not yet 200 candles of history ("no EMA"); stepping from 0 gave a
+      // near-zero value that drew the line up from the bottom of the chart.
+      const seededEma = typeof prevEma === "number" && Number.isFinite(prevEma) && prevEma > 0
         ? prevEma + alpha * (price - prevEma)
-        : price;
+        : 0;
       arr.push({
         openTime: bucketOpen,
         closeTime: bucketOpen + TF_DURATION_MS[tf] - 1,
@@ -2566,6 +2571,7 @@ function syncCrossTimeframeCandles(info: SymbolInfo, primaryOpenTime: number, pr
         high: Number.isFinite(high) ? high : price,
         low: Number.isFinite(low) ? low : price,
         close: price,
+        change_pct: 0,
         volume: 0,
         atr: last?.atr,
         ema200: seededEma,
@@ -2575,6 +2581,7 @@ function syncCrossTimeframeCandles(info: SymbolInfo, primaryOpenTime: number, pr
     } else if (bucketOpen === last.openTime) {
       // Same forming candle on this timeframe — update it live from the tick.
       last.close = price;
+      last.change_pct = candleChangePct(last);
       if (Number.isFinite(high)) last.high = Math.max(last.high, high);
       if (Number.isFinite(low)) last.low = Math.min(last.low, low);
       if (last.candleStructure) {
@@ -2649,6 +2656,7 @@ function connectBinanceWs() {
 
       if (last && last.openTime === openTime) {
         last.close = price;
+        last.change_pct = candleChangePct(last);
         if (Number.isFinite(high)) last.high = Math.max(last.high, high);
         if (Number.isFinite(low)) last.low = Math.min(last.low, low);
         last.closeTime = Number(k.T);
@@ -2682,6 +2690,7 @@ function connectBinanceWs() {
           high: Number.isFinite(high) ? high : price,
           low: Number.isFinite(low) ? low : price,
           close: price,
+          change_pct: 0,
           volume: Number.isFinite(volume) ? volume : 0,
           candleStructure: { ...(last?.candleStructure ?? {}), isBullish: true, isBearish: false },
         } as CandleInfo);
@@ -2718,6 +2727,8 @@ async function loadSymbolInfo() {
       symbolInfo.value = props.providedSymbolInfo;
       return;
     }
+    // A live run keeps stored windows lazily up to date - see liveDisplay.ts.
+    await prepareSymbolForDisplay(activeSymbol.value);
     const info = await klineDbUtilityV2.getSymbolInfo(activeSymbol.value);
     if (!info) {
       loadError.value = `No cached SymbolInfo for "${activeSymbol.value}" in IndexedDB.`;
@@ -4366,7 +4377,10 @@ const crossTfEmaLines = computed<Record<Tf, { gi: number; price: number }[]>>(()
     for (const { gi, candle } of displayCandles.value) {
       while (j + 1 < tfCandles.length && tfCandles[j + 1].openTime <= candle.openTime) j++;
       const src = tfCandles[j];
-      if (src && src.openTime <= candle.openTime && typeof src.ema200 === "number" && Number.isFinite(src.ema200)) {
+      // ema200 is 0 until a candle has 200 candles of history behind it
+      // (CandleAnalyzerV2.calculateEMA) - "no EMA yet", not a price. Plotting
+      // those zeros drew the line up from the bottom of the chart.
+      if (src && src.openTime <= candle.openTime && typeof src.ema200 === "number" && Number.isFinite(src.ema200) && src.ema200 > 0) {
         pts.push({ gi, price: src.ema200 });
       }
     }

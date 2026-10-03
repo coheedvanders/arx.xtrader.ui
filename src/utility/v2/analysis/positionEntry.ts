@@ -2,85 +2,40 @@ import type { CandleInfo, PositionEntry } from "@/core/interfacesv2";
 import { PnlUtility } from "@/utility/PnlUtility";
 
 // #####################################################################
-// WHAT IS LEFT IN THIS FILE, AND WHAT IT ASSUMES
+// POSITION ENTRY - BLANK SLATE
 // #####################################################################
-// The entry logic has been cleared (see ENTRY — BLANK SLATE below). What
-// remains is position MECHANISM: opening a valid position from a decision,
-// advancing it one candle, resolving it, and the optional in-flight exit rules.
+// checkPositionEntry is the ONE hook runAnalysis calls to open a position, and
+// it returns null: no entry is encoded. Everything else here is MECHANISM, not
+// hypothesis:
+//   buildPositionEntry   turns a decision (side, stop, target) into a valid position
+//   couldEnterAt         the rolling sim / live "next" pre-check (see its contract)
+//   updatePositionEntry  advances an open position one candle (TP / SL / MID, gap-aware)
+//   forceClosePosition   duration cap, scheduled close, liquidation
+//   DEFAULT_LEVERAGE
+// Earlier entries (slingshot dive, quick reversal, HH-above-zone short, ...) and
+// the unused in-flight management rules are in git history.
 //
-// THE ATR EVERYTHING SCALES BY IS PERIOD 8, NOT 14.
-// `CandleAnalyzerV2.calculateATR` defaults to 14, but the lab calls it with 8:
-// recomputing the run archive at period 8 reproduces all 275,054 stored ATR
-// values to a relative error under 1e-12, while 14 matches 0.29% of them. So
-// `candle.atr` is eight candles of true range - two hours on 15m - which is a
-// far noisier quantity than the word "ATR" suggests. A 3-ATR stop sits much
-// closer to the noise than it reads, and an entry written here should be
-// chosen knowing that.
+// FACTS AN ENTRY HAS TO LIVE WITH:
 //
-// TWO COST FACTS AN ENTRY CANNOT ARGUE WITH, both arithmetic rather than
-// measurement, so they hold whatever the entry turns out to be:
+// candle.atr IS PERIOD 8 (two hours on 15m), not 14 - far noisier than "ATR"
+// suggests, so a 3-ATR stop sits closer to the noise than it reads.
 //
-//   fee / R = 2 x taker / (stopDistance / entryPrice)
-//     At 0.05% taker a stop 1% from price pays 10% of R in fees; a stop 0.1%
-//     from price pays 100% of R and cannot profit at any win rate. Some pairs
-//     cannot pay their own fees at all - measured in ATR, the round trip
-//     exceeds one full ATR on stablecoin, tokenised-gold and tokenised-equity
-//     perps (USDC, XAUT, PAXG, SPY, EWY, COPPER, XPT).
+// fee / R = 2 x taker / (stopDistance / entryPrice). At 0.05% taker a stop 1%
+// from price pays 10% of R in fees; 0.1% from price pays 100% and cannot profit
+// at any win rate.
 //
-//   breakeven reward:risk = (1 - p) / p
-//     at a win rate p. Not a target to tune - a line any entry has to clear.
+// breakeven reward:risk = (1 - p) / p at a win rate p - a line to clear, not a
+// target to tune.
 //
 // LEVERAGE CAPS THE STOP. At leverage L a move of 1/L against the position
-// consumes the margin, so a stop beyond that is a liquidation, not a stop. At
-// the median ATR of 0.659% of price that is 7.6 ATR at 20x, 15 ATR at 10x and
-// 30 ATR at 5x.
+// consumes the margin: at the median ATR of ~0.66% of price that is ~7.6 ATR at
+// 20x. A stop beyond it is a liquidation, not a stop.
+//
+// A RETURNED POSITION MUST: open at `gi` (the candle the walk reached - anything
+// earlier is look-ahead), carry candle.openTime, use the entry candle's ATR as
+// atrAtEntry, start walkingPnl at [0], and have sl / tp positive and on the right
+// side of entry. buildPositionEntry does all of that.
 // #####################################################################
-
-// =====================================================================
-// ENTRY — BLANK SLATE
-//
-// `checkPositionEntry` is the ONE hook `runAnalysis` calls to open a position.
-// It returns null. Everything that used to live here - the reversing-segment
-// geometry, the SHORT confirmation filters, the R:R gate, the extension fade -
-// has been removed so the entry can be written from observation rather than
-// edited around what was already there.
-//
-// WHAT WAS REMOVED, so it is not rediscovered by accident: the POTENTIAL_REVERSAL
-// trigger and its helpers (currentSegmentRange, broaderMoveAtr,
-// exhaustionWickRatio, trendZScoreConfirmAvg), the LONG/SHORT ATR level
-// constants, MIN_REWARD_RISK, and checkExtensionEntry with its levels and
-// config. None of it had a demonstrated edge; all of it is in git if a piece of
-// it is ever wanted back.
-//
-// WHAT WAS KEPT, because it is mechanism rather than hypothesis:
-//   updatePositionEntry   advances an open position one candle, resolves at
-//                         TP/SL/MID, gap-aware on both sides
-//   forceClosePosition    duration cap, scheduled close, liquidation
-//   position management   the in-flight exit rules, off by default
-//   DEFAULT_LEVERAGE
-//
-// =====================================================================
-// WHAT A POSITION NEEDS, SO THE NEXT ENTRY DOES NOT HAVE TO REDISCOVER IT
-// =====================================================================
-// A returned PositionEntry must satisfy the engine's invariants or the run's
-// accounting is wrong in ways that do not announce themselves:
-//
-//   openGi MUST be `gi`, the candle the walk has actually reached. Anything
-//     earlier is look-ahead: the entry price would predate the decision, and
-//     the position cap and margin freeze would both be bypassed. This cost a
-//     multi-hour run to find once.
-//   openTime MUST be `candle.openTime`, stamped at creation and never changed.
-//   atrAtEntry MUST be the entry candle's ATR. Excursions are recorded in PRICE
-//     and normalised against this later; an ATR read at any other candle makes
-//     MAE/MFE incomparable to the stop.
-//   walkingPnl starts as [0] and is written BY INDEX thereafter, never appended -
-//     the rolling caller re-walks the window, so appending grows it quadratically.
-//   sl and tp must both be positive and on the correct side of entry. An
-//     inverted or zero-width stop produces a position whose risk is undefined.
-//
-// `buildPositionEntry` below does all of that, so a new entry only has to decide
-// SIDE, STOP and TARGET.
-// =====================================================================
 
 /** What an entry decides. Everything else is bookkeeping. */
 export interface EntryDecision {
@@ -147,19 +102,21 @@ export function buildPositionEntry(
 }
 
 /**
- * THE ENTRY. Returns null until an analysis is encoded here.
+ * THE ENTRY. Returns null until an entry is encoded here.
  *
  * Everything needed is already on the candles by the time this is called:
- * `candle.atr`, `candle.ema200`, `candle.candleStructure`, `candle.volumeState`,
- * `candle.priceAction`, `candle.marketStructure`, `candle.trendState`,
- * `candle.conditions_met`, and the whole `candles` array up to `gi`.
+ * candle.atr, ema200, candleStructure, volumeState, priceAction, priceZone,
+ * imbalanceState, marketStructure, trendState, conditions_met, change_pct, and
+ * the whole `candles` array up to `gi`.
  *
  * CAUSALITY IS NOT CHECKED FOR YOU. `candles` is the full window, including
  * candles AFTER `gi`. Reading any of them is look-ahead and the run will look
  * excellent. Only read indices <= gi.
  *
- * `reversingDirection` and `reversingSegmentStartGi` are the trend snapshot
- * runAnalysis happens to have; they are passed for convenience and may be null.
+ * Open a position with buildPositionEntry(decision, candle, gi, margin, leverage),
+ * honouring allowLong / allowShort.
+ *
+ * WHEN YOU ADD AN ENTRY, update couldEnterAt below to match it.
  */
 export function checkPositionEntry(
     candle: CandleInfo,
@@ -172,244 +129,30 @@ export function checkPositionEntry(
     allowLong: boolean = true,
     allowShort: boolean = true
 ): PositionEntry | null {
-    void reversingDirection; void reversingSegmentStartGi;
-
-    if (allowLong) {
-        const slingshot = checkBullSlingshotDive(candle, candles, gi, margin, leverage);
-        if (slingshot) return slingshot;
-    }
-
+    void candle; void candles; void gi; void reversingDirection; void reversingSegmentStartGi;
+    void margin; void leverage; void allowLong; void allowShort;
     return null;
 }
 
-/** Reads a `"key: value"` entry that runAnalysis pushed into the candle's extras. */
-function readExtraNumber(candle: CandleInfo, key: string): number | null {
-    const entry = candle.extras?.find(e => typeof e === "string" && e.startsWith(key + ": "));
-    if (!entry) return null;
-    const value = Number(entry.slice(key.length + 2));
-    return Number.isFinite(value) ? value : null;
-}
-
 /**
- * Slingshot TP mode:
- *   "HIGHEST_ATR_PCT" - the original: close + highestAtr (as % of price).
- *   "DYNAMIC_ATR"     - close + k * ATR, k from the dive and the volatility regime
- *                       (see slingshotDynamicTpMultiplier).
- *   "RR"              - TP mirrors the SL distance: close + SLINGSHOT_TP_R * (close - sl).
+ * CHEAP PRE-CHECK for checkPositionEntry, from raw OHLCV only: can an entry
+ * possibly fire at `gi`? The rolling simulation and the live-run "next" skip
+ * the full 500-candle analysis on candles where this is false - that is most of
+ * their speed.
+ *
+ * CONTRACT - keep it in step with checkPositionEntry:
+ *   false must mean checkPositionEntry cannot return a position at gi.
+ *   It may say true when no entry fires (a superset is fine); it must never say
+ *   false when one would, or those runs silently miss the trade.
+ *
+ * Returns true (shortcut OFF - always correct, just slower) until an entry is
+ * written. Then make it the cheapest NECESSARY condition of that entry - e.g.
+ * for an entry tagged on a volume-spike candle:
+ *   CandleAnalyzerV2.hasVolumeSpike(candles.slice(0, gi + 1), CANDLE_STRUCTURE_CONFIG.VOLUME_SPIKE_LOOKBACK)
  */
-const SLINGSHOT_TP_MODE: "HIGHEST_ATR_PCT" | "DYNAMIC_ATR" | "RR" = "RR";
-/** RR mode: TP distance as a multiple of the SL distance (1.5 = TP 1.5x the SL distance). */
-const SLINGSHOT_TP_R = 1.5;
-/** Share of the remaining dive leg (entry -> where the dive started) to target. */
-const SLINGSHOT_TP_LEG_RETRACE = 0.382;
-/** ATR averaged over this many candles is the "normal" volatility (96 = 24h). */
-const SLINGSHOT_TP_VOL_LOOKBACK = 96;
-/** Bounds on the volatility adjustment sqrt(avgAtr / atr). */
-const SLINGSHOT_TP_VOL_FACTOR_MIN = 0.8;
-const SLINGSHOT_TP_VOL_FACTOR_MAX = 1.25;
-/** Bounds on the final multiplier, in ATR. */
-const SLINGSHOT_TP_MIN_ATR = 1.0;
-const SLINGSHOT_TP_MAX_ATR = 4.0;
-
-const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-
-/**
- * The dynamic TP multiplier for a slingshot long, in ATR:
- *
- *   legAtr    = (dive start high - close) / ATR. The dive start is the highest
- *               high from the oldest of the 5 recent swings up to the lowest low.
- *   volFactor = sqrt(avg ATR over the last 96 candles / current ATR), clamped
- *               0.8..1.25. Compressed volatility (ATR below its average) tends to
- *               expand, so the target stretches; expanded volatility shrinks it.
- *   k         = clamp(0.382 * legAtr * volFactor, 1, 4)
- *
- * Only candles <= gi are read.
- */
-function slingshotDynamicTpMultiplier(
-    candle: CandleInfo,
-    candles: CandleInfo[],
-    gi: number,
-    lowestIdx: number
-): { k: number; legAtr: number; volFactor: number } | null {
-    // Oldest of the 5 most recent structure swings known as of this candle.
-    let found = 0, rangeStart = -1;
-    for (let k = gi; k >= 0 && found < 5; k--) {
-        const ms = candles[k].marketStructure;
-        if (ms?.label && ms.confirmedOpenTime <= candle.openTime) { found++; rangeStart = k; }
-    }
-    if (found < 5 || rangeStart > lowestIdx) return null;
-
-    let legHigh = -Infinity;
-    for (let k = rangeStart; k <= lowestIdx; k++) legHigh = Math.max(legHigh, candles[k].high);
-    const legAtr = (legHigh - candle.close) / candle.atr;
-    if (!(legAtr > 0)) return null;
-
-    let atrSum = 0, atrCount = 0;
-    for (let k = Math.max(0, gi - SLINGSHOT_TP_VOL_LOOKBACK + 1); k <= gi; k++) {
-        if (candles[k].atr > 0) { atrSum += candles[k].atr; atrCount++; }
-    }
-    const volFactor = atrCount
-        ? clamp(Math.sqrt(atrSum / atrCount / candle.atr), SLINGSHOT_TP_VOL_FACTOR_MIN, SLINGSHOT_TP_VOL_FACTOR_MAX)
-        : 1;
-
-    const k = clamp(SLINGSHOT_TP_LEG_RETRACE * legAtr * volFactor, SLINGSHOT_TP_MIN_ATR, SLINGSHOT_TP_MAX_ATR);
-    return { k, legAtr, volFactor };
-}
-
-/**
- * LONG on BULL_SLINGSHOT_DIVE (mostly-bearish recent structure, then a
- * confirmed HL), with levels from the extras runAnalysis wrote:
- *
- *   TP = SLINGSHOT_TP_MODE: close + highestAtr%, close + k * ATR (dynamic),
- *        or close + R * (close - sl) (RR, 1.5:1 by default).
- *   SL = low of the lowestCandleOpenTime candle - this candle's ATR.
- *
- * Causal: the lowest candle is searched for at indices <= gi only.
- */
-function checkBullSlingshotDive(
-    candle: CandleInfo,
-    candles: CandleInfo[],
-    gi: number,
-    margin: number,
-    leverage: number
-): PositionEntry | null {
-    if (!(candle.conditions_met ?? []).includes("BULL_SLINGSHOT_DIVE")) return null;
-    if (!(candle.atr > 0)) return null;
-
-    const lowestCandleOpenTime = readExtraNumber(candle, "lowestCandleOpenTime");
-    const highestAtr = readExtraNumber(candle, "highestAtr");
-    if (lowestCandleOpenTime == null || highestAtr == null || !(highestAtr > 0)) return null;
-
-    let lowestIdx = -1;
-    for (let k = gi; k >= 0; k--) {
-        if (candles[k].openTime === lowestCandleOpenTime) { lowestIdx = k; break; }
-        if (candles[k].openTime < lowestCandleOpenTime) break;
-    }
-    if (lowestIdx < 0) return null;
-    const lowestCandle = candles[lowestIdx];
-
-    const sl = lowestCandle.low - candle.atr;
-
-    let tp: number;
-    let tpNote: string;
-    if (SLINGSHOT_TP_MODE === "RR") {
-        tp = candle.close + SLINGSHOT_TP_R * (candle.close - sl);
-        tpNote = `tp = ${SLINGSHOT_TP_R}R (sl distance ${(candle.close - sl).toPrecision(4)})`;
-    } else if (SLINGSHOT_TP_MODE === "DYNAMIC_ATR") {
-        const dyn = slingshotDynamicTpMultiplier(candle, candles, gi, lowestIdx);
-        if (!dyn) return null;
-        tp = candle.close + dyn.k * candle.atr;
-        tpNote = `tp = close + ${dyn.k.toFixed(2)} ATR (leg ${dyn.legAtr.toFixed(2)} ATR x ${SLINGSHOT_TP_LEG_RETRACE}, vol x${dyn.volFactor.toFixed(2)})`;
-    } else {
-        tp = candle.close * (1 + highestAtr / 100);
-        tpNote = `tp = close + ${highestAtr.toFixed(3)}% (highestAtr)`;
-    }
-
-    // buildPositionEntry rejects levels on the wrong side of entry.
-    return buildPositionEntry(
-        {
-            side: "LONG",
-            sl,
-            tp,
-            reason: {
-                trigger: "BULL_SLINGSHOT_DIVE",
-                reversingDirection: "DOWN",
-                segmentLow: sl,
-                segmentHigh: tp,
-                segmentMid: (sl + tp) / 2,
-                broaderMoveAtr: null, exhaustionWickRatio: null, trendZScoreAvg: null,
-                summary: `HL after bearish structure; ${tpNote}, `
-                    + `sl = low ${lowestCandle.low} of ${lowestCandleOpenTime} - atr ${candle.atr}`,
-            },
-        },
-        candle, gi, margin, leverage
-    );
-}
-
-const HH_ABOVE_ZONE_SHORT_CONDITIONS = [
-    "CONFIRMATION_HH",
-    "ABOVE_ZONE",
-    "GOOD_DISTANCE_ABOVE_ZONE",
-    "VOLATILE_ABS_ATR_CHANGE",
-    "RECENT_STRONG_PRICE_ACTION",
-    "ZONE_HAS_TREND_SETTER"
-] as const;
-
-/** Minimum reward:risk for checkHhAboveZoneShort - TP distance must be >= 1.5x the SL distance. */
-const HH_ABOVE_ZONE_SHORT_MIN_REWARD_RISK = 1.5;
-
-/**
- * SHORT when the candle carries every HH_ABOVE_ZONE_SHORT_CONDITIONS tag.
- *
- *   TP = close - ATR, but never past the zone: if that lands below
- *        priceZone.upper, TP = priceZone.upper instead.
- *   SL = high of the swing candle this candle confirmed - the candle whose
- *        marketStructure.confirmedOpenTime is THIS candle's openTime.
- *
- * Causal: that swing candle is gi-2 (runAnalysis confirms fractal swings
- * two candles late) and its marketStructure was written at this step, so
- * only candles <= gi are read.
- *
- * Returns null (no trade) when a level is missing or on the wrong side of
- * entry - e.g. the close is already above the swing high it just
- * confirmed, which leaves no stop above entry. buildPositionEntry refuses
- * those rather than trading an undefined risk.
- */
-function checkHhAboveZoneShort(
-    candle: CandleInfo,
-    candles: CandleInfo[],
-    gi: number,
-    margin: number,
-    leverage: number
-): PositionEntry | null {
-    const conditions = candle.conditions_met ?? [];
-    if (!HH_ABOVE_ZONE_SHORT_CONDITIONS.every(c => conditions.includes(c))) return null;
-
-    const zone = candle.priceZone;
-    if (!zone || !(candle.atr > 0)) return null;
-
-    // The confirmed swing: search back from gi only (never past it), for the
-    // candle whose HH confirmation is stamped with this candle's openTime.
-    let swing: CandleInfo | null = null;
-    for (let k = gi - 1; k >= Math.max(0, gi - 10); k--) {
-        const ms = candles[k]?.marketStructure;
-        if (ms && ms.label === "HH" && ms.confirmedOpenTime === candle.openTime) {
-            swing = candles[k];
-            break;
-        }
-    }
-    if (!swing) return null;
-
-    let tp = zone.upper;
-    //if (tp < zone.upper) tp = zone.upper;
-    const sl = swing.high;
-
-    // Reward:risk gate - the TP side must be at least 1.5x the SL side.
-    // SHORT: reward = entry - tp, risk = sl - entry. A level on the wrong
-    // side gives a non-positive reward or risk and is rejected here too.
-    const entry = candle.close;
-    const reward = entry - tp;
-    const risk = sl - entry;
-    if (!(reward > 0) || !(risk > 0) || reward < HH_ABOVE_ZONE_SHORT_MIN_REWARD_RISK * risk) return null;
-
-    return buildPositionEntry(
-        {
-            side: "SHORT",
-            sl,
-            tp,
-            reason: {
-                trigger: "HH_ABOVE_ZONE_FADE",
-                reversingDirection: "UP",
-                segmentLow: tp,
-                segmentHigh: sl,
-                segmentMid: (sl + tp) / 2,
-                broaderMoveAtr: null, exhaustionWickRatio: null, trendZScoreAvg: null,
-                summary: `HH confirmed ${((candle.close - zone.upper) / candle.close * 100).toFixed(2)}% above zone upper ${zone.upper}; `
-                    + `tp = zone upper ${tp}, sl = confirmed HH swing high ${sl}, R:R ${(reward / risk).toFixed(2)}`,
-            },
-        },
-        candle, gi, margin, leverage
-    );
+export function couldEnterAt(candles: CandleInfo[], gi: number): boolean {
+    void candles; void gi;
+    return true;
 }
 
 /**
@@ -606,7 +349,7 @@ export function forceClosePosition(
     // Recorded because status alone can't carry it - see
     // PositionEntry.closeReason. A WON here means "closed above water",
     // NOT "the strategy's take-profit was reached".
-    reason: "EXPIRED" | "AUTO_CLOSE" | "LIQUIDATED" | "MANAGED" = "EXPIRED"
+    reason: "EXPIRED" | "AUTO_CLOSE" | "LIQUIDATED" | "MANAGED" | "PERIOD_END" = "EXPIRED"
 ): PositionEntry {
     const pnlPercent = ((candle.close - position.entryPrice) / position.entryPrice) * (position.side === "LONG" ? 1 : -1) * position.leverage;
     const pnl = position.margin * pnlPercent;
@@ -641,353 +384,3 @@ export function forceClosePosition(
 }
 
 export const DEFAULT_LEVERAGE = 20;
-
-// =====================================================================
-// IN-FLIGHT POSITION MANAGEMENT
-//
-// Deciding to close, or to move the stop on, a position that is already
-// open — as opposed to the level geometry fixed at entry.
-//
-// EVERY RULE HERE DEFAULTS TO OFF, and that is not caution, it is the
-// measured result. All five families below were tested offline against
-// the recorded forward path of every POTENTIAL_REVERSAL candidate in
-// the 2026-09-21 -> 2026-09-26 capture (336 Binance USDT-M symbols,
-// 15m, 2,009 candidates with full 96-candle context and a round-trip
-// fee under 0.25 ATR), replayed on the shipped levels with a 250-candle
-// cap. Baseline, no management: netR +0.3825. Differences are paired
-// ROW BY ROW - same candidate, same forward path, only the rule differs -
-// with symbol-clustered standard errors.
-//
-//   BREAKEVEN_STOP     arm 0.5 ATR   -0.4680 +-0.0572   t  -8.2
-//                      arm 3.0 ATR   -0.2731 +-0.0366   t  -7.5
-//   TRAILING_GIVEBACK  arm 1.0/give 0.5  -0.4479 +-0.0549  t -8.2
-//                      arm 3.0/give 1.5  -0.2882 +-0.0382  t -7.5
-//   NO_PROGRESS        candle 16, <=0.5 ATR  -0.1526 +-0.0169  t -9.0
-//                      candle 48, <=1.0 ATR  -0.0880 +-0.0105  t -8.4
-//   EXTENSION_EXHAUSTION  >0.0 ATR   -0.0719 +-0.0107   t  -6.8
-//                         >1.0 ATR   -0.0205 +-0.0048   t  -4.3
-//   ADVERSE_STRUCTURE     >0.0 ATR   -0.0542 +-0.0222   t  -2.4
-//                         >1.0 ATR   +0.0005 +-0.0005   t  +1.0
-//
-// Twenty-five configurations, not one of them positive. The best was
-// indistinguishable from zero while firing on 18% of trades.
-//
-// WHY, and it is the same reason every time: THIS ENTRY IS EARLY. On the
-// same capture, median adverse excursion beats median favourable
-// excursion until roughly candle 48 - 1.17 ATR against 0.70 ATR within
-// the first 8 candles. Large early drawdown is the NORMAL life of a
-// winning trade here, so any rule that tightens on adverse movement
-// (breakeven, trailing, no-progress) cuts the winners, and any rule that
-// banks into strength (extension exhaustion) gives up the tail that has
-// to pay for a 52% stop-out rate. Breakeven armed at 0.5 ATR turned 43.9%
-// take-profits into 7.3%.
-//
-// So this exists as APPARATUS, deliberately inert: the mechanism to act
-// on an open position, ready for a rule that earns its way on. Turning
-// any of it on means re-running that comparison and beating zero.
-//
-// CAVEATS ON THOSE NUMBERS. One five-day window in one regime (a +9.27%
-// median altcoin rally), and the baseline it is measured against is
-// itself mostly that rally rather than edge. The comparisons are
-// relative and perfectly paired, which makes them far more robust than
-// the absolute level - but a January-February capture could still change
-// the ordering, and nothing here has been tested out of sample in time.
-// =====================================================================
-
-/**
- * Which rule asked for the exit. Recorded so an export can be grouped by
- * it; `closeReason` alone only says MANAGED.
- *
- * DUPLICATED as a string union on PositionEntry["managedExit"] in
- * interfacesv2.ts, deliberately - the interfaces file must not import
- * from this one, which imports from it. Keep the two in sync.
- */
-export type ManagedExitRule =
-    | "BREAKEVEN_STOP"
-    | "TRAILING_GIVEBACK"
-    | "EXTENSION_EXHAUSTION"
-    | "ADVERSE_STRUCTURE"
-    | "NO_PROGRESS";
-
-export interface PositionManagementConfig {
-    /**
-     * Once the position's best favourable excursion (as of the PREVIOUS
-     * candle) exceeds this many ATR, move the stop to entry plus the
-     * round-trip taker fee. 0 disables.
-     *
-     * Entry itself is NOT breakeven: exiting at the entry price still
-     * pays two taker fees. The level used is the one that actually
-     * returns zero.
-     */
-    breakevenArmAtr: number;
-    /**
-     * Once the best favourable excursion (as of the PREVIOUS candle)
-     * exceeds trailArmAtr, keep the stop trailGiveBackAtr below that
-     * peak. 0 on either disables.
-     */
-    trailArmAtr: number;
-    trailGiveBackAtr: number;
-    /**
-     * Close at this candle's close when it closes more than this many
-     * ATR beyond the prior `extremeLookback` extreme in the position's
-     * OWN favourable direction - bank into the extension. null disables.
-     */
-    extensionExitAtr: number | null;
-    /**
-     * Close at this candle's close when it closes more than this many
-     * ATR beyond the prior `extremeLookback` extreme AGAINST the
-     * position - the structure the trade was taken on has broken.
-     * null disables.
-     */
-    adverseStructureAtr: number | null;
-    /**
-     * At exactly this many candles after entry, close if the best
-     * favourable excursion so far has not exceeded noProgressMinFavAtr.
-     * Evaluated once, on that candle only. 0 disables.
-     */
-    noProgressCandles: number;
-    noProgressMinFavAtr: number;
-    /**
-     * Lookback for the prior extreme used by the two extension rules.
-     * 96 candles = 24h on 15m. Measured: shorter windows were uniformly
-     * worse for the entry filters, and the extension research found the
-     * effect flat in threshold, so this is the one structural parameter
-     * here with any support behind it.
-     */
-    extremeLookback: number;
-}
-
-/**
- * Every rule off. This is the default, so a caller that does not pass a
- * config is provably unchanged from before this section existed.
- */
-export const POSITION_MANAGEMENT_OFF: PositionManagementConfig = {
-    breakevenArmAtr: 0,
-    trailArmAtr: 0,
-    trailGiveBackAtr: 0,
-    extensionExitAtr: null,
-    adverseStructureAtr: null,
-    noProgressCandles: 0,
-    noProgressMinFavAtr: 0,
-    extremeLookback: 96,
-};
-
-export interface PositionManagementDecision {
-    /**
-     * A new stop price, or null to leave the stop alone. Only ever moves
-     * the stop in the position's favour, so applying it twice for the
-     * same candle is idempotent - which matters, because the rolling
-     * simulation re-walks its whole window on every shift and will
-     * evaluate the same candle many times.
-     */
-    stopTo: number | null;
-    /** A close-now instruction, or null. Fills at this candle's close. */
-    exit: { rule: ManagedExitRule; detail: string } | null;
-}
-
-/**
- * Best favourable excursion in ATR, over candles openGi+1 .. gi
- * INCLUSIVE.
- *
- * Including candle `gi` is not look-ahead. By the time this runs, candle
- * `gi` is complete - updatePositionEntry has already resolved it against
- * the stop and target in force for it - and any stop this arms applies
- * from candle gi+1 onward. The within-candle ordering problem (a candle
- * carries a high, a low and a close but no sequence) only bites a rule
- * that acts on candle gi's extreme DURING candle gi, which this does
- * not. An earlier version of this function stopped at gi-1 and armed
- * every stop one candle late, which did not match the offline
- * measurement the header quotes.
- *
- * NOT read from position.mfe / position.mfePrice even though mfePrice
- * holds exactly this value after updatePositionEntry: deriving it from
- * the candle array makes the function independent of call order and of
- * the shared mutable PositionEntry (engine invariant 5), so it cannot
- * silently read a stale or a future peak. position.mfe would be wrong
- * outright - it re-normalises by each candle's own ATR, so it is not
- * comparable to a fixed price level (invariant 4).
- *
- * Normalised by ATR AT ENTRY, so it is comparable to sl and tp, which
- * are fixed prices derived from entry ATR.
- */
-function peakFavourableAtr(position: PositionEntry, candles: CandleInfo[], gi: number): number {
-    const atr = position.atrAtEntry > 0 ? position.atrAtEntry : 0;
-    if (!(atr > 0)) return 0;
-    let best = 0;
-    for (let j = position.openGi + 1; j <= gi && j < candles.length; j++) {
-        const reach = position.side === "LONG"
-            ? candles[j].high - position.entryPrice
-            : position.entryPrice - candles[j].low;
-        if (reach > best) best = reach;
-    }
-    return best / atr;
-}
-
-/**
- * How far this candle's close sits beyond the prior `lookback` extreme,
- * in ATR at entry. Positive means it closed past it.
- *
- * `favourable` picks which extreme: for a LONG, the favourable side is
- * the prior high (price broke out upward) and the adverse side is the
- * prior low. Mirrored for a SHORT. The window ENDS at gi-1, so the
- * current candle is never part of the extreme it is being compared to.
- */
-function closeBeyondExtremeAtr(
-    position: PositionEntry,
-    candles: CandleInfo[],
-    gi: number,
-    lookback: number,
-    favourable: boolean
-): number | null {
-    const atr = position.atrAtEntry > 0 ? position.atrAtEntry : 0;
-    if (!(atr > 0) || gi < 1) return null;
-    const start = Math.max(0, gi - lookback);
-    if (start >= gi) return null;
-    let high = -Infinity;
-    let low = Infinity;
-    for (let j = start; j < gi; j++) {
-        if (candles[j].high > high) high = candles[j].high;
-        if (candles[j].low < low) low = candles[j].low;
-    }
-    if (!isFinite(high) || !isFinite(low)) return null;
-    const close = candles[gi].close;
-    const upward = position.side === "LONG" ? favourable : !favourable;
-    return upward ? (close - high) / atr : (low - close) / atr;
-}
-
-/**
- * Decides what to do with an ALREADY-OPEN position on candle `gi`.
- * Pure: reads, never mutates. Returns nulls when nothing applies.
- *
- * CALL ORDER MATTERS. Call this AFTER updatePositionEntry for the same
- * candle, and only while `position.status === "OPEN"`. A stop or target
- * touched on this candle takes precedence over any discretionary exit -
- * that is how the offline replay resolved it, and resolving it the other
- * way would let a managed exit rescue a trade that had already been
- * stopped out, which is look-ahead in the most expensive direction.
- *
- * A returned `stopTo` applies from the NEXT candle, because this candle
- * has already been evaluated against the stop that was in force for it.
- *
- * Every input is candle `gi`'s close or earlier.
- */
-export function evaluatePositionManagement(
-    position: PositionEntry,
-    candles: CandleInfo[],
-    gi: number,
-    config: PositionManagementConfig = POSITION_MANAGEMENT_OFF
-): PositionManagementDecision {
-    const none: PositionManagementDecision = { stopTo: null, exit: null };
-    if (position.status !== "OPEN") return none;
-    if (gi <= position.openGi || gi >= candles.length) return none;
-    const atr = position.atrAtEntry > 0 ? position.atrAtEntry : 0;
-    if (!(atr > 0)) return none;
-
-    const isLong = position.side === "LONG";
-    const peak = peakFavourableAtr(position, candles, gi);
-
-    // ---- stop moves. Both only ever tighten, and only in the
-    // position's favour, so repeated evaluation of the same candle
-    // converges on the same value.
-    let stopTo: number | null = null;
-    const proposeStop = (price: number): void => {
-        const better = isLong ? price > position.sl : price < position.sl;
-        if (!better) return;
-        // NO "wrong side of current price" GUARD, deliberately. An earlier
-        // version refused to move the stop past the current close, which
-        // sounds prudent and is wrong twice over: it silently blocks
-        // arming in exactly the case a breakeven stop exists for - price
-        // spiked, armed the rule, then gave it all back before the candle
-        // closed - and it made this code stop matching the offline
-        // measurement the header quotes (46 of 2,612 breakeven trades and
-        // 140 of 2,604 trailing trades diverged, all in the rule's favour,
-        // which is the direction that flatters a backtest).
-        //
-        // A stop that lands on the wrong side of price is a stop the
-        // market has already passed. updatePositionEntry then closes the
-        // position on the next candle at min(open, sl) for a LONG - the
-        // gap-aware fill - which is what happens to a resting stop placed
-        // through the market. The approximation is that a real exchange
-        // would trigger it on this candle rather than the next; next
-        // open is normally within a tick of this close.
-        if (stopTo == null || (isLong ? price > stopTo : price < stopTo)) stopTo = price;
-    };
-
-    if (config.breakevenArmAtr > 0 && peak > config.breakevenArmAtr) {
-        // round trip as a fraction of notional, taken from PnlUtility so
-        // the rate lives in exactly one place
-        const roundTripFraction = PnlUtility.calculateTakerFeeOnNotional(1) * 2;
-        const offset = position.entryPrice * roundTripFraction;
-        proposeStop(isLong ? position.entryPrice + offset : position.entryPrice - offset);
-    }
-    if (config.trailArmAtr > 0 && config.trailGiveBackAtr > 0 && peak > config.trailArmAtr) {
-        const peakPrice = isLong
-            ? position.entryPrice + peak * atr
-            : position.entryPrice - peak * atr;
-        const give = config.trailGiveBackAtr * atr;
-        proposeStop(isLong ? peakPrice - give : peakPrice + give);
-    }
-
-    // ---- discretionary exits, all filling at this candle's close.
-    // First match wins; the order is fixed so the result is
-    // deterministic, and the reason recorded is the rule that fired.
-    let exit: PositionManagementDecision["exit"] = null;
-
-    if (exit == null && config.extensionExitAtr != null) {
-        const beyond = closeBeyondExtremeAtr(position, candles, gi, config.extremeLookback, true);
-        if (beyond != null && beyond > config.extensionExitAtr) {
-            exit = {
-                rule: "EXTENSION_EXHAUSTION",
-                detail: `closed ${beyond.toFixed(2)} ATR beyond the prior ${config.extremeLookback}-candle extreme, in favour`,
-            };
-        }
-    }
-    if (exit == null && config.adverseStructureAtr != null) {
-        const beyond = closeBeyondExtremeAtr(position, candles, gi, config.extremeLookback, false);
-        if (beyond != null && beyond > config.adverseStructureAtr) {
-            exit = {
-                rule: "ADVERSE_STRUCTURE",
-                detail: `closed ${beyond.toFixed(2)} ATR beyond the prior ${config.extremeLookback}-candle extreme, against`,
-            };
-        }
-    }
-    if (exit == null && config.noProgressCandles > 0 && gi - position.openGi === config.noProgressCandles) {
-        // peak already includes candle gi, so the check at candle N sees
-        // exactly N candles of evidence
-        if (peak <= config.noProgressMinFavAtr) {
-            exit = {
-                rule: "NO_PROGRESS",
-                detail: `best reach ${peak.toFixed(2)} ATR after ${config.noProgressCandles} candles`,
-            };
-        }
-    }
-
-    return { stopTo, exit };
-}
-
-/**
- * Applies a decision from evaluatePositionManagement.
- *
- * A stop move is written straight onto the position. An exit closes it
- * at this candle's close, reusing forceClosePosition so the pnl formula,
- * the exit taker fee and the index-based walkingPnl write are the single
- * shared implementation rather than a second copy that can drift.
- *
- * Returns true when the position was CLOSED, so the caller can stop
- * advancing it.
- */
-export function applyPositionManagement(
-    position: PositionEntry,
-    candle: CandleInfo,
-    closeGi: number,
-    decision: PositionManagementDecision
-): boolean {
-    if (decision.stopTo != null) position.sl = decision.stopTo;
-    if (decision.exit == null) return false;
-    forceClosePosition(position, candle, closeGi, "MANAGED");
-    // The rule that asked for it. closeReason only says MANAGED, and an
-    // export that cannot tell a trailing stop from a structure break
-    // cannot be used to judge either.
-    position.managedExit = { rule: decision.exit.rule, detail: decision.exit.detail };
-    return true;
-}
