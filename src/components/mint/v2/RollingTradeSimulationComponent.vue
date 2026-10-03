@@ -16,7 +16,11 @@
             <ButtonComponent rounded color="ghost" @click="downloadAllSymbolWindows" :disabled="!canDownloadWindows">
                 {{ windowDownloadInProgress ? 'downloading…' : 'download all symbols (this period)' }}
             </ButtonComponent>
-            <span class="ml-sm">cap: <strong>{{ maxConcurrentPositionsInput }}</strong></span>
+            <label class="ml-sm" title="Live-like: every tick each symbol's latest 500 candles are analysed from scratch and checkPositionEntry alone decides an entry at the 500th candle. No position cap, budget or interest gate, no candle-life cap, and no auto-close / liquidation stop. Margin follows the margin settings (dynamic margin included).">
+                <input type="checkbox" v-model="mimicRunSimulation" :disabled="isRunning" />
+                positionEntry only (no gates)
+            </label>
+            <span class="ml-sm" v-if="!mimicRunSimulation">cap: <strong>{{ maxConcurrentPositionsInput }}</strong></span>
             <span class="ml-sm hint" v-if="!startDateTimeInput">set a start date/time in Settings to run</span>
         </div>
 
@@ -64,6 +68,11 @@
                         ⛔ ACCOUNT DEAD — balance can no longer fund the minimum position and
                         nothing is open. Not a liquidation: the account bled out through
                         ordinary stops, so no maintenance-margin close was ever triggered.
+                    </div>
+                    <div v-if="balanceWentNegative" class="live-warning">
+                        ⛔ BALANCE NEGATIVE — the free balance (after the margin held by open
+                        positions, fees, funding and closed pnl) went below zero, so the account
+                        could not have carried this book. Run stopped.
                     </div>
                     <div v-if="wasLiquidated" class="live-warning">
                         ⛔ LIQUIDATED — margin balance fell to maintenance margin. Every position was
@@ -1131,6 +1140,19 @@ const PAGE_SIZE = 50;
 
 const START_DATETIME_STORAGE_KEY = 'rolling-simulation-start-datetime';
 const startDateTimeInput = ref(localStorage.getItem(START_DATETIME_STORAGE_KEY) ?? '');
+
+// "positionEntry only (no gates)". The live-bot loop, nothing else: every tick
+// each symbol's latest 500 candles are analysed FROM SCRATCH (as a live fetch of
+// 500 would be), checkPositionEntry alone decides an entry at the 500th candle,
+// and the window shifts by one. No cap, budget or interest gate, no candle-life
+// cap (a position's own maxDurationCandles still applies), and no auto-close /
+// liquidation / account-dead stop. Margin still follows the margin settings
+// (dynamic margin included), frozen per tick as in the gated mode. Every symbol is
+// analysed on every tick, so it is slower than the gated mode - that is the
+// real per-candle cost of the live loop.
+const MIMIC_RUN_SIMULATION_KEY = 'rolling-simulation-mimic-run-simulation';
+const mimicRunSimulation = ref(localStorage.getItem(MIMIC_RUN_SIMULATION_KEY) !== 'false');
+watch(mimicRunSimulation, (v) => localStorage.setItem(MIMIC_RUN_SIMULATION_KEY, String(v)));
 watch(startDateTimeInput, (value) => {
     localStorage.setItem(START_DATETIME_STORAGE_KEY, value);
 });
@@ -2322,6 +2344,7 @@ function resetRun() {
     liquidationEvents.value = [];
     wasLiquidated.value = false;
     accountDied.value = false;
+    balanceWentNegative.value = false;
     remainingBudgetThisTick = 0;
     openPositionCountThisTick = 0;
     marginThisTick = 0;
@@ -2528,8 +2551,11 @@ async function initializeSymbol(symbol: string, startTimestamp: number): Promise
     // Everything else the analysis produces - trend segments, ATR, market
     // structure, volume state - is still computed and retained; only
     // position creation is suppressed.
+    const mimic = mimicRunSimulation.value;
     const { openPosition } = await SimulationUtilityV2.runMarketAnalysis(
-        symbolInfo, [], null, maxPositionDurationInput.value, effectiveMargin.value,
+        symbolInfo, [], null,
+        mimic ? undefined : maxPositionDurationInput.value,
+        effectiveMargin.value,
         false, true, true,
         // Warm-up opens nothing (allowNewEntry is false), but the index is
         // passed anyway so this call can never behave differently from the
@@ -2770,6 +2796,7 @@ async function shiftSymbolWindow(symbol: string, state: SymbolRollingState): Pro
     state.window.push(nextCandle);
     state.window.shift();
 
+    const mimic = mimicRunSimulation.value;
     if (state.openPosition) {
         state.openPosition.openGi -= 1;
         if (state.openPosition.closeGi != null) state.openPosition.closeGi -= 1;
@@ -2790,7 +2817,7 @@ async function shiftSymbolWindow(symbol: string, state: SymbolRollingState): Pro
     // gap to repair. The entry gate itself is unaffected: the interest
     // check reads raw OHLCV off the window, never the computed fields, and
     // the window is still advanced above.
-    const allowEntryThisSymbol = shouldAllowNewEntry(state);
+    const allowEntryThisSymbol = mimic ? true : shouldAllowNewEntry(state);
     if (!state.openPosition && !allowEntryThisSymbol) {
         skippedSymbolTicks.value++;
         // RAW ONLY, and that is the honest record. The skip means no analysis
@@ -2818,7 +2845,9 @@ async function shiftSymbolWindow(symbol: string, state: SymbolRollingState): Pro
     // what shouldAllowNewEntry itself is evaluating.
     const analysisStartedAt = performance.now();
     const { openPosition } = await SimulationUtilityV2.runMarketAnalysis(
-        symbolInfo, [], state.openPosition, maxPositionDurationInput.value, marginThisTick,
+        symbolInfo, [], state.openPosition,
+        mimic ? undefined : maxPositionDurationInput.value,
+        marginThisTick,
         allowEntryThisSymbol, true, true,
         // THE FIX. A new position may only be created at the candle the
         // simulation has actually reached. Without this, runAnalysis's
@@ -3066,6 +3095,8 @@ const wasLiquidated = ref(false);
  *  terminal, but NOT a liquidation. Kept separate so the two are never
  *  conflated when reading a result. */
 const accountDied = ref(false);
+/** "positionEntry only" mode stops the run once the free balance goes below zero. */
+const balanceWentNegative = ref(false);
 
 /**
  * Cross-margin liquidation check: when margin balance falls to or below
@@ -3582,7 +3613,7 @@ async function runRollingSimulation() {
             // Auto-close rules are only consulted if the account survived.
             accrueFunding(previousSimTime, currentSimTime);
 
-            if (checkLiquidation(currentSimTime)) {
+            if (!mimicRunSimulation.value && checkLiquidation(currentSimTime)) {
                 candlesProcessedSoFar++;
                 recordTick(currentSimTime, settledKeys);
                 statusMessage.value = `LIQUIDATED at ${new Date(currentSimTime).toLocaleString()} — margin balance fell to maintenance margin. Run stopped.`;
@@ -3600,7 +3631,7 @@ async function runRollingSimulation() {
             // Open pnl computed fresh here, not read from stats - see
             // computeCurrentOpenPnl for why that distinction matters.
             const openPnlNow = computeCurrentOpenPnl();
-            const firedRules = triggeredAutoCloseRules(currentSimTime, openPnlNow);
+            const firedRules = mimicRunSimulation.value ? [] : triggeredAutoCloseRules(currentSimTime, openPnlNow);
             if (firedRules.length) {
                 autoCloseAllPositions(currentSimTime, firedRules, openPnlNow);
             }
@@ -3617,7 +3648,18 @@ async function runRollingSimulation() {
             // as a flat tail and wastes the rest of the walk. Distinct from
             // liquidation: nothing was force-closed, the account simply bled
             // out through ordinary stops.
-            if (openPositionsDisplay.value.length === 0 && balance.value < effectiveMargin.value) {
+            // "positionEntry only" mode has no liquidation or budget check, so
+            // it stops here instead: a negative free balance means the account
+            // could not have held these positions.
+            if (mimicRunSimulation.value && balance.value < 0) {
+                balanceWentNegative.value = true;
+                statusMessage.value = `BALANCE NEGATIVE at ${new Date(currentSimTime).toLocaleString()} — `
+                    + `balance ${balance.value.toFixed(2)} with ${openPositionsDisplay.value.length} open `
+                    + `(margin ${estimatedMarginUsed.value.toFixed(2)}, open pnl ${stats.value.totalOpenPnl.toFixed(2)}). Run stopped.`;
+                break;
+            }
+
+            if (!mimicRunSimulation.value && openPositionsDisplay.value.length === 0 && balance.value < effectiveMargin.value) {
                 accountDied.value = true;
                 statusMessage.value = `ACCOUNT DEAD at ${new Date(currentSimTime).toLocaleString()} — `
                     + `balance ${balance.value.toFixed(2)} cannot fund the minimum position `

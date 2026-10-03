@@ -693,7 +693,7 @@ export class SimulationUtilityV2 {
                 if(candle.close > candle.priceZone.upper){
                     candle.conditions_met.push("ABOVE_ZONE");
 
-                    if(candle.outsidePriceZoneMetrics!.fromUpperPct > 1){
+                    if((candle.outsidePriceZoneMetrics?.fromUpperPct ?? 0) > 1){
                         candle.conditions_met.push("GOOD_DISTANCE_ABOVE_ZONE");
                     }
                 }

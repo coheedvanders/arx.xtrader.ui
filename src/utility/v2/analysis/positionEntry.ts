@@ -191,11 +191,77 @@ function readExtraNumber(candle: CandleInfo, key: string): number | null {
 }
 
 /**
- * LONG on BULL_SLINGSHOT_DIVE (mostly-bearish recent structure, then a
- * confirmed HL), with both levels from the extras runAnalysis wrote:
+ * Slingshot TP mode:
+ *   "HIGHEST_ATR_PCT" - the original: close + highestAtr (as % of price).
+ *   "DYNAMIC_ATR"     - close + k * ATR, k from the dive and the volatility regime
+ *                       (see slingshotDynamicTpMultiplier).
+ *   "RR"              - TP mirrors the SL distance: close + SLINGSHOT_TP_R * (close - sl).
+ */
+const SLINGSHOT_TP_MODE: "HIGHEST_ATR_PCT" | "DYNAMIC_ATR" | "RR" = "RR";
+/** RR mode: TP distance as a multiple of the SL distance (1.5 = TP 1.5x the SL distance). */
+const SLINGSHOT_TP_R = 1.5;
+/** Share of the remaining dive leg (entry -> where the dive started) to target. */
+const SLINGSHOT_TP_LEG_RETRACE = 0.382;
+/** ATR averaged over this many candles is the "normal" volatility (96 = 24h). */
+const SLINGSHOT_TP_VOL_LOOKBACK = 96;
+/** Bounds on the volatility adjustment sqrt(avgAtr / atr). */
+const SLINGSHOT_TP_VOL_FACTOR_MIN = 0.8;
+const SLINGSHOT_TP_VOL_FACTOR_MAX = 1.25;
+/** Bounds on the final multiplier, in ATR. */
+const SLINGSHOT_TP_MIN_ATR = 1.0;
+const SLINGSHOT_TP_MAX_ATR = 4.0;
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/**
+ * The dynamic TP multiplier for a slingshot long, in ATR:
  *
- *   TP = close + highestAtr. highestAtr is a closeAtrAbsChange, i.e. ATR as
- *        a PERCENT of price, so it is applied as close * (1 + highestAtr/100).
+ *   legAtr    = (dive start high - close) / ATR. The dive start is the highest
+ *               high from the oldest of the 5 recent swings up to the lowest low.
+ *   volFactor = sqrt(avg ATR over the last 96 candles / current ATR), clamped
+ *               0.8..1.25. Compressed volatility (ATR below its average) tends to
+ *               expand, so the target stretches; expanded volatility shrinks it.
+ *   k         = clamp(0.382 * legAtr * volFactor, 1, 4)
+ *
+ * Only candles <= gi are read.
+ */
+function slingshotDynamicTpMultiplier(
+    candle: CandleInfo,
+    candles: CandleInfo[],
+    gi: number,
+    lowestIdx: number
+): { k: number; legAtr: number; volFactor: number } | null {
+    // Oldest of the 5 most recent structure swings known as of this candle.
+    let found = 0, rangeStart = -1;
+    for (let k = gi; k >= 0 && found < 5; k--) {
+        const ms = candles[k].marketStructure;
+        if (ms?.label && ms.confirmedOpenTime <= candle.openTime) { found++; rangeStart = k; }
+    }
+    if (found < 5 || rangeStart > lowestIdx) return null;
+
+    let legHigh = -Infinity;
+    for (let k = rangeStart; k <= lowestIdx; k++) legHigh = Math.max(legHigh, candles[k].high);
+    const legAtr = (legHigh - candle.close) / candle.atr;
+    if (!(legAtr > 0)) return null;
+
+    let atrSum = 0, atrCount = 0;
+    for (let k = Math.max(0, gi - SLINGSHOT_TP_VOL_LOOKBACK + 1); k <= gi; k++) {
+        if (candles[k].atr > 0) { atrSum += candles[k].atr; atrCount++; }
+    }
+    const volFactor = atrCount
+        ? clamp(Math.sqrt(atrSum / atrCount / candle.atr), SLINGSHOT_TP_VOL_FACTOR_MIN, SLINGSHOT_TP_VOL_FACTOR_MAX)
+        : 1;
+
+    const k = clamp(SLINGSHOT_TP_LEG_RETRACE * legAtr * volFactor, SLINGSHOT_TP_MIN_ATR, SLINGSHOT_TP_MAX_ATR);
+    return { k, legAtr, volFactor };
+}
+
+/**
+ * LONG on BULL_SLINGSHOT_DIVE (mostly-bearish recent structure, then a
+ * confirmed HL), with levels from the extras runAnalysis wrote:
+ *
+ *   TP = SLINGSHOT_TP_MODE: close + highestAtr%, close + k * ATR (dynamic),
+ *        or close + R * (close - sl) (RR, 1.5:1 by default).
  *   SL = low of the lowestCandleOpenTime candle - this candle's ATR.
  *
  * Causal: the lowest candle is searched for at indices <= gi only.
@@ -214,15 +280,30 @@ function checkBullSlingshotDive(
     const highestAtr = readExtraNumber(candle, "highestAtr");
     if (lowestCandleOpenTime == null || highestAtr == null || !(highestAtr > 0)) return null;
 
-    let lowestCandle: CandleInfo | null = null;
+    let lowestIdx = -1;
     for (let k = gi; k >= 0; k--) {
-        if (candles[k].openTime === lowestCandleOpenTime) { lowestCandle = candles[k]; break; }
+        if (candles[k].openTime === lowestCandleOpenTime) { lowestIdx = k; break; }
         if (candles[k].openTime < lowestCandleOpenTime) break;
     }
-    if (!lowestCandle) return null;
+    if (lowestIdx < 0) return null;
+    const lowestCandle = candles[lowestIdx];
 
-    const tp = candle.close * (1 + highestAtr / 100);
     const sl = lowestCandle.low - candle.atr;
+
+    let tp: number;
+    let tpNote: string;
+    if (SLINGSHOT_TP_MODE === "RR") {
+        tp = candle.close + SLINGSHOT_TP_R * (candle.close - sl);
+        tpNote = `tp = ${SLINGSHOT_TP_R}R (sl distance ${(candle.close - sl).toPrecision(4)})`;
+    } else if (SLINGSHOT_TP_MODE === "DYNAMIC_ATR") {
+        const dyn = slingshotDynamicTpMultiplier(candle, candles, gi, lowestIdx);
+        if (!dyn) return null;
+        tp = candle.close + dyn.k * candle.atr;
+        tpNote = `tp = close + ${dyn.k.toFixed(2)} ATR (leg ${dyn.legAtr.toFixed(2)} ATR x ${SLINGSHOT_TP_LEG_RETRACE}, vol x${dyn.volFactor.toFixed(2)})`;
+    } else {
+        tp = candle.close * (1 + highestAtr / 100);
+        tpNote = `tp = close + ${highestAtr.toFixed(3)}% (highestAtr)`;
+    }
 
     // buildPositionEntry rejects levels on the wrong side of entry.
     return buildPositionEntry(
@@ -237,7 +318,7 @@ function checkBullSlingshotDive(
                 segmentHigh: tp,
                 segmentMid: (sl + tp) / 2,
                 broaderMoveAtr: null, exhaustionWickRatio: null, trendZScoreAvg: null,
-                summary: `HL after bearish structure; tp = close + ${highestAtr.toFixed(3)}% (highestAtr), `
+                summary: `HL after bearish structure; ${tpNote}, `
                     + `sl = low ${lowestCandle.low} of ${lowestCandleOpenTime} - atr ${candle.atr}`,
             },
         },
