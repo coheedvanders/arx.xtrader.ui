@@ -42,13 +42,17 @@
         </label>
         <ButtonComponent v-if="!isCapturing" @click="autoCapture" :disabled="!canAutoCapture" rounded class="mr-sm">auto capture</ButtonComponent>
         <ButtonComponent v-else @click="stopCaptureRequested = true" :disabled="stopCaptureRequested" color="danger" rounded class="mr-sm">
-            {{ stopCaptureRequested ? 'stopping…' : `stop capture (${capturedSymbolCount}/${chocoMintoStore.futureSymbols.length})` }}
+            {{ downloadProgress ? 'downloading…' : stopCaptureRequested ? 'stopping…' : `stop capture (${capturedSymbolCount}/${chocoMintoStore.futureSymbols.length})` }}
         </ButtonComponent>
         <label class="mr-sm" title="When the capture finishes (or is stopped), download every captured symbol as slim, split zips - same as the chart's Download ALL">
             <input type="checkbox" v-model="autoDownloadAfterCapture" :disabled="isCapturing" />
             auto download
         </label>
         <span class="mr-sm" v-if="captureSummary">{{ captureSummary }}</span>
+        <span class="mr-sm" v-if="downloadProgress" :title="downloadProgress.label">
+            <progress :value="downloadProgress.value" max="100" style="width: 140px; vertical-align: middle;"></progress>
+            {{ downloadProgress.label }}
+        </span>
 
         <span class="mr-sm" v-if="steppedCandleCount > 0">
             +{{ steppedCandleCount }} candle{{ steppedCandleCount === 1 ? '' : 's' }}
@@ -336,6 +340,8 @@ const stopCaptureRequested = ref(false);
 const capturedSymbolCount = ref(0);
 const capturedRun = ref(false);
 const captureSummary = ref('');
+/** Auto-download progress after a capture; null when no download is running. */
+const downloadProgress = ref<{ value: number; label: string } | null>(null);
 const autoDownloadAfterCapture = ref(localStorage.getItem('auto-download-after-capture') !== 'false');
 watch(autoDownloadAfterCapture, (val) => localStorage.setItem('auto-download-after-capture', String(val)));
 
@@ -568,9 +574,27 @@ async function autoCapture() {
             // simply absent from the zips.
             const symbols = chocoMintoStore.futureSymbols.map((f) => f.symbol);
             const summary = captureSummary.value;
+            // Reading the symbols out of IndexedDB is ~70% of the bar; the
+            // last 30% is compressing the final part, the slow step. A part
+            // flushed mid-way reports its own compression in the label only.
+            downloadProgress.value = { value: 0, label: `reading 0/${symbols.length}` };
             const { parts } = await downloadSymbolInfoZip(symbols, {
                 slim: true,
-                onProgress: (current, total) => { captureSummary.value = `${summary} · zipping ${current}/${total}`; },
+                onExportProgress: (p) => {
+                    const readPct = (p.current / p.total) * 70;
+                    const left = p.total - p.current;
+                    if (p.phase === 'reading') {
+                        downloadProgress.value = { value: readPct, label: `reading ${p.current}/${p.total} · ${left} left` };
+                    } else if (p.phase === 'compressing') {
+                        const isFinal = p.current === p.total;
+                        downloadProgress.value = {
+                            value: isFinal ? 70 + p.percent * 0.3 : readPct,
+                            label: `compressing zip part ${p.part} · ${p.percent.toFixed(0)}%${isFinal ? '' : ` · ${left} symbols left`}`,
+                        };
+                    } else {
+                        downloadProgress.value = { value: readPct, label: `saved zip part ${p.part}${left ? ` · ${left} symbols left` : ''}` };
+                    }
+                },
             });
             captureSummary.value = `${summary} · downloaded ${parts} zip${parts === 1 ? '' : 's'}`;
         }
@@ -580,6 +604,7 @@ async function autoCapture() {
     } finally {
         isCapturing.value = false;
         stopCaptureRequested.value = false;
+        downloadProgress.value = null;
     }
 }
 

@@ -174,86 +174,75 @@ export function checkPositionEntry(
 ): PositionEntry | null {
     void reversingDirection; void reversingSegmentStartGi;
 
-    // ── SHORT: HH confirmed while stretched above the session zone ──
-    // All four tags on THIS candle (all pushed by runAnalysis at this step):
-    //   CONFIRMATION_HH          this candle confirms a higher-high swing
-    //   ABOVE_ZONE               close > priceZone.upper
-    //   GOOD_DISTANCE_ABOVE_ZONE close > 1% above priceZone.upper
-    //   VOLATILE_ABS_ATR_CHANGE  candleStructure.closeAtrAbsChange > 1
-    // Checked before the LONG entry, and gated by allowShort only - the
-    // LONG entry's own allowLong gate must not block it.
-    if (allowShort) {
-        const short = checkHhAboveZoneShort(candle, candles, gi, margin, leverage);
-        if (short) return short;
-    }
-
-    // `trigger` is still "POTENTIAL_REVERSAL", which the old reversal entry also
-    // used. Exports cannot be separated by entry while that is true; a distinct
-    // value is one widening line on PositionEntryReason in interfacesv2.ts.
-
-    // The caller's own toggle. Ignoring it makes the lab's LONG/SHORT settings
-    // a lie about what the run actually did.
-    if (!allowLong) return null;
-
-    var entryPrice = candle.close;
-
-    var hasExtraHigh = candle.extras.some(x => x.startsWith("HIGH:"));
-    var hasExtraLow = candle.extras.some(x => x.startsWith("LOW:"));
-
-    if(hasExtraHigh && hasExtraLow){
-        if(candle.conditions_met?.includes("SUPPORT_POTENTIAL_REVERSAL_BREAK")){
-            var extraInfoHigh = parseFloat(candle.extras.filter(e => e.includes("HIGH: "))[0].replace("HIGH: ",""));
-            var extraInfoLow = parseFloat(candle.extras.filter(e => e.includes("LOW: "))[0].replace("LOW: ",""));
-
-            // DOWN trend reversing -> LONG. The segment HIGH is the target and
-            // the segment LOW is the stop.
-            //
-            // THIS WAS SWAPPED, and it is the whole reason nothing moved. With
-            // sl = HIGH and tp = LOW, both levels sat on the wrong side of
-            // entry, so on the very next candle updatePositionEntry saw
-            // `candle.low < sl` AND `candle.high > tp` at the same time, which
-            // is its MID branch: status MID, pnl null, closeGi set, position
-            // closed. Every position was born and resolved immediately with no
-            // PnL - which reads exactly like a position that never moves.
-            const tp = extraInfoHigh;
-            const sl = extraInfoLow;
-
-            // Built through buildPositionEntry rather than returned as a literal.
-            // That is the integration fix, not a style change - it is what sets
-            // `atrAtEntry` from THIS candle's ATR (the literal hardcoded 0, which
-            // makes every later R multiple a division by zero and makes
-            // evaluatePositionManagement return early), stamps openGi/openTime,
-            // starts walkingPnl at [0], and REFUSES levels on the wrong side of
-            // entry instead of trading them - which is what would have caught
-            // the swap above on the first run.
-            //
-            // It returns null when tp is at or below entry. That is a real case
-            // here and not an error: tp is the segment's own high, so a candle
-            // that has already closed above that high has no target left.
-            return buildPositionEntry(
-                {
-                    side: "LONG",
-                    sl,
-                    tp,
-                    reason: {
-                        trigger: "POTENTIAL_REVERSAL",
-                        reversingDirection: "DOWN",
-                        // The segment the levels came from, so an export can be
-                        // grouped by the geometry that produced the trade. These
-                        // were hardcoded 0, which threw that away.
-                        segmentLow: sl,
-                        segmentHigh: tp,
-                        segmentMid: (sl + tp) / 2,
-                        broaderMoveAtr: null, exhaustionWickRatio: null, trendZScoreAvg: null,
-                        summary: `bull close back through the last TREND_SETTER AVWAP, last POTENTIAL_REVERSAL bullish; tp = segment high ${tp}, sl = segment low ${sl}`,
-                    },
-                },
-                candle, gi, margin, leverage
-            );
-        }
+    if (allowLong) {
+        const slingshot = checkBullSlingshotDive(candle, candles, gi, margin, leverage);
+        if (slingshot) return slingshot;
     }
 
     return null;
+}
+
+/** Reads a `"key: value"` entry that runAnalysis pushed into the candle's extras. */
+function readExtraNumber(candle: CandleInfo, key: string): number | null {
+    const entry = candle.extras?.find(e => typeof e === "string" && e.startsWith(key + ": "));
+    if (!entry) return null;
+    const value = Number(entry.slice(key.length + 2));
+    return Number.isFinite(value) ? value : null;
+}
+
+/**
+ * LONG on BULL_SLINGSHOT_DIVE (mostly-bearish recent structure, then a
+ * confirmed HL), with both levels from the extras runAnalysis wrote:
+ *
+ *   TP = close + highestAtr. highestAtr is a closeAtrAbsChange, i.e. ATR as
+ *        a PERCENT of price, so it is applied as close * (1 + highestAtr/100).
+ *   SL = low of the lowestCandleOpenTime candle - this candle's ATR.
+ *
+ * Causal: the lowest candle is searched for at indices <= gi only.
+ */
+function checkBullSlingshotDive(
+    candle: CandleInfo,
+    candles: CandleInfo[],
+    gi: number,
+    margin: number,
+    leverage: number
+): PositionEntry | null {
+    if (!(candle.conditions_met ?? []).includes("BULL_SLINGSHOT_DIVE")) return null;
+    if (!(candle.atr > 0)) return null;
+
+    const lowestCandleOpenTime = readExtraNumber(candle, "lowestCandleOpenTime");
+    const highestAtr = readExtraNumber(candle, "highestAtr");
+    if (lowestCandleOpenTime == null || highestAtr == null || !(highestAtr > 0)) return null;
+
+    let lowestCandle: CandleInfo | null = null;
+    for (let k = gi; k >= 0; k--) {
+        if (candles[k].openTime === lowestCandleOpenTime) { lowestCandle = candles[k]; break; }
+        if (candles[k].openTime < lowestCandleOpenTime) break;
+    }
+    if (!lowestCandle) return null;
+
+    const tp = candle.close * (1 + highestAtr / 100);
+    const sl = lowestCandle.low - candle.atr;
+
+    // buildPositionEntry rejects levels on the wrong side of entry.
+    return buildPositionEntry(
+        {
+            side: "LONG",
+            sl,
+            tp,
+            reason: {
+                trigger: "BULL_SLINGSHOT_DIVE",
+                reversingDirection: "DOWN",
+                segmentLow: sl,
+                segmentHigh: tp,
+                segmentMid: (sl + tp) / 2,
+                broaderMoveAtr: null, exhaustionWickRatio: null, trendZScoreAvg: null,
+                summary: `HL after bearish structure; tp = close + ${highestAtr.toFixed(3)}% (highestAtr), `
+                    + `sl = low ${lowestCandle.low} of ${lowestCandleOpenTime} - atr ${candle.atr}`,
+            },
+        },
+        candle, gi, margin, leverage
+    );
 }
 
 const HH_ABOVE_ZONE_SHORT_CONDITIONS = [

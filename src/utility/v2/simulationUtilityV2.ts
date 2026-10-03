@@ -728,6 +728,34 @@ export class SimulationUtilityV2 {
                     candle.conditions_met.push("RECENT_STRONG_PRICE_ACTION");
                 }
             }
+            var marketStructures = movingCandles.filter(c => c.marketStructure && c.marketStructure.label)
+
+            if(marketStructures.length >= 6){
+                var recentMarketStructure = marketStructures.slice(-5).map(c => c.marketStructure!.label);
+                var isMarketConfirmationCandle = candle.conditions_met.some(c => c.startsWith("CONFIRMATION_"));
+                if(isMarketConfirmationCandle){
+                    candle.extras.push(JSON.stringify(recentMarketStructure))
+
+                    // The last label is the swing THIS candle just confirmed; the structure
+                    // counts as bearish when at least 3 of the 5 recent labels are LH or LL.
+                    var isPrevMarketStructureBear = recentMarketStructure.filter(l => l === "LH" || l === "LL").length >= 3;
+                    var lastMarketStructureIsBullish = ["HL"].includes(recentMarketStructure[recentMarketStructure.length - 1]);
+                    if(isPrevMarketStructureBear && lastMarketStructureIsBullish){
+                        candle.conditions_met.push("BULL_SLINGSHOT_DIVE");
+
+                        // Every candle from the oldest of the 5 recent swings up to this one.
+                        var recentStructureStart = marketStructures[marketStructures.length - 5].openTime;
+                        var recentStructureCandles = movingCandles.filter(c => c.openTime >= recentStructureStart);
+
+                        var lowestCandle = recentStructureCandles.reduce((lo, c) => c.low < lo.low ? c : lo);
+                        var lowestCandleOpenTime = lowestCandle.openTime;
+                        var highestAtr = Math.max(...recentStructureCandles.map(c => c.candleStructure?.closeAtrAbsChange ?? 0));
+
+                        candle.extras.push(`lowestCandleOpenTime: ${lowestCandleOpenTime}`);
+                        candle.extras.push(`highestAtr: ${highestAtr}`);
+                    }
+                }
+            }
 
             // Playback snapshot — records, into extras (no new interface
             // fields), what the tracker's state looked like AS OF this

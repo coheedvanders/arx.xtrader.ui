@@ -596,7 +596,7 @@ export interface PositionEntryReason {
      *  adding a trigger here needs no change there. Check before assuming. */
     // HH_ABOVE_ZONE_FADE: SHORT on CONFIRMATION_HH + ABOVE_ZONE + GOOD_DISTANCE_ABOVE_ZONE
     // + VOLATILE_ABS_ATR_CHANGE (checkHhAboveZoneShort in positionEntry.ts).
-    trigger: "POTENTIAL_REVERSAL" | "EXTENSION_FADE" | "BREAKOUT_FADE" | "CROSS_SECTIONAL" | "HH_ABOVE_ZONE_FADE"
+    trigger: "POTENTIAL_REVERSAL" | "EXTENSION_FADE" | "BREAKOUT_FADE" | "CROSS_SECTIONAL" | "HH_ABOVE_ZONE_FADE" | "BULL_SLINGSHOT_DIVE"
     reversingDirection: "UP" | "DOWN"
     segmentLow: number
     segmentHigh: number

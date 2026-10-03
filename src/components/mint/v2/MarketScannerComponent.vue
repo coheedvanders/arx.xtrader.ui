@@ -514,7 +514,7 @@ async function showEntryHistoryModal(futureSymbol: FuturesSymbol) {
 }
 
 /** Retries for a range fetch that comes back short of the requested end. */
-const CAPTURE_FETCH_RETRIES = 3;
+const CAPTURE_FETCH_RETRIES = 4; // waits 5, 10, 20, 40 s
 const CAPTURE_RETRY_DELAY_MS = 5000;
 
 /**
@@ -561,7 +561,15 @@ async function autoCaptureRange(
     stepBuffers.clear();
     symbolWindows.clear();
 
-    const lastWantedOpenTime = Math.min(endMs, Date.now() - FIFTEEN_MIN_MS);
+    // The last CLOSED candle's openTime, on a 15m boundary. Unaligned (e.g.
+    // now - 15m = 14:22:37), no candle could ever reach it, so every complete
+    // symbol was flagged "ends early" and refetched for nothing - and those
+    // extra calls are what drew the rate limits that truncated real fetches.
+    const lastClosedOpenTime = Math.floor(Date.now() / FIFTEEN_MIN_MS) * FIFTEEN_MIN_MS - FIFTEEN_MIN_MS;
+    const lastWantedOpenTime = Math.min(
+        startMs + Math.floor((endMs - startMs) / FIFTEEN_MIN_MS) * FIFTEEN_MIN_MS,
+        lastClosedOpenTime
+    );
     const expected = Math.floor((lastWantedOpenTime - startMs) / FIFTEEN_MIN_MS) + 1;
     let captured = 0;
     let totalCandles = 0;
@@ -580,15 +588,25 @@ async function autoCaptureRange(
 
         try {
             futureSymbol.status = "fetching";
+            // A short fetch RESUMES from its last candle instead of refetching
+            // the whole range: a rate-limited page cut the fetch at a page
+            // boundary, and refetching all of it just asks for the same limit
+            // again. The wait doubles on each retry so the limit can clear.
             let raw: Candle[] = [];
             for (let attempt = 0; attempt <= CAPTURE_FETCH_RETRIES; attempt++) {
-                raw = await KlineUtility.getRecentKlinesByRange(futureSymbol.symbol, props.interval, expected, startMs, endMs);
+                const from = raw.length ? raw[raw.length - 1].openTime + FIFTEEN_MIN_MS : startMs;
+                const remaining = Math.floor((lastWantedOpenTime - from) / FIFTEEN_MIN_MS) + 1;
+                const page = await KlineUtility.getRecentKlinesByRange(
+                    futureSymbol.symbol, props.interval, remaining, from, lastWantedOpenTime);
+                const lastSoFar = raw.length ? raw[raw.length - 1].openTime : -Infinity;
+                raw.push(...page.filter(c => c.openTime > lastSoFar));
                 const last = raw.length ? raw[raw.length - 1].openTime : 0;
                 if (last >= lastWantedOpenTime || attempt === CAPTURE_FETCH_RETRIES) break;
                 futureSymbol.status = `short fetch, retry ${attempt + 1}`;
-                await new Promise(resolve => setTimeout(resolve, CAPTURE_RETRY_DELAY_MS));
+                await new Promise(resolve => setTimeout(resolve, CAPTURE_RETRY_DELAY_MS * 2 ** attempt));
             }
-            const candles = SimulationUtilityV2.mapToInfo(raw).filter(c => c.openTime >= startMs && c.openTime <= endMs);
+            // <= lastWantedOpenTime also keeps the still-forming candle out.
+            const candles = SimulationUtilityV2.mapToInfo(raw).filter(c => c.openTime >= startMs && c.openTime <= lastWantedOpenTime);
             if (candles.length < 2) {
                 futureSymbol.status = "no data in range";
                 continue;
